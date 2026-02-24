@@ -1,0 +1,4 @@
+*
+!pyproject.toml
+!server.py
+!public/

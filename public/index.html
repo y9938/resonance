@@ -1,0 +1,1137 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Resonance - Speech-to-Text and Text-to-Speech API">
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23C9A962' stroke-width='2'%3E%3Cpath d='M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z'/%3E%3Cpath d='M19 10v2a7 7 0 0 1-14 0v-2'/%3E%3Cline x1='12' x2='12' y1='19' y2='22'/%3E%3C/svg%3E">
+    <title>Resonance</title>
+    <style>
+        :root {
+            --bg-primary: #0a0a0a;
+            --bg-secondary: #141414;
+            --bg-tertiary: #1a1a1a;
+            --border: #2a2a2a;
+            --border-hover: #3a3a3a;
+            --text-primary: #f5f0e6;
+            --text-secondary: #a0a0a0;
+            --text-muted: #606060;
+            --accent: #c9a962;
+            --accent-hover: #d4b76d;
+            --error: #c95c5c;
+            --success: #5cc95c;
+            --radius: 8px;
+            --radius-sm: 4px;
+            --transition: 150ms ease;
+            --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+        }
+
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        html {
+            font-size: 16px;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+
+        body {
+            min-height: 100vh;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            line-height: 1.5;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 1rem 1.5rem;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            color: var(--accent);
+            font-weight: 500;
+            font-size: 1.125rem;
+            letter-spacing: -0.01em;
+        }
+
+        .brand svg { width: 20px; height: 20px; }
+
+        .status {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .status-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--text-muted);
+            transition: background var(--transition);
+        }
+
+        .status-dot.online { background: var(--success); }
+        .status-dot.offline { background: var(--error); }
+
+        .main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-start;
+            padding: 3rem 1.5rem;
+            max-width: 720px;
+            margin: 0 auto;
+            width: 100%;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 0.25rem;
+            padding: 0.25rem;
+            background: var(--bg-secondary);
+            border-radius: var(--radius);
+            margin-bottom: 2rem;
+        }
+
+        .tab {
+            padding: 0.625rem 1.5rem;
+            border: none;
+            background: transparent;
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+            font-weight: 500;
+            cursor: pointer;
+            border-radius: var(--radius-sm);
+            transition: all var(--transition);
+        }
+
+        .tab:hover { color: var(--text-primary); }
+        .tab.active { background: var(--bg-tertiary); color: var(--text-primary); }
+
+        .panel { display: none; width: 100%; }
+        .panel.active { display: block; animation: fadeIn 200ms ease; }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(4px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .dropzone {
+            border: 2px dashed var(--border);
+            border-radius: var(--radius);
+            padding: 3rem 2rem;
+            text-align: center;
+            cursor: pointer;
+            transition: all var(--transition);
+        }
+
+        .dropzone:hover { border-color: var(--border-hover); }
+        .dropzone.dragover { border-color: var(--accent); background: rgba(201, 169, 98, 0.03); }
+        .dropzone.processing { border-style: solid; border-color: var(--accent); cursor: default; }
+
+        .dropzone-icon {
+            width: 40px;
+            height: 40px;
+            margin: 0 auto 1rem;
+            color: var(--accent);
+        }
+
+        .dropzone-text { color: var(--text-secondary); font-size: 0.9375rem; }
+        .dropzone-hint { color: var(--text-muted); font-size: 0.75rem; margin-top: 0.5rem; }
+
+        input[type="file"] { display: none; }
+
+        .progress { margin-top: 1.5rem; display: none; }
+        .progress.active { display: block; }
+
+        .progress-bar {
+            height: 2px;
+            background: var(--border);
+            border-radius: 1px;
+            overflow: hidden;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: var(--accent);
+            width: 0%;
+            transition: width 200ms ease;
+        }
+
+        .progress-text {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-top: 0.5rem;
+            text-align: center;
+        }
+
+        .cancel-btn {
+            display: none;
+            align-items: center;
+            gap: 0.375rem;
+            margin: 1rem auto 0;
+            padding: 0.375rem 0.75rem;
+            border: none;
+            background: transparent;
+            color: var(--error);
+            font-size: 0.75rem;
+            cursor: pointer;
+            opacity: 0.7;
+            transition: opacity var(--transition);
+        }
+
+        .cancel-btn:hover { opacity: 1; }
+        .cancel-btn.active { display: inline-flex; }
+
+        .text-input-wrapper { position: relative; }
+
+        .text-input {
+            width: 100%;
+            min-height: 200px;
+            padding: 1rem;
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            font-family: inherit;
+            font-size: 0.9375rem;
+            line-height: 1.6;
+            resize: vertical;
+            transition: border-color var(--transition);
+        }
+
+        .text-input:focus { outline: none; border-color: var(--accent); }
+        .text-input::placeholder { color: var(--text-muted); }
+
+        .input-footer {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-top: 1rem;
+        }
+
+        .speaker-select {
+            padding: 0.5rem 0.75rem;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            font-size: 0.875rem;
+            cursor: pointer;
+        }
+
+        .char-count {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        .char-count.warning { color: var(--error); }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            padding: 0.625rem 1.25rem;
+            border: none;
+            border-radius: var(--radius-sm);
+            font-size: 0.875rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all var(--transition);
+        }
+
+        .btn-primary {
+            background: var(--accent);
+            color: var(--bg-primary);
+        }
+
+        .btn-primary:hover { background: var(--accent-hover); }
+        .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .btn-secondary {
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            border: 1px solid var(--border);
+        }
+
+        .btn-secondary:hover { border-color: var(--border-hover); }
+
+        .result { display: none; margin-top: 2rem; animation: fadeIn 200ms ease; }
+        .result.active { display: block; }
+
+        .result-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 0.75rem;
+        }
+
+        .result-title { font-size: 0.875rem; font-weight: 500; color: var(--accent); }
+        .result-meta { font-size: 0.75rem; color: var(--text-muted); }
+
+        .result-actions { display: flex; gap: 0.5rem; margin-bottom: 0.75rem; }
+
+        .result-content {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 1rem;
+            font-family: var(--font-mono);
+            font-size: 0.8125rem;
+            line-height: 1.7;
+            white-space: pre-wrap;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .result-content::-webkit-scrollbar { width: 6px; }
+        .result-content::-webkit-scrollbar-track { background: transparent; }
+        .result-content::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+        .audio-player { width: 100%; margin-top: 1rem; }
+        .audio-player audio { width: 100%; height: 40px; }
+
+        .error {
+            display: none;
+            margin-top: 1rem;
+            padding: 0.75rem 1rem;
+            background: rgba(201, 92, 92, 0.1);
+            border: 1px solid rgba(201, 92, 92, 0.2);
+            border-radius: var(--radius);
+            color: var(--error);
+            font-size: 0.875rem;
+        }
+
+        .error.active { display: block; animation: fadeIn 200ms ease; }
+
+        .toast {
+            position: fixed;
+            bottom: 1.5rem;
+            right: 1.5rem;
+            padding: 0.75rem 1rem;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            font-size: 0.875rem;
+            animation: slideIn 200ms ease;
+        }
+
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+
+        @media (max-width: 640px) {
+            .main { padding: 2rem 1rem; }
+            .tabs { width: 100%; }
+            .tab { flex: 1; text-align: center; }
+            .dropzone { padding: 2rem 1rem; }
+        }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <div class="brand">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                <line x1="12" x2="12" y1="19" y2="22"/>
+            </svg>
+            Resonance
+        </div>
+        <div class="status">
+            <span class="status-dot" id="statusDot"></span>
+            <span id="statusText">Connecting...</span>
+        </div>
+    </header>
+
+    <main class="main">
+        <nav class="tabs" role="tablist">
+            <button class="tab" role="tab" data-tab="stt" aria-selected="false">Speech to Text</button>
+            <button class="tab" role="tab" data-tab="tts" aria-selected="false">Text to Speech</button>
+        </nav>
+
+        <!-- STT Panel -->
+        <section class="panel" id="stt-panel" role="tabpanel">
+            <div class="dropzone" id="sttDropzone">
+                <svg class="dropzone-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                    <polyline points="17 8 12 3 7 8"/>
+                    <line x1="12" x2="12" y1="3" y2="15"/>
+                </svg>
+                <div class="dropzone-text">Drop audio file or click to browse</div>
+                <div class="dropzone-hint">Loading configuration...</div>
+
+                <div class="progress" id="sttProgress">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="sttProgressFill"></div>
+                    </div>
+                    <div class="progress-text" id="sttProgressText"></div>
+                </div>
+
+                <div style="display: flex; gap: 0.5rem; justify-content: center; margin-top: 0.75rem;">
+                    <button class="cancel-btn" id="sttStop">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                        </svg>
+                        Stop
+                    </button>
+                    <button class="cancel-btn" id="sttCancel">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="18" y1="6" x2="6" y2="18"/>
+                            <line x1="6" y1="6" x2="18" y2="18"/>
+                        </svg>
+                        Cancel
+                    </button>
+                </div>
+            </div>
+            <input type="file" id="sttFileInput" accept="audio/*,video/*">
+
+            <div class="error" id="sttError"></div>
+
+            <div class="result" id="sttResult">
+                <div class="result-header">
+                    <span class="result-title">Transcription</span>
+                    <span class="result-meta" id="sttMeta"></span>
+                </div>
+                <div class="result-actions">
+                    <button class="btn btn-secondary" id="sttCopy">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                        </svg>
+                        Copy
+                    </button>
+                    <button class="btn btn-secondary" id="sttDownload">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                            <polyline points="7 10 12 15 17 10"/>
+                            <line x1="12" x2="12" y1="15" y2="3"/>
+                        </svg>
+                        Download
+                    </button>
+                </div>
+                <div class="result-content" id="sttResultText"></div>
+            </div>
+        </section>
+
+        <!-- TTS Panel -->
+        <section class="panel" id="tts-panel" role="tabpanel">
+            <div class="dropzone" id="ttsDropzone" style="margin-bottom: 1rem;">
+                <input type="file" id="ttsFileInput" accept=".txt,.md,.text" hidden>
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                    <polyline points="14 2 14 8 20 8"/>
+                    <line x1="12" y1="18" x2="12" y2="12"/>
+                    <line x1="9" y1="15" x2="15" y2="15"/>
+                </svg>
+                <span class="dropzone-text">Drop text file or click to browse</span>
+                <span class="dropzone-hint">Any text — any size</span>
+            </div>
+
+            <div class="text-input-wrapper">
+                <textarea
+                    class="text-input"
+                    id="ttsInput"
+                    placeholder="Enter text to synthesize... (up to 50000 characters)"
+                ></textarea>
+            </div>
+
+            <div class="input-footer">
+                <select class="speaker-select" id="ttsSpeaker"></select>
+                <span class="char-count" id="ttsCharCount">0 chars</span>
+            </div>
+
+            <button class="btn btn-primary" id="ttsSubmit" style="margin-top: 1rem; width: 100%;">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polygon points="5 3 19 12 5 21 5 3"/>
+                </svg>
+                Synthesize
+            </button>
+
+            <div class="progress" id="ttsProgress" style="margin-top: 1rem;">
+                <div class="progress-bar">
+                    <div class="progress-fill" id="ttsProgressFill"></div>
+                </div>
+                <div class="progress-text" id="ttsProgressText"></div>
+                <button class="cancel-btn" id="ttsCancel">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="18" y1="6" x2="6" y2="18"/>
+                        <line x1="6" y1="6" x2="18" y2="18"/>
+                    </svg>
+                    Cancel
+                </button>
+            </div>
+
+            <div class="error" id="ttsError"></div>
+
+            <div class="result" id="ttsResult">
+                <div class="result-header">
+                    <span class="result-title">Synthesized Audio</span>
+                    <span class="result-meta" id="ttsMeta"></span>
+                </div>
+                <div class="audio-player">
+                    <audio id="ttsAudio" controls></audio>
+                </div>
+                <button class="btn btn-secondary" id="ttsDownload" style="margin-top: 0.75rem;">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="7 10 12 15 17 10"/>
+                        <line x1="12" x2="12" y1="15" y2="3"/>
+                    </svg>
+                    Download WAV
+                </button>
+            </div>
+        </section>
+    </main>
+
+    <script>
+        const API_URL = '/api';
+
+        const savedTab = localStorage.getItem('resonance_activeTab');
+
+        let CONFIG = {};
+
+        let globalJobId = 0;
+        const state = {
+            stt: { abortController: null, jobId: 0, reader: null },
+            tts: { abortController: null, jobId: 0, reader: null },
+            activeTab: savedTab || 'stt'
+        };
+
+        async function loadConfig() {
+            try {
+                const res = await fetch(`${API_URL}/config`);
+                if (res.ok) {
+                    CONFIG = { ...CONFIG, ...await res.json() };
+                    applyConfig();
+                }
+            } catch (e) {
+                console.warn('Failed to load config, using defaults:', e);
+            }
+        }
+
+        function applyConfig() {
+            const hint = document.querySelector('.dropzone-hint');
+            if (hint) {
+                const limitText = CONFIG.upload_limit_mb > 0
+                    ? `up to ${CONFIG.upload_limit_mb}MB`
+                    : 'any size';
+                hint.textContent = `Any media — ${limitText}`;
+            }
+
+            const speakerSelect = document.getElementById('ttsSpeaker');
+            if (speakerSelect && CONFIG.tts_speakers && CONFIG.tts_speakers.length > 0) {
+                const currentValue = speakerSelect.value;
+                speakerSelect.innerHTML = '';
+                const speakerNames = {
+                    'ru_alexandr': 'Alexandr (Male)',
+                    'ru_alfia': 'Alfia (Female)',
+                    'ru_alfia2': 'Alfia 2 (Female)',
+                    'ru_bogdan': 'Bogdan (Male)',
+                    'ru_dmitriy': 'Dmitriy (Male)',
+                    'ru_ekaterina': 'Ekaterina (Female)',
+                    'ru_vika': 'Vika (Female)',
+                    'ru_gamat': 'Gamat (Male)',
+                    'ru_igor': 'Igor (Male)',
+                    'ru_karina': 'Karina (Female)',
+                    'ru_kejilgan': 'Kejilgan (Male)',
+                    'ru_kermen': 'Kermen (Female)',
+                    'ru_marat': 'Marat (Male)',
+                    'ru_miyau': 'Miyau (Female)',
+                    'ru_nurgul': 'Nurgul (Female)',
+                    'ru_oksana': 'Oksana (Female)',
+                    'ru_onaoy': 'Onaoy (Male)',
+                    'ru_ramilia': 'Ramilia (Female)',
+                    'ru_roman': 'Roman (Male) ★',
+                    'ru_safarhuja': 'Safarhuja (Male)',
+                    'ru_saida': 'Saia (Female)',
+                    'ru_sibday': 'Sibday (Male)',
+                    'ru_zara': 'Zara (Female)',
+                    'ru_zhadyra': 'Zhadyra (Female) ★',
+                    'ru_zhazira': 'Zhazira (Female)',
+                    'ru_zinaida': 'Zinaida (Female)',
+                    'ru_eduard': 'Eduard (Male)'
+                };
+                CONFIG.tts_speakers.forEach(speaker => {
+                    const option = document.createElement('option');
+                    option.value = speaker;
+                    option.textContent = speakerNames[speaker] || speaker;
+                    speakerSelect.appendChild(option);
+                });
+                if (CONFIG.tts_speakers.includes(currentValue)) {
+                    speakerSelect.value = currentValue;
+                } else if (CONFIG.tts_default_speaker && CONFIG.tts_speakers.includes(CONFIG.tts_default_speaker)) {
+                    speakerSelect.value = CONFIG.tts_default_speaker;
+                } else {
+                    speakerSelect.value = CONFIG.tts_speakers[0];
+                }
+            }
+        }
+
+        const els = {
+            statusDot: document.getElementById('statusDot'),
+            statusText: document.getElementById('statusText'),
+            tabs: document.querySelectorAll('.tab'),
+            panels: document.querySelectorAll('.panel'),
+
+            sttDropzone: document.getElementById('sttDropzone'),
+            sttFileInput: document.getElementById('sttFileInput'),
+            sttProgress: document.getElementById('sttProgress'),
+            sttProgressFill: document.getElementById('sttProgressFill'),
+            sttProgressText: document.getElementById('sttProgressText'),
+            sttStop: document.getElementById('sttStop'),
+            sttCancel: document.getElementById('sttCancel'),
+            sttError: document.getElementById('sttError'),
+            sttResult: document.getElementById('sttResult'),
+            sttResultText: document.getElementById('sttResultText'),
+            sttMeta: document.getElementById('sttMeta'),
+            sttCopy: document.getElementById('sttCopy'),
+            sttDownload: document.getElementById('sttDownload'),
+
+            ttsInput: document.getElementById('ttsInput'),
+            ttsSpeaker: document.getElementById('ttsSpeaker'),
+            ttsDropzone: document.getElementById('ttsDropzone'),
+            ttsFileInput: document.getElementById('ttsFileInput'),
+            ttsCharCount: document.getElementById('ttsCharCount'),
+            ttsSubmit: document.getElementById('ttsSubmit'),
+            ttsProgress: document.getElementById('ttsProgress'),
+            ttsProgressFill: document.getElementById('ttsProgressFill'),
+            ttsProgressText: document.getElementById('ttsProgressText'),
+            ttsCancel: document.getElementById('ttsCancel'),
+            ttsError: document.getElementById('ttsError'),
+            ttsResult: document.getElementById('ttsResult'),
+            ttsAudio: document.getElementById('ttsAudio'),
+            ttsMeta: document.getElementById('ttsMeta'),
+            ttsDownload: document.getElementById('ttsDownload'),
+        };
+
+        async function checkHealth() {
+            try {
+                const res = await fetch(`${API_URL}/health`, { method: 'GET' });
+                const online = res.ok;
+                els.statusDot.className = 'status-dot ' + (online ? 'online' : 'offline');
+                els.statusText.textContent = online ? 'Online' : 'Offline';
+                return online;
+            } catch {
+                els.statusDot.className = 'status-dot offline';
+                els.statusText.textContent = 'Offline';
+                return false;
+            }
+        }
+
+        function switchTab(tab) {
+            state.activeTab = tab;
+            localStorage.setItem('resonance_activeTab', tab);
+
+            els.tabs.forEach(t => {
+                const active = t.dataset.tab === tab;
+                t.classList.toggle('active', active);
+                t.setAttribute('aria-selected', active);
+            });
+
+            els.panels.forEach(p => {
+                p.classList.toggle('active', p.id === `${tab}-panel`);
+            });
+        }
+
+        /* Initialize active tab on load */
+        if (savedTab) {
+            switchTab(savedTab);
+        } else {
+            switchTab('stt');
+        }
+
+        const savedTtsText = localStorage.getItem('resonance_ttsText');
+        if (savedTtsText) {
+            els.ttsInput.value = savedTtsText;
+            updateTtsCharCount();
+        }
+
+        els.tabs.forEach(tab => {
+            tab.addEventListener('click', () => switchTab(tab.dataset.tab));
+        });
+
+        function showToast(message) {
+            const toast = document.createElement('div');
+            toast.className = 'toast';
+            toast.textContent = message;
+            document.body.appendChild(toast);
+            setTimeout(() => toast.remove(), 2500);
+        }
+
+        function resetUI(type, keepResult = false) {
+            const prefix = type.toLowerCase();
+            els[`${prefix}Progress`].classList.remove('active');
+            els[`${prefix}ProgressFill`].style.width = '0%';
+            if (!keepResult) {
+                els[`${prefix}ProgressText`].textContent = '';
+            }
+            els[`${prefix}Error`].classList.remove('active');
+
+            if (type === 'STT') {
+                els.sttDropzone.classList.remove('processing');
+                els.sttCancel.classList.remove('active');
+                els.sttStop.classList.remove('active');
+                if (!keepResult) {
+                    els.sttResult.classList.remove('active');
+                    els.sttResultText.textContent = '';
+                    els.sttMeta.textContent = '';
+                }
+            } else if (type === 'TTS') {
+                els.ttsCancel.classList.remove('active');
+                if (!keepResult) {
+                    els.ttsResult.classList.remove('active');
+                    els.ttsAudio.src = '';
+                    els.ttsMeta.textContent = '';
+                }
+            }
+        }
+
+        function cancelJob(type) {
+            const job = state[type.toLowerCase()];
+            if (job.reader) {
+                job.reader.cancel().catch(() => {});
+                job.reader = null;
+            }
+            if (job.abortController) {
+                job.abortController.abort();
+                job.abortController = null;
+            }
+            resetUI(type, false);
+        }
+
+        function stopJob(type) {
+            const job = state[type.toLowerCase()];
+            if (job.reader) {
+                job.reader.cancel().catch(() => {});
+                job.reader = null;
+            }
+            if (job.abortController) {
+                job.abortController.abort();
+                job.abortController = null;
+            }
+            resetUI(type, true);
+        }
+
+        async function handleSttFile(file) {
+            if (!file) return;
+
+            cancelJob('STT');
+
+            els.sttResult.classList.remove('active');
+            els.sttError.classList.remove('active');
+            els.sttDropzone.classList.add('processing');
+            els.sttProgress.classList.add('active');
+            els.sttStop.classList.add('active');
+            els.sttCancel.classList.add('active');
+            els.sttProgressFill.style.width = '5%';
+            els.sttProgressText.textContent = 'Uploading...';
+
+            const segments = [];
+            const abortController = new AbortController();
+            const myJobId = ++globalJobId;
+            state.stt.abortController = abortController;
+            state.stt.jobId = myJobId;
+
+            const updateDisplay = () => {
+                const fullText = segments.map(s => `[${s.start.toFixed(1)}s - ${s.end.toFixed(1)}s]: ${s.text}`).join('\n\n');
+                els.sttResultText.textContent = fullText;
+                els.sttMeta.textContent = `${segments.length} segment${segments.length !== 1 ? 's' : ''}`;
+            };
+
+            try {
+                const formData = new FormData();
+                formData.append('file', file);
+
+                const res = await fetch(`${API_URL}/stream/stt`, {
+                    method: 'POST',
+                    body: formData,
+                    signal: abortController.signal
+                });
+
+                if (!res.ok) throw new Error('Upload failed');
+                if (!res.body) throw new Error('No response body');
+
+                const reader = res.body.getReader();
+                state.stt.reader = reader;
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                els.sttResult.classList.add('active');
+                els.sttResultText.dataset.filename = file.name;
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    if (abortController.signal.aborted) break;
+                    if (state.stt.jobId !== myJobId) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        const trimmed = line.trim();
+                        if (!trimmed.startsWith('data: ')) continue;
+
+                        const data = trimmed.slice(6);
+                        if (!data) continue;
+
+                        try {
+                            const event = JSON.parse(data);
+
+                            switch (event.type) {
+                                case 'start':
+                                    els.sttProgressText.textContent = 'Processing...';
+                                    break;
+                                case 'progress':
+                                    const pct = event.total > 0 ? (event.current / event.total) * 100 : 0;
+                                    els.sttProgressFill.style.width = `${pct}%`;
+                                    els.sttProgressText.textContent = `Chunk ${event.current} / ${event.total}`;
+                                    if (event.segment) {
+                                        segments.push(event.segment);
+                                        updateDisplay();
+                                    }
+                                    break;
+                                case 'complete':
+                                    els.sttProgressFill.style.width = '100%';
+                                    els.sttProgressText.textContent = 'Complete';
+                                    updateDisplay();
+                                    setTimeout(() => {
+                                        if (state.stt.jobId === myJobId) {
+                                            resetUI('STT', true);
+                                            state.stt.abortController = null;
+                                        }
+                                    }, 800);
+                                    return;
+                                case 'error':
+                                    throw new Error(event.message || 'Processing failed');
+                            }
+                        } catch (e) {
+                            if (e instanceof SyntaxError) continue;
+                            throw e;
+                        }
+                    }
+                }
+            } catch (err) {
+                console.error('STT Error:', err);
+                if (state.stt.jobId !== myJobId) {
+                    state.stt.abortController = null;
+                    resetUI('STT');
+                    return;
+                }
+                if (err.name !== 'AbortError') {
+                    els.sttError.textContent = err.message || 'Network error';
+                    els.sttError.classList.add('active');
+                }
+                resetUI('STT');
+                state.stt.abortController = null;
+            } finally {
+                if (state.stt.jobId === myJobId) {
+                    state.stt.reader = null;
+                }
+            }
+        }
+
+        els.sttDropzone.addEventListener('click', () => els.sttFileInput.click());
+
+        els.sttDropzone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            els.sttDropzone.classList.add('dragover');
+        });
+
+        els.sttDropzone.addEventListener('dragleave', () => {
+            els.sttDropzone.classList.remove('dragover');
+        });
+
+        els.sttDropzone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            els.sttDropzone.classList.remove('dragover');
+            const files = e.dataTransfer.files;
+            if (files.length > 0) handleSttFile(files[0]);
+        });
+
+        els.sttFileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) handleSttFile(e.target.files[0]);
+        });
+
+        els.sttStop.addEventListener('click', (e) => {
+            e.stopPropagation();
+            stopJob('STT');
+        });
+
+        els.sttCancel.addEventListener('click', (e) => {
+            e.stopPropagation();
+            cancelJob('STT');
+        });
+
+        let ttsSourceFilename = null;
+
+        function handleTtsFile(file) {
+            if (!file) return;
+            ttsSourceFilename = file.name.replace(/\.[^/.]+$/, '');
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                els.ttsInput.value = e.target.result;
+                updateTtsCharCount();
+                showToast(`Loaded: ${file.name}`);
+            };
+            reader.onerror = () => showToast('Failed to read file');
+            reader.readAsText(file);
+        }
+
+        els.ttsDropzone.addEventListener('click', () => els.ttsFileInput.click());
+
+        els.ttsDropzone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            els.ttsDropzone.classList.add('dragover');
+        });
+
+        els.ttsDropzone.addEventListener('dragleave', () => {
+            els.ttsDropzone.classList.remove('dragover');
+        });
+
+        els.ttsDropzone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            els.ttsDropzone.classList.remove('dragover');
+            const files = e.dataTransfer.files;
+            if (files.length > 0) handleTtsFile(files[0]);
+        });
+
+        els.ttsFileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) handleTtsFile(e.target.files[0]);
+        });
+
+        els.ttsCancel.addEventListener('click', (e) => {
+            e.stopPropagation();
+            cancelJob('TTS');
+        });
+
+        els.sttCopy.addEventListener('click', async () => {
+            const text = els.sttResultText.textContent;
+
+            const copyFallback = (text) => {
+                const textarea = document.createElement('textarea');
+                textarea.value = text;
+                textarea.style.position = 'fixed';
+                textarea.style.opacity = '0';
+                document.body.appendChild(textarea);
+                textarea.select();
+                try {
+                    document.execCommand('copy');
+                    document.body.removeChild(textarea);
+                    return true;
+                } catch {
+                    document.body.removeChild(textarea);
+                    return false;
+                }
+            };
+
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                try {
+                    await navigator.clipboard.writeText(text);
+                    showToast('Copied to clipboard');
+                    return;
+                } catch {
+                    // Fallback to execCommand
+                }
+            }
+
+            const success = copyFallback(text);
+            showToast(success ? 'Copied to clipboard' : 'Copy failed');
+        });
+
+        els.sttDownload.addEventListener('click', () => {
+            const text = els.sttResultText.textContent;
+            const filename = (els.sttResultText.dataset.filename || 'transcription').replace(/\.[^/.]+$/, '');
+            const blob = new Blob([text], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${filename}.txt`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        });
+
+        function updateTtsCharCount() {
+            const len = els.ttsInput.value.length;
+            const maxChars = CONFIG.tts_max_chars || 600;
+            const chunks = Math.ceil(len / maxChars);
+            els.ttsCharCount.textContent = `${len} chars · ${chunks} chunk${chunks !== 1 ? 's' : ''}`;
+            els.ttsCharCount.classList.toggle('warning', len > 50000);
+        }
+
+        els.ttsInput.addEventListener('input', () => {
+            updateTtsCharCount();
+            const text = els.ttsInput.value;
+            if (text) {
+                localStorage.setItem('resonance_ttsText', text);
+            } else {
+                localStorage.removeItem('resonance_ttsText');
+            }
+        });
+
+        els.ttsSubmit.addEventListener('click', async () => {
+            const text = els.ttsInput.value.trim();
+            if (!text) {
+                els.ttsError.textContent = 'Please enter text';
+                els.ttsError.classList.add('active');
+                return;
+            }
+            if (text.length > 50000) {
+                els.ttsError.textContent = 'Text too long (max 50000 characters)';
+                els.ttsError.classList.add('active');
+                return;
+            }
+
+            cancelJob('TTS');
+            els.ttsResult.classList.remove('active');
+            els.ttsError.classList.remove('active');
+            els.ttsSubmit.disabled = true;
+            els.ttsProgress.classList.add('active');
+            els.ttsCancel.classList.add('active');
+            els.ttsProgressFill.style.width = '10%';
+            els.ttsProgressText.textContent = 'Starting...';
+
+            let filename = ttsSourceFilename;
+            if (!filename) {
+                const now = new Date();
+                const timestamp = now.toISOString()
+                    .replace(/[:.]/g, '-')
+                    .replace(/T/, '_')
+                    .slice(0, -5);
+                filename = `tts_${timestamp}`;
+            }
+            ttsSourceFilename = null;
+
+            const abortController = new AbortController();
+            const myJobId = ++globalJobId;
+            state.tts.abortController = abortController;
+            state.tts.jobId = myJobId;
+
+            try {
+                const res = await fetch(
+                    `${API_URL}/stream/tts?text=${encodeURIComponent(text)}&speaker=${els.ttsSpeaker.value}&filename=${encodeURIComponent(filename)}`,
+                    { method: 'POST', signal: abortController.signal }
+                );
+
+                if (!res.ok) throw new Error('Request failed');
+                if (!res.body) throw new Error('No response body');
+
+                const reader = res.body.getReader();
+                state.tts.reader = reader;
+                const decoder = new TextDecoder();
+                let buffer = '';
+                let downloadUrl = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    if (abortController.signal.aborted) break;
+                    if (state.tts.jobId !== myJobId) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        const trimmed = line.trim();
+                        if (!trimmed.startsWith('data: ')) continue;
+
+                        const data = trimmed.slice(6);
+                        if (!data) continue;
+
+                        try {
+                            const event = JSON.parse(data);
+
+                            switch (event.type) {
+                                case 'start':
+                                    els.ttsProgressText.textContent = 'Processing...';
+                                    break;
+                                case 'progress':
+                                    const pct = event.total > 0 ? (event.current / event.total) * 100 : 0;
+                                    els.ttsProgressFill.style.width = `${pct}%`;
+                                    els.ttsProgressText.textContent = `Chunk ${event.current} / ${event.total}`;
+                                    break;
+                                case 'complete':
+                                    els.ttsProgressFill.style.width = '100%';
+                                    els.ttsProgressText.textContent = 'Complete';
+
+                                    downloadUrl = event.download_url;
+                                    els.ttsAudio.src = downloadUrl;
+                                    els.ttsMeta.textContent = `${event.chunks} chunks · ${event.duration.toFixed(1)}s`;
+                                    els.ttsResult.classList.add('active');
+                                    els.ttsDownload.onclick = () => {
+                                        const a = document.createElement('a');
+                                        a.href = downloadUrl;
+                                        a.download = filename + '.wav';
+                                        document.body.appendChild(a);
+                                        a.click();
+                                        document.body.removeChild(a);
+                                    };
+
+                                    setTimeout(() => {
+                                        if (state.tts.jobId === myJobId) {
+                                            resetUI('TTS', true);
+                                            state.tts.abortController = null;
+                                        }
+                                    }, 800);
+                                    return;
+                                case 'error':
+                                    throw new Error(event.message || 'Processing failed');
+                            }
+                        } catch (e) {
+                            if (e instanceof SyntaxError) continue;
+                            throw e;
+                        }
+                    }
+                }
+            } catch (err) {
+                console.error('TTS Error:', err);
+                if (state.tts.jobId !== myJobId) {
+                    state.tts.abortController = null;
+                    resetUI('TTS');
+                    return;
+                }
+                if (err.name !== 'AbortError') {
+                    els.ttsError.textContent = err.message || 'Network error';
+                    els.ttsError.classList.add('active');
+                }
+                resetUI('TTS');
+                state.tts.abortController = null;
+            } finally {
+                if (state.tts.jobId === myJobId) {
+                    state.tts.reader = null;
+                    els.ttsSubmit.disabled = false;
+                }
+            }
+        });
+
+        loadConfig();
+        checkHealth();
+
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') {
+                checkHealth();
+            }
+        });
+    </script>
+</body>
+</html>
