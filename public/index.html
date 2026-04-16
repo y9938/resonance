@@ -1,11 +1,58 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="en">
 <head>
+    <script src="/locales/manifest.js"></script>
+    <script>
+    (function () {
+        var KEY = 'resonance_locale';
+        var MANIFEST = window.__resonanceLocaleManifest || {};
+        var DEFAULT_LOCALE = MANIFEST.defaultLocale || 'en';
+        var CONFIG = Array.isArray(MANIFEST.locales) ? MANIFEST.locales : [];
+
+        function canonicalizeLocale(loc) {
+            try {
+                var list = Intl.getCanonicalLocales(String(loc || '').trim());
+                return list && list.length ? list[0] : null;
+            } catch (e) {
+                return null;
+            }
+        }
+
+        function findLocaleCode(loc) {
+            var canonical = canonicalizeLocale(loc);
+            if (!canonical) return null;
+            for (var i = 0; i < CONFIG.length; i++) {
+                var item = CONFIG[i];
+                if (item.code === canonical) return item.code;
+            }
+            var base = canonical.split('-')[0];
+            for (var j = 0; j < CONFIG.length; j++) {
+                if (CONFIG[j].code === base) return CONFIG[j].code;
+            }
+            return null;
+        }
+
+        window.__resonanceResolveLocale = function () {
+            try {
+                var s = localStorage.getItem(KEY);
+                var stored = findLocaleCode(s);
+                if (stored) return stored;
+            } catch (e) {}
+            var list = navigator.languages || [navigator.language || ''];
+            for (var i = 0; i < list.length; i++) {
+                var matched = findLocaleCode(list[i]);
+                if (matched) return matched;
+            }
+            return DEFAULT_LOCALE;
+        };
+        document.documentElement.lang = window.__resonanceResolveLocale();
+    })();
+    </script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Resonance - Speech-to-Text and Text-to-Speech API">
+    <meta id="meta-desc" name="description" data-i18n="metaDescription" data-i18n-attr="content" content="Resonance — Speech-to-Text and Text-to-Speech">
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23C9A962' stroke-width='2'%3E%3Cpath d='M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z'/%3E%3Cpath d='M19 10v2a7 7 0 0 1-14 0v-2'/%3E%3Cline x1='12' x2='12' y1='19' y2='22'/%3E%3C/svg%3E">
-    <title>Resonance</title>
+    <title data-i18n="pageTitle">Resonance</title>
     <style>
         :root {
             --bg-primary: #0a0a0a;
@@ -50,6 +97,7 @@
             justify-content: space-between;
             padding: 1rem 1.5rem;
             border-bottom: 1px solid var(--border);
+            position: relative;
         }
 
         .brand {
@@ -64,26 +112,237 @@
 
         .brand svg { width: 20px; height: 20px; }
 
-        .status {
+        .header-center {
+            position: absolute;
+            left: 50%;
+            transform: translateX(-50%);
+            pointer-events: none;
+        }
+
+        .header-left,
+        .header-right {
             display: flex;
             align-items: center;
-            gap: 0.5rem;
+            z-index: 1;
+        }
+
+        .menu-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 36px;
+            height: 36px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            background: var(--bg-secondary);
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: border-color var(--transition), color var(--transition);
+        }
+
+        .menu-btn:hover {
+            border-color: var(--border-hover);
+            color: var(--text-primary);
+        }
+
+        .jobs-drawer {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: min(320px, 86vw);
+            height: 100vh;
+            background: var(--bg-secondary);
+            border-right: 1px solid var(--border);
+            transform: translateX(-100%);
+            transition: transform 180ms ease;
+            z-index: 50;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .jobs-drawer.open {
+            transform: translateX(0);
+        }
+
+        .jobs-drawer-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 1rem;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .jobs-drawer-title {
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+            font-weight: 600;
+        }
+
+        .jobs-drawer-scroll {
+            flex: 1;
+            min-height: 0;
+            overflow-y: auto;
+            overscroll-behavior: contain;
+            padding: 1rem;
+            color: var(--text-muted);
+            font-size: 0.875rem;
+        }
+
+        .jobs-list-sentinel {
+            height: 1px;
+            width: 100%;
+            pointer-events: none;
+        }
+
+        .jobs-footer {
+            margin-top: 0.5rem;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+
+        .jobs-drawer-backdrop {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.45);
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 180ms ease;
+            z-index: 40;
+        }
+
+        .jobs-drawer-backdrop.open {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .locale-picker {
+            position: relative;
+            width: 180px;
+        }
+
+        .locale-picker-input {
+            width: 100%;
+            padding: 0.55rem 2.1rem 0.55rem 0.8rem;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            font-size: 0.75rem;
+            font-weight: 600;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            outline: none;
+            transition: border-color var(--transition), box-shadow var(--transition);
+        }
+
+        .locale-picker-input::placeholder {
+            color: var(--text-muted);
+            text-transform: none;
+            letter-spacing: 0;
+        }
+
+        .locale-picker-input:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(201, 169, 98, 0.12);
+        }
+
+        .locale-picker-caret {
+            position: absolute;
+            top: 50%;
+            right: 0.7rem;
+            transform: translateY(-50%);
+            pointer-events: none;
+            color: var(--text-muted);
+            transition: transform var(--transition), color var(--transition);
+        }
+
+        .locale-picker.open .locale-picker-caret {
+            transform: translateY(-50%) rotate(180deg);
+            color: var(--accent);
+        }
+
+        .locale-picker-list {
+            position: absolute;
+            top: calc(100% + 0.4rem);
+            left: 0;
+            right: 0;
+            max-height: 240px;
+            overflow-y: auto;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+            padding: 0.3rem;
+            display: none;
+            z-index: 30;
+        }
+
+        .locale-picker.open .locale-picker-list {
+            display: block;
+        }
+
+        .locale-option {
+            width: 100%;
+            display: grid;
+            grid-template-columns: 52px 1fr;
+            gap: 0.65rem;
+            align-items: center;
+            padding: 0.55rem 0.65rem;
+            border: none;
+            border-radius: 6px;
+            background: transparent;
+            color: inherit;
+            text-align: left;
+            cursor: pointer;
+            transition: background var(--transition), color var(--transition);
+        }
+
+        .locale-option:hover,
+        .locale-option.active {
+            background: var(--bg-tertiary);
+        }
+
+        .locale-option:focus-visible {
+            outline: 1px solid var(--accent);
+            outline-offset: -1px;
+        }
+
+        .locale-option.selected .locale-option-code {
+            color: var(--accent);
+        }
+
+        .locale-option-code {
+            font-size: 0.75rem;
+            font-weight: 600;
+            letter-spacing: 0.04em;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+        }
+
+        .locale-option-label {
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+        }
+
+        .locale-option-name {
+            font-size: 0.84rem;
+            color: var(--text-primary);
+            line-height: 1.2;
+        }
+
+        .locale-option-native {
             font-size: 0.75rem;
             color: var(--text-muted);
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
+            line-height: 1.2;
+            margin-top: 0.1rem;
         }
 
-        .status-dot {
-            width: 6px;
-            height: 6px;
-            border-radius: 50%;
-            background: var(--text-muted);
-            transition: background var(--transition);
+        .locale-picker-empty {
+            padding: 0.7rem 0.8rem;
+            font-size: 0.8rem;
+            color: var(--text-muted);
         }
-
-        .status-dot.online { background: var(--success); }
-        .status-dot.offline { background: var(--error); }
 
         .main {
             flex: 1;
@@ -141,6 +400,77 @@
         .dropzone:hover { border-color: var(--border-hover); }
         .dropzone.dragover { border-color: var(--accent); background: rgba(201, 169, 98, 0.03); }
         .dropzone.processing { border-style: solid; border-color: var(--accent); cursor: default; }
+
+        .mic-box {
+            margin-top: 1rem;
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            background: var(--bg-secondary);
+            padding: 1rem;
+        }
+
+        .mic-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .mic-title {
+            font-size: 0.875rem;
+            font-weight: 500;
+            color: var(--text-primary);
+        }
+
+        .mic-hint {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-bottom: 0.75rem;
+        }
+
+        .mic-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+
+        .mic-timer {
+            display: none;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.875rem;
+            font-family: var(--font-mono);
+            color: var(--text-secondary);
+            font-variant-numeric: tabular-nums;
+        }
+
+        .mic-recording .mic-timer {
+            display: inline-flex;
+        }
+
+        .mic-timer-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--accent);
+        }
+
+        .mic-preview {
+            margin-top: 0.75rem;
+            display: none;
+        }
+
+        .mic-preview.active {
+            display: block;
+        }
+
+        .mic-preview audio {
+            width: 100%;
+            height: 40px;
+        }
+
+
 
         .dropzone-icon {
             width: 40px;
@@ -280,22 +610,99 @@
             margin-bottom: 0.75rem;
         }
 
+        .result-meta-stack {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 0.15rem;
+        }
+
+        .result-meta-sub { font-size: 0.72rem; color: var(--text-muted); }
+
         .result-title { font-size: 0.875rem; font-weight: 500; color: var(--accent); }
         .result-meta { font-size: 0.75rem; color: var(--text-muted); }
+
+        .stt-view-toggle {
+            display: inline-flex;
+            gap: 0.35rem;
+            margin-bottom: 0.75rem;
+        }
+
+        .stt-view-btn {
+            padding: 0.38rem 0.7rem;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            background: var(--bg-tertiary);
+            color: var(--text-muted);
+            font-size: 0.75rem;
+            cursor: pointer;
+            transition: all var(--transition);
+        }
+
+        .stt-view-btn:hover {
+            border-color: var(--border-hover);
+            color: var(--text-primary);
+        }
+
+        .stt-view-btn.active {
+            border-color: var(--accent);
+            color: var(--accent);
+            background: color-mix(in srgb, var(--accent) 12%, var(--bg-tertiary));
+        }
 
         .result-actions { display: flex; gap: 0.5rem; margin-bottom: 0.75rem; }
 
         .result-content {
             background: var(--bg-secondary);
+            color: var(--text-primary);
             border: 1px solid var(--border);
             border-radius: var(--radius);
+            box-sizing: border-box;
             padding: 1rem;
             font-family: var(--font-mono);
             font-size: 0.8125rem;
             line-height: 1.7;
             white-space: pre-wrap;
-            max-height: 400px;
+            min-height: 300px;
+            width: 100%;
+            resize: none;
+            outline: none;
+            appearance: none;
             overflow-y: auto;
+        }
+
+        .result-content:focus { border-color: var(--accent); }
+
+        .stt-resize-handle {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 18px;
+            margin-top: 0.25rem;
+            color: var(--text-muted);
+            cursor: ns-resize;
+            touch-action: none;
+            user-select: none;
+        }
+
+        .stt-resize-handle::before {
+            content: '';
+            width: 56px;
+            height: 4px;
+            border-radius: 999px;
+            background: var(--border);
+            transition: background var(--transition);
+        }
+
+        .stt-resize-handle:hover::before,
+        .stt-resize-handle.active::before {
+            background: var(--accent);
+        }
+
+        body.stt-resizing,
+        body.stt-resizing * {
+            cursor: ns-resize !important;
+            user-select: none !important;
         }
 
         .result-content::-webkit-scrollbar { width: 6px; }
@@ -340,29 +747,81 @@
             .tabs { width: 100%; }
             .tab { flex: 1; text-align: center; }
             .dropzone { padding: 2rem 1rem; }
+            .locale-picker { width: 150px; }
         }
     </style>
 </head>
 <body>
     <header class="header">
-        <div class="brand">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
-                <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-                <line x1="12" x2="12" y1="19" y2="22"/>
-            </svg>
-            Resonance
+        <div class="header-left">
+            <button class="menu-btn" id="jobsMenuBtn" type="button" data-i18n="jobsOpenAria" data-i18n-attr="aria-label" aria-label="Open jobs list">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                    <line x1="3" y1="6" x2="21" y2="6"></line>
+                    <line x1="3" y1="12" x2="21" y2="12"></line>
+                    <line x1="3" y1="18" x2="21" y2="18"></line>
+                </svg>
+            </button>
         </div>
-        <div class="status">
-            <span class="status-dot" id="statusDot"></span>
-            <span id="statusText">Connecting...</span>
+        <div class="header-center">
+            <div class="brand">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
+                    <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                    <line x1="12" x2="12" y1="19" y2="22"/>
+                </svg>
+                Resonance
+            </div>
+        </div>
+        <div class="header-right">
+            <div class="locale-picker" id="localePicker">
+                <input
+                    class="locale-picker-input"
+                    id="localeInput"
+                    type="text"
+                    autocomplete="off"
+                    spellcheck="false"
+                    role="combobox"
+                    aria-expanded="false"
+                    aria-autocomplete="list"
+                    aria-controls="localeListbox"
+                    data-i18n="ariaLangGroup"
+                    data-i18n-attr="aria-label"
+                    aria-label="Interface language"
+                >
+                <svg class="locale-picker-caret" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                    <polyline points="6 9 12 15 18 9"></polyline>
+                </svg>
+                <div class="locale-picker-list" id="localeListbox" role="listbox"></div>
+            </div>
         </div>
     </header>
 
+    <aside class="jobs-drawer" id="jobsDrawer" aria-hidden="true">
+        <div class="jobs-drawer-header">
+            <span class="jobs-drawer-title" data-i18n="jobsDrawerTitle">Jobs</span>
+            <button class="menu-btn" id="jobsDrawerClose" type="button" data-i18n="jobsCloseAria" data-i18n-attr="aria-label" aria-label="Close jobs list">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+            </button>
+        </div>
+        <div class="jobs-drawer-scroll" id="jobsDrawerScroll">
+            <div id="jobsListState" data-i18n="jobsEmpty">No jobs yet.</div>
+            <div id="jobsList" style="display: none;"></div>
+            <div id="jobsFooter" class="jobs-footer" style="display: none;">
+                <div id="jobsLoadMoreState" style="display: none;" data-i18n="jobsLoadingMore">Loading more…</div>
+                <div id="jobsListEnd" style="display: none;" data-i18n="jobsListEnd">All jobs shown.</div>
+            </div>
+            <div id="jobsListSentinel" class="jobs-list-sentinel" aria-hidden="true"></div>
+        </div>
+    </aside>
+    <div class="jobs-drawer-backdrop" id="jobsDrawerBackdrop"></div>
+
     <main class="main">
         <nav class="tabs" role="tablist">
-            <button class="tab" role="tab" data-tab="stt" aria-selected="false">Speech to Text</button>
-            <button class="tab" role="tab" data-tab="tts" aria-selected="false">Text to Speech</button>
+            <button class="tab" role="tab" data-tab="stt" aria-selected="false" data-i18n="tabStt">Speech to Text</button>
+            <button class="tab" role="tab" data-tab="tts" aria-selected="false" data-i18n="tabTts">Text to Speech</button>
         </nav>
 
         <!-- STT Panel -->
@@ -373,8 +832,8 @@
                     <polyline points="17 8 12 3 7 8"/>
                     <line x1="12" x2="12" y1="3" y2="15"/>
                 </svg>
-                <div class="dropzone-text">Drop audio file or click to browse</div>
-                <div class="dropzone-hint">Loading configuration...</div>
+                <div class="dropzone-text" data-i18n="sttDropzoneText">Drop audio file or click to browse</div>
+                <div class="dropzone-hint" id="sttDropzoneHint" data-i18n="configLoading">Loading configuration...</div>
 
                 <div class="progress" id="sttProgress">
                     <div class="progress-bar">
@@ -388,25 +847,52 @@
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                             <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
                         </svg>
-                        Stop
+                        <span data-i18n="btnStop">Stop</span>
                     </button>
                     <button class="cancel-btn" id="sttCancel">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                             <line x1="18" y1="6" x2="6" y2="18"/>
                             <line x1="6" y1="6" x2="18" y2="18"/>
                         </svg>
-                        Cancel
+                        <span data-i18n="btnCancel">Cancel</span>
                     </button>
                 </div>
             </div>
             <input type="file" id="sttFileInput" accept="audio/*,video/*">
 
+            <div class="mic-box" id="sttMicBox">
+                <div class="mic-header">
+                    <span class="mic-title" data-i18n="sttMicTitle">Microphone</span>
+                    <span class="mic-timer">
+                        <span class="mic-timer-dot"></span>
+                        <span id="sttMicTimer">0:00</span>
+                    </span>
+                </div>
+                <div class="mic-hint" id="sttMicHint" data-mic-hint-key="sttMicHintIdle" data-i18n="sttMicHintIdle">Record speech from your microphone</div>
+                <div class="mic-actions">
+                    <button class="btn btn-secondary" id="sttMicStart" type="button" data-i18n="sttMicStart">Start recording</button>
+                    <button class="btn btn-secondary" id="sttMicStop" type="button" style="display: none;" data-i18n="sttMicStop">Stop</button>
+                    <button class="btn btn-primary" id="sttMicSend" type="button" style="display: none;" data-i18n="sttMicSend">Send recording</button>
+                    <button class="btn btn-secondary" id="sttMicDiscard" type="button" style="display: none;" data-i18n="sttMicDiscard">Discard</button>
+                </div>
+                <div class="mic-preview" id="sttMicPreview">
+                    <audio id="sttMicAudio" controls preload="metadata"></audio>
+                </div>
+            </div>
+
             <div class="error" id="sttError"></div>
 
             <div class="result" id="sttResult">
                 <div class="result-header">
-                    <span class="result-title">Transcription</span>
-                    <span class="result-meta" id="sttMeta"></span>
+                    <span class="result-title" data-i18n="resultTitleTranscription">Transcription</span>
+                    <div class="result-meta-stack">
+                        <span class="result-meta" id="sttMeta"></span>
+                        <span class="result-meta-sub" id="sttTimeRanges"></span>
+                    </div>
+                </div>
+                <div class="stt-view-toggle" role="group" aria-label="STT transcript view">
+                    <button class="stt-view-btn active" id="sttViewBlocks" type="button" data-i18n="sttViewBlocks">Blocks</button>
+                    <button class="stt-view-btn" id="sttViewContinuous" type="button" data-i18n="sttViewContinuous">Continuous</button>
                 </div>
                 <div class="result-actions">
                     <button class="btn btn-secondary" id="sttCopy">
@@ -414,7 +900,7 @@
                             <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
                             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
                         </svg>
-                        Copy
+                        <span data-i18n="btnCopy">Copy</span>
                     </button>
                     <button class="btn btn-secondary" id="sttDownload">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -422,10 +908,11 @@
                             <polyline points="7 10 12 15 17 10"/>
                             <line x1="12" x2="12" y1="15" y2="3"/>
                         </svg>
-                        Download
+                        <span data-i18n="btnDownload">Download</span>
                     </button>
                 </div>
-                <div class="result-content" id="sttResultText"></div>
+                <textarea class="result-content" id="sttResultText" readonly spellcheck="false"></textarea>
+                <div class="stt-resize-handle" id="sttResizeHandle" aria-label="Resize transcription panel" role="separator"></div>
             </div>
         </section>
 
@@ -439,15 +926,17 @@
                     <line x1="12" y1="18" x2="12" y2="12"/>
                     <line x1="9" y1="15" x2="15" y2="15"/>
                 </svg>
-                <span class="dropzone-text">Drop text file or click to browse</span>
-                <span class="dropzone-hint">Any text — any size</span>
+                <span class="dropzone-text" data-i18n="ttsDropzoneText">Drop text file or click to browse</span>
+                <span class="dropzone-hint" data-i18n="ttsDropzoneHint">Any text — any size</span>
             </div>
 
             <div class="text-input-wrapper">
                 <textarea
                     class="text-input"
                     id="ttsInput"
-                    placeholder="Enter text to synthesize... (up to 50000 characters)"
+                    data-i18n="ttsPlaceholder"
+                    data-i18n-attr="placeholder"
+                    placeholder="Enter text to synthesize..."
                 ></textarea>
             </div>
 
@@ -460,7 +949,7 @@
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <polygon points="5 3 19 12 5 21 5 3"/>
                 </svg>
-                Synthesize
+                <span data-i18n="btnSynthesize">Synthesize</span>
             </button>
 
             <div class="progress" id="ttsProgress" style="margin-top: 1rem;">
@@ -473,7 +962,7 @@
                         <line x1="18" y1="6" x2="6" y2="18"/>
                         <line x1="6" y1="6" x2="18" y2="18"/>
                     </svg>
-                    Cancel
+                    <span data-i18n="btnCancel">Cancel</span>
                 </button>
             </div>
 
@@ -481,7 +970,7 @@
 
             <div class="result" id="ttsResult">
                 <div class="result-header">
-                    <span class="result-title">Synthesized Audio</span>
+                    <span class="result-title" data-i18n="resultTitleSynth">Synthesized Audio</span>
                     <span class="result-meta" id="ttsMeta"></span>
                 </div>
                 <div class="audio-player">
@@ -493,29 +982,619 @@
                         <polyline points="7 10 12 15 17 10"/>
                         <line x1="12" x2="12" y1="15" y2="3"/>
                     </svg>
-                    Download WAV
+                    <span data-i18n="btnDownloadWav">Download WAV</span>
                 </button>
             </div>
         </section>
     </main>
 
+    <script src="/locales/index.js"></script>
     <script>
         const API_URL = '/api';
+        const JOBS_PAGE_SIZE = 60;
+        const LOCALE_STORAGE_KEY = 'resonance_locale';
+        const LOCALE_MANIFEST = window.__resonanceLocaleManifest || {};
+        const DEFAULT_LOCALE = LOCALE_MANIFEST.defaultLocale || 'en';
+        const AVAILABLE_LOCALES = Array.isArray(LOCALE_MANIFEST.locales) && LOCALE_MANIFEST.locales.length
+            ? LOCALE_MANIFEST.locales
+            : [{ code: DEFAULT_LOCALE, label: DEFAULT_LOCALE.toUpperCase() }];
+
+        /** English DOM text stays in HTML for SEO/static fallback. JS-only English strings stay here. */
+        const I18N_EN_SCRIPT = {
+            hintSttMedia: 'Any media — {limit}',
+            hintLimitMb: 'up to {mb} MB',
+            hintAnySize: 'any size',
+            progressUploading: 'Uploading…',
+            progressProcessing: 'Processing…',
+            progressComplete: 'Complete',
+            progressChunk: 'Chunk {current} / {total}',
+            progressStarting: 'Starting…',
+            errNetwork: 'Network error',
+            errPleaseEnterText: 'Please enter text',
+            ttsPlaceholderLimited: 'Enter text to synthesize... (up to {limit} characters)',
+            ttsPlaceholderUnlimited: 'Enter text to synthesize...',
+            errTextTooLong: 'Text too long',
+            errUploadFailed: 'Upload failed',
+            errNoResponseBody: 'No response body',
+            errRequestFailed: 'Request failed',
+            errProcessingFailed: 'Processing failed',
+            toastCopied: 'Copied to clipboard',
+            toastCopyFailed: 'Copy failed',
+            toastReadFailed: 'Failed to read file',
+            localeSearchEmpty: 'No matching languages',
+            charUnit: 'chars',
+            defaultTranscriptionFile: 'transcription',
+            sttMicHintIdle: 'Record speech from your microphone',
+            sttMicHintRecording: 'Recording… press Stop when finished',
+            sttMicHintReady: 'Recording is ready to send',
+            errMicUnsupported: 'Microphone recording is not supported in this browser',
+            errMicPermission: 'Microphone access was denied',
+            errMicEmpty: 'Recorded audio is empty',
+            jobsLoading: 'Loading jobs…',
+            jobsLoadError: 'Failed to load jobs list.',
+            jobsTypeStt: 'Speech to Text',
+            jobsTypeTts: 'Text to Speech',
+            jobsStateQueued: 'Queued',
+            jobsStateRunning: 'Running',
+            jobsStateCompleted: 'Completed',
+            jobsStateFailed: 'Failed',
+            jobsStateCancelled: 'Cancelled',
+        };
+
+        const I18N_LOCALES = window.__resonanceLocales || {};
+        const LOCALE_LOAD_PROMISES = {};
+        const EN_FROM_DOM = {};
+        const DEFAULT_LOCALE_HELPERS = {
+            formatCount(value) {
+                return Number(value || 0).toLocaleString('en-US');
+            },
+            formatSttMeta(n) {
+                return n + ' ' + (n === 1 ? 'segment' : 'segments');
+            },
+            formatSttProcessedTextDuration(seconds) {
+                return seconds.toFixed(1) + 's';
+            },
+            formatSttProcessedTextLabel(durationText) {
+                return 'Processed text: ' + durationText;
+            },
+            formatTtsCharLine(len, maxChars, t) {
+                const chunkN = len === 0 ? 0 : Math.ceil(len / maxChars);
+                return len + ' ' + t('charUnit') + ' · ' + chunkN + ' ' + (chunkN === 1 ? 'chunk' : 'chunks');
+            },
+            formatTtsMeta(chunks, durationSec) {
+                return chunks + ' ' + (chunks === 1 ? 'chunk' : 'chunks') + ' · ' + Number(durationSec).toFixed(1) + 's';
+            },
+            formatTtsInputTooLongMessage(inputLimit, formatCount) {
+                return 'Text too long (max ' + formatCount(inputLimit) + ' characters)';
+            },
+            formatMicDuration(seconds) {
+                if (!Number.isFinite(seconds) || seconds <= 0) return null;
+                const total = Math.max(1, Math.round(seconds));
+                const mins = Math.floor(total / 60);
+                const secs = total % 60;
+                if (mins > 0) {
+                    return String(mins) + ':' + String(secs).padStart(2, '0');
+                }
+                return String(secs) + 's';
+            },
+            formatDateTime(date) {
+                return date.toLocaleString('en-US');
+            }
+        };
+        const DEFAULT_SPEAKER_NAMES = {
+            ru_alexandr: 'Alexandr (Male)',
+            ru_alfia: 'Alfia (Female)',
+            ru_alfia2: 'Alfia 2 (Female)',
+            ru_bogdan: 'Bogdan (Male)',
+            ru_dmitriy: 'Dmitriy (Male)',
+            ru_ekaterina: 'Ekaterina (Female)',
+            ru_vika: 'Vika (Female)',
+            ru_gamat: 'Gamat (Male)',
+            ru_igor: 'Igor (Male)',
+            ru_karina: 'Karina (Female)',
+            ru_kejilgan: 'Kejilgan (Male)',
+            ru_kermen: 'Kermen (Female)',
+            ru_marat: 'Marat (Male)',
+            ru_miyau: 'Miyau (Female)',
+            ru_nurgul: 'Nurgul (Female)',
+            ru_oksana: 'Oksana (Female)',
+            ru_onaoy: 'Onaoy (Male)',
+            ru_ramilia: 'Ramilia (Female)',
+            ru_roman: 'Roman (Male) ★',
+            ru_safarhuja: 'Safarhuja (Male)',
+            ru_saida: 'Saia (Female)',
+            ru_sibday: 'Sibday (Male)',
+            ru_zara: 'Zara (Female)',
+            ru_zhadyra: 'Zhadyra (Female) ★',
+            ru_zhazira: 'Zhazira (Female)',
+            ru_zinaida: 'Zinaida (Female)',
+            ru_eduard: 'Eduard (Male)'
+        };
+
+        function captureEnDefaultsFromDom() {
+            document.querySelectorAll('[data-i18n]').forEach((el) => {
+                const key = el.getAttribute('data-i18n');
+                const attr = el.getAttribute('data-i18n-attr');
+                const val = attr ? (el.getAttribute(attr) || '') : (el.textContent || '').trim();
+                EN_FROM_DOM[key] = val;
+            });
+        }
+
+        function canonicalizeLocale(loc) {
+            try {
+                const list = Intl.getCanonicalLocales(String(loc || '').trim());
+                return list && list.length ? list[0] : null;
+            } catch (e) {
+                return null;
+            }
+        }
+
+        function findLocaleCode(loc) {
+            const canonical = canonicalizeLocale(loc);
+            if (!canonical) return null;
+            for (const item of AVAILABLE_LOCALES) {
+                if (item.code === canonical) return item.code;
+            }
+            const base = canonical.split('-')[0];
+            for (const item of AVAILABLE_LOCALES) {
+                if (item.code === base) return item.code;
+            }
+            return null;
+        }
+
+        function getLocale() {
+            if (typeof window.__resonanceResolveLocale === 'function') {
+                return window.__resonanceResolveLocale();
+            }
+            try {
+                const s = localStorage.getItem(LOCALE_STORAGE_KEY);
+                const stored = findLocaleCode(s);
+                if (stored) return stored;
+            } catch (e) {}
+            const list = navigator.languages || [navigator.language || ''];
+            for (const raw of list) {
+                const matched = findLocaleCode(raw);
+                if (matched) return matched;
+            }
+            return DEFAULT_LOCALE;
+        }
+
+        function getLocaleConfig(loc) {
+            const code = findLocaleCode(loc);
+            if (!code) return null;
+            return AVAILABLE_LOCALES.find((item) => item.code === code) || null;
+        }
+
+        function isLocaleAvailable(loc) {
+            return Boolean(getLocaleConfig(loc));
+        }
+
+        function isLocaleLoaded(loc) {
+            return loc === DEFAULT_LOCALE || Object.prototype.hasOwnProperty.call(I18N_LOCALES, loc);
+        }
+
+        function ensureLocaleLoaded(loc) {
+            if (!isLocaleAvailable(loc)) {
+                return Promise.reject(new Error('Unknown locale: ' + loc));
+            }
+            if (isLocaleLoaded(loc)) {
+                return Promise.resolve();
+            }
+            if (LOCALE_LOAD_PROMISES[loc]) {
+                return LOCALE_LOAD_PROMISES[loc];
+            }
+
+            const cfg = getLocaleConfig(loc);
+            if (!cfg || !cfg.src) {
+                return Promise.reject(new Error('Locale has no source: ' + loc));
+            }
+
+            LOCALE_LOAD_PROMISES[loc] = new Promise((resolve, reject) => {
+                const script = document.createElement('script');
+                script.src = cfg.src;
+                script.async = true;
+                script.onload = () => {
+                    if (isLocaleLoaded(loc)) resolve();
+                    else reject(new Error('Locale did not register: ' + loc));
+                };
+                script.onerror = () => reject(new Error('Failed to load locale: ' + loc));
+                document.head.appendChild(script);
+            }).catch((err) => {
+                delete LOCALE_LOAD_PROMISES[loc];
+                throw err;
+            });
+
+            return LOCALE_LOAD_PROMISES[loc];
+        }
+
+        function getLocaleMessages(loc) {
+            if (loc === DEFAULT_LOCALE) return null;
+            const entry = I18N_LOCALES[loc] || null;
+            return entry ? (entry.messages || {}) : null;
+        }
+
+        function getLocaleHelpers(loc) {
+            if (loc === DEFAULT_LOCALE) return DEFAULT_LOCALE_HELPERS;
+            const entry = I18N_LOCALES[loc] || null;
+            if (!entry || !entry.helpers) return DEFAULT_LOCALE_HELPERS;
+            return { ...DEFAULT_LOCALE_HELPERS, ...entry.helpers };
+        }
+
+        function getLocaleSpeakerNames(loc) {
+            if (loc === DEFAULT_LOCALE) return DEFAULT_SPEAKER_NAMES;
+            const entry = I18N_LOCALES[loc] || null;
+            if (!entry || !entry.speakerNames) return DEFAULT_SPEAKER_NAMES;
+            return { ...DEFAULT_SPEAKER_NAMES, ...entry.speakerNames };
+        }
+
+        const initialLocale = getLocale();
+        let currentLocale = DEFAULT_LOCALE;
+        document.documentElement.lang = currentLocale;
+
+        async function setLocale(loc, options = {}) {
+            if (!isLocaleAvailable(loc)) return false;
+            if (loc !== DEFAULT_LOCALE) {
+                try {
+                    await ensureLocaleLoaded(loc);
+                } catch (err) {
+                    console.error('Locale load error:', err);
+                    return false;
+                }
+            }
+            currentLocale = loc;
+            if (options.persist !== false) {
+                localStorage.setItem(LOCALE_STORAGE_KEY, loc);
+            }
+            document.documentElement.lang = loc;
+            applyI18n();
+            return true;
+        }
+
+        function t(key, params) {
+            const en = EN_FROM_DOM[key] ?? I18N_EN_SCRIPT[key];
+            const active = getLocaleMessages(currentLocale);
+            let str = active ? (active[key] ?? en ?? key) : (en ?? key);
+            if (params) {
+                for (const [k, v] of Object.entries(params)) {
+                    str = str.split('{' + k + '}').join(String(v));
+                }
+            }
+            return str;
+        }
+
+        function formatSttMeta(n) {
+            return getLocaleHelpers(currentLocale).formatSttMeta(n);
+        }
+
+        function formatSttBlockTime(startSec, endSec) {
+            const formatPart = (totalSec) => {
+                const safe = Math.max(0, Math.floor(totalSec));
+                const hours = Math.floor(safe / 3600);
+                const minutes = Math.floor((safe % 3600) / 60);
+                const seconds = safe % 60;
+                if (hours > 0) {
+                    return String(hours) + ':' + String(minutes).padStart(2, '0') + ':' + String(seconds).padStart(2, '0');
+                }
+                return String(minutes).padStart(2, '0') + ':' + String(seconds).padStart(2, '0');
+            };
+            return formatPart(startSec) + '-' + formatPart(endSec);
+        }
+
+        function formatSttProcessedTextDuration(seconds) {
+            return getLocaleHelpers(currentLocale).formatSttProcessedTextDuration(seconds);
+        }
+
+        function formatSttProcessedTextLabel(durationText) {
+            return getLocaleHelpers(currentLocale).formatSttProcessedTextLabel(durationText);
+        }
+
+        /** Merge overlapping chunk transcripts for display; keep in sync with tests/test_stt_merge.py */
+        function mergeTwoSttStrings(a, b) {
+            const aTrim = (a || '').trim();
+            const bTrim = (b || '').trim();
+            if (!bTrim) return aTrim;
+            if (!aTrim) return bTrim;
+            const maxK = Math.min(aTrim.length, bTrim.length, 1200);
+            for (let k = maxK; k >= 1; k--) {
+                if (aTrim.slice(-k) === bTrim.slice(0, k)) {
+                    return aTrim + bTrim.slice(k);
+                }
+            }
+            const wa = aTrim.split(/\s+/).filter(Boolean);
+            const wb = bTrim.split(/\s+/).filter(Boolean);
+            const maxW = Math.min(wa.length, wb.length, 48);
+            for (let kw = maxW; kw >= 1; kw--) {
+                let match = true;
+                for (let j = 0; j < kw; j++) {
+                    if (wa[wa.length - kw + j] !== wb[j]) {
+                        match = false;
+                        break;
+                    }
+                }
+                if (match) {
+                    return wa.concat(wb.slice(kw)).join(' ');
+                }
+            }
+            return aTrim + ' ' + bTrim;
+        }
+
+        function mergeAdjacentSttTexts(segments) {
+            if (!segments.length) return '';
+            let out = String(segments[0].text != null ? segments[0].text : '').trim();
+            for (let i = 1; i < segments.length; i++) {
+                const next = String(segments[i].text != null ? segments[i].text : '').trim();
+                out = mergeTwoSttStrings(out, next);
+            }
+            return out;
+        }
+
+        /** Merge overlapping/adjacent segment coverage for display; keep in sync with tests/test_stt_merge.py */
+        function mergeSttTimeRanges(segments) {
+            const ranges = segments
+                .filter((segment) => segment && Number.isFinite(segment.start) && Number.isFinite(segment.end))
+                .map((segment) => ({
+                    start: Math.min(segment.start, segment.end),
+                    end: Math.max(segment.start, segment.end)
+                }))
+                .sort((a, b) => a.start - b.start || a.end - b.end);
+            if (!ranges.length) return [];
+            const out = [ranges[0]];
+            for (let i = 1; i < ranges.length; i++) {
+                const next = ranges[i];
+                const last = out[out.length - 1];
+                if (next.start <= last.end) {
+                    last.end = Math.max(last.end, next.end);
+                    continue;
+                }
+                out.push(next);
+            }
+            return out;
+        }
+
+        function buildSttTimeRangesText(segments) {
+            const ranges = mergeSttTimeRanges(segments);
+            if (!ranges.length) return '';
+            const durationSec = ranges[ranges.length - 1].end;
+            return formatSttProcessedTextLabel(formatSttProcessedTextDuration(durationSec));
+        }
+
+        function buildSttBlocks(segments, blockSec = 30) {
+            if (!(blockSec > 0)) {
+                throw new Error('blockSec must be positive');
+            }
+            const totalDuration = processedSttTextDuration(segments);
+            if (!(totalDuration > 0)) return [];
+
+            const blocks = new Map();
+            let transcript = '';
+            for (const segment of segments) {
+                const segmentText = String(segment && segment.text != null ? segment.text : '').trim();
+                if (!segmentText) continue;
+                const merged = mergeTwoSttStrings(transcript, segmentText);
+                const delta = merged.startsWith(transcript) ? merged.slice(transcript.length).trim() : '';
+                transcript = merged;
+                if (!delta) continue;
+                const midpoint = (Number(segment.start) + Number(segment.end)) / 2;
+                const index = Math.floor(midpoint / blockSec);
+                if (!blocks.has(index)) {
+                    const start = index * blockSec;
+                    blocks.set(index, {
+                        start,
+                        end: Math.min((index + 1) * blockSec, totalDuration),
+                        text: ''
+                    });
+                }
+                const block = blocks.get(index);
+                block.text = (block.text + ' ' + delta).trim();
+            }
+
+            return Array.from(blocks.entries())
+                .sort((a, b) => a[0] - b[0])
+                .map(([, block]) => block)
+                .filter((block) => block.text);
+        }
+
+        function buildSttBlocksText(segments) {
+            return buildSttBlocks(segments)
+                .map((block) => '[' + formatSttBlockTime(block.start, block.end) + '] ' + block.text)
+                .join('\n\n');
+        }
+
+        function processedSttTextDuration(segments) {
+            const ranges = mergeSttTimeRanges(segments);
+            return ranges.length ? ranges[ranges.length - 1].end : 0;
+        }
+
+        function getSttContinuousText() {
+            const segs = state.stt.segments;
+            return segs && segs.length ? mergeAdjacentSttTexts(segs) : '';
+        }
+
+        function getSttBlocksText() {
+            const segs = state.stt.segments;
+            return segs && segs.length ? buildSttBlocksText(segs) : '';
+        }
+
+        function getActiveSttViewMode() {
+            return els.sttViewContinuous.classList.contains('active') ? 'continuous' : 'blocks';
+        }
+
+        function getSttCopyText() {
+            return getActiveSttViewMode() === 'blocks' ? getSttBlocksText() : getSttContinuousText();
+        }
+
+        function setSttViewMode(mode) {
+            const nextMode = mode === 'continuous' ? 'continuous' : 'blocks';
+            els.sttViewBlocks.classList.toggle('active', nextMode === 'blocks');
+            els.sttViewContinuous.classList.toggle('active', nextMode === 'continuous');
+            els.sttViewBlocks.setAttribute('aria-pressed', nextMode === 'blocks' ? 'true' : 'false');
+            els.sttViewContinuous.setAttribute('aria-pressed', nextMode === 'continuous' ? 'true' : 'false');
+            localStorage.setItem('resonance_stt_view_mode', nextMode);
+        }
+
+        function formatTtsCharLine(len) {
+            const maxChars = CONFIG.tts_max_chars || 600;
+            return getLocaleHelpers(currentLocale).formatTtsCharLine(len, maxChars, t);
+        }
+
+        function formatTtsMeta(chunks, durationSec) {
+            return getLocaleHelpers(currentLocale).formatTtsMeta(chunks, durationSec);
+        }
+
+        function getLocaleDisplayValue(locale) {
+            return locale ? locale.code.toUpperCase() : '';
+        }
+
+        function formatLocaleOptionText(locale) {
+            return [locale.code, locale.label, locale.nativeLabel].filter(Boolean).join(' ');
+        }
+
+        function getFilteredLocales() {
+            const raw = state.localeSearchTerm.trim().toLowerCase();
+            if (!raw) return AVAILABLE_LOCALES.slice();
+            return AVAILABLE_LOCALES.filter((locale) =>
+                formatLocaleOptionText(locale).toLowerCase().includes(raw)
+            );
+        }
+
+        function getInitialLocaleHighlightIndex(filtered) {
+            if (!filtered.length) return -1;
+            const currentIdx = filtered.findIndex((locale) => locale.code === currentLocale);
+            return currentIdx >= 0 ? currentIdx : 0;
+        }
+
+        function syncLocaleActivedescendant() {
+            if (!els.localeInput) return;
+            if (state.localeHighlightIndex < 0) {
+                els.localeInput.removeAttribute('aria-activedescendant');
+                return;
+            }
+            const option = els.localeListbox.querySelector(`.locale-option[data-index="${state.localeHighlightIndex}"]`);
+            if (!option || !option.id) {
+                els.localeInput.removeAttribute('aria-activedescendant');
+                return;
+            }
+            els.localeInput.setAttribute('aria-activedescendant', option.id);
+        }
+
+        function highlightLocaleOption(index, scrollIntoView = false) {
+            state.localeHighlightIndex = index;
+            els.localeListbox.querySelectorAll('.locale-option').forEach((option) => {
+                const isActive = Number(option.dataset.index) === index;
+                option.classList.toggle('active', isActive);
+            });
+            syncLocaleActivedescendant();
+            if (!scrollIntoView || index < 0) return;
+            const active = els.localeListbox.querySelector(`.locale-option[data-index="${index}"]`);
+            if (active) active.scrollIntoView({ block: 'nearest' });
+        }
+
+        function openLocalePicker() {
+            els.localePicker.classList.add('open');
+            els.localeInput.setAttribute('aria-expanded', 'true');
+            renderLocaleOptions();
+        }
+
+        function closeLocalePicker(restoreValue = true) {
+            els.localePicker.classList.remove('open');
+            els.localeInput.setAttribute('aria-expanded', 'false');
+            state.localeSearchTerm = '';
+            state.localeHighlightIndex = -1;
+            syncLocaleActivedescendant();
+            if (restoreValue) {
+                const locale = getLocaleConfig(currentLocale);
+                els.localeInput.value = getLocaleDisplayValue(locale);
+            }
+        }
+
+        function renderLocaleOptions() {
+            const filtered = getFilteredLocales();
+            els.localeListbox.innerHTML = '';
+            if (!filtered.length) {
+                state.localeHighlightIndex = -1;
+                syncLocaleActivedescendant();
+                const empty = document.createElement('div');
+                empty.className = 'locale-picker-empty';
+                empty.textContent = t('localeSearchEmpty');
+                els.localeListbox.appendChild(empty);
+                return;
+            }
+
+            if (state.localeHighlightIndex < 0 || state.localeHighlightIndex >= filtered.length) {
+                state.localeHighlightIndex = getInitialLocaleHighlightIndex(filtered);
+            }
+
+            filtered.forEach((locale, index) => {
+                const option = document.createElement('button');
+                option.type = 'button';
+                option.className = 'locale-option';
+                option.id = 'locale-option-' + locale.code;
+                option.dataset.index = String(index);
+                if (locale.code === currentLocale) option.classList.add('selected');
+                if (index === state.localeHighlightIndex) option.classList.add('active');
+                option.dataset.locale = locale.code;
+                option.setAttribute('role', 'option');
+                option.setAttribute('aria-selected', locale.code === currentLocale ? 'true' : 'false');
+                option.innerHTML = `
+                    <span class="locale-option-code">${locale.code.toUpperCase()}</span>
+                    <span class="locale-option-label">
+                        <span class="locale-option-name">${locale.label}</span>
+                        <span class="locale-option-native">${locale.nativeLabel || locale.label}</span>
+                    </span>
+                `;
+                els.localeListbox.appendChild(option);
+            });
+            syncLocaleActivedescendant();
+        }
+
+        async function commitLocaleSelection(loc) {
+            const ok = await setLocale(loc);
+            const locale = getLocaleConfig(ok ? loc : currentLocale);
+            els.localeInput.value = getLocaleDisplayValue(locale);
+            closeLocalePicker(false);
+            return ok;
+        }
 
         const savedTab = localStorage.getItem('resonance_activeTab');
+        const TTS_SPEAKER_KEY = 'resonance_ttsSpeaker';
+        const TTS_TEXT_STORAGE_KEY = 'resonance_ttsText';
+        const TTS_DRAFT_STORAGE_MAX_CHARS = 100000;
+        const STT_ACTIVE_JOB_KEY = 'resonance_stt_active_job_id';
+        const TTS_ACTIVE_JOB_KEY = 'resonance_tts_active_job_id';
 
         let CONFIG = {};
 
-        let globalJobId = 0;
         const state = {
-            stt: { abortController: null, jobId: 0, reader: null },
-            tts: { abortController: null, jobId: 0, reader: null },
+            stt: {
+                eventSource: null,
+                jobId: null,
+                segments: null,
+                statusPollTimer: null,
+                resize: {
+                    active: false,
+                    pointerId: null,
+                    startHeight: 0,
+                    startPageY: 0,
+                    lastClientY: 0,
+                    autoScrollRaf: null
+                }
+            },
+            tts: { eventSource: null, jobId: null, statusPollTimer: null },
+            jobsList: [],
+            jobsListStateKey: 'jobsEmpty',
+            jobsNextOffset: 0,
+            jobsHasMore: false,
+            jobsLoadingMore: false,
+            jobsLoadingInitial: false,
+            jobsInfiniteObserver: null,
+            localeSearchTerm: '',
+            localeHighlightIndex: -1,
             activeTab: savedTab || 'stt'
         };
 
         async function loadConfig() {
             try {
-                const res = await fetch(`${API_URL}/config`);
+                const res = await fetch(API_URL + '/config');
                 if (res.ok) {
                     CONFIG = { ...CONFIG, ...await res.json() };
                     applyConfig();
@@ -525,52 +1604,69 @@
             }
         }
 
+        function getTtsInputLimit() {
+            const raw = Number(CONFIG.tts_max_input_chars || 0);
+            if (!Number.isFinite(raw) || raw <= 0) {
+                return 0;
+            }
+            return Math.floor(raw);
+        }
+
+        function formatCount(value) {
+            return getLocaleHelpers(currentLocale).formatCount(value);
+        }
+
+        function formatTtsInputPlaceholder() {
+            const inputLimit = getTtsInputLimit();
+            if (inputLimit > 0) {
+                return t('ttsPlaceholderLimited', { limit: formatCount(inputLimit) });
+            }
+            return t('ttsPlaceholderUnlimited');
+        }
+
+        function formatTtsInputTooLongMessage() {
+            const inputLimit = getTtsInputLimit();
+            if (inputLimit > 0) {
+                return getLocaleHelpers(currentLocale).formatTtsInputTooLongMessage(inputLimit, formatCount, t);
+            }
+            return t('errTextTooLong');
+        }
+
+        function syncTtsDraftStorage() {
+            const txt = els.ttsInput.value;
+            try {
+                if (!txt || txt.length > TTS_DRAFT_STORAGE_MAX_CHARS) {
+                    localStorage.removeItem(TTS_TEXT_STORAGE_KEY);
+                    return;
+                }
+                localStorage.setItem(TTS_TEXT_STORAGE_KEY, txt);
+            } catch (e) {
+                try {
+                    localStorage.removeItem(TTS_TEXT_STORAGE_KEY);
+                } catch {
+                }
+            }
+        }
+
         function applyConfig() {
-            const hint = document.querySelector('.dropzone-hint');
+            const hint = document.getElementById('sttDropzoneHint');
             if (hint) {
                 const limitText = CONFIG.upload_limit_mb > 0
-                    ? `up to ${CONFIG.upload_limit_mb}MB`
-                    : 'any size';
-                hint.textContent = `Any media — ${limitText}`;
+                    ? t('hintLimitMb', { mb: CONFIG.upload_limit_mb })
+                    : t('hintAnySize');
+                hint.textContent = t('hintSttMedia', { limit: limitText });
             }
 
             const speakerSelect = document.getElementById('ttsSpeaker');
             if (speakerSelect && CONFIG.tts_speakers && CONFIG.tts_speakers.length > 0) {
-                const currentValue = speakerSelect.value;
+                const savedSpeaker = localStorage.getItem(TTS_SPEAKER_KEY);
+                const currentValue = savedSpeaker || speakerSelect.value;
+                const names = getLocaleSpeakerNames(currentLocale);
                 speakerSelect.innerHTML = '';
-                const speakerNames = {
-                    'ru_alexandr': 'Alexandr (Male)',
-                    'ru_alfia': 'Alfia (Female)',
-                    'ru_alfia2': 'Alfia 2 (Female)',
-                    'ru_bogdan': 'Bogdan (Male)',
-                    'ru_dmitriy': 'Dmitriy (Male)',
-                    'ru_ekaterina': 'Ekaterina (Female)',
-                    'ru_vika': 'Vika (Female)',
-                    'ru_gamat': 'Gamat (Male)',
-                    'ru_igor': 'Igor (Male)',
-                    'ru_karina': 'Karina (Female)',
-                    'ru_kejilgan': 'Kejilgan (Male)',
-                    'ru_kermen': 'Kermen (Female)',
-                    'ru_marat': 'Marat (Male)',
-                    'ru_miyau': 'Miyau (Female)',
-                    'ru_nurgul': 'Nurgul (Female)',
-                    'ru_oksana': 'Oksana (Female)',
-                    'ru_onaoy': 'Onaoy (Male)',
-                    'ru_ramilia': 'Ramilia (Female)',
-                    'ru_roman': 'Roman (Male) ★',
-                    'ru_safarhuja': 'Safarhuja (Male)',
-                    'ru_saida': 'Saia (Female)',
-                    'ru_sibday': 'Sibday (Male)',
-                    'ru_zara': 'Zara (Female)',
-                    'ru_zhadyra': 'Zhadyra (Female) ★',
-                    'ru_zhazira': 'Zhazira (Female)',
-                    'ru_zinaida': 'Zinaida (Female)',
-                    'ru_eduard': 'Eduard (Male)'
-                };
                 CONFIG.tts_speakers.forEach(speaker => {
                     const option = document.createElement('option');
                     option.value = speaker;
-                    option.textContent = speakerNames[speaker] || speaker;
+                    option.textContent = names[speaker] || speaker;
                     speakerSelect.appendChild(option);
                 });
                 if (CONFIG.tts_speakers.includes(currentValue)) {
@@ -580,17 +1676,42 @@
                 } else {
                     speakerSelect.value = CONFIG.tts_speakers[0];
                 }
+                localStorage.setItem(TTS_SPEAKER_KEY, speakerSelect.value);
+            }
+
+            if (els.ttsInput) {
+                els.ttsInput.setAttribute('placeholder', formatTtsInputPlaceholder());
             }
         }
 
         const els = {
-            statusDot: document.getElementById('statusDot'),
-            statusText: document.getElementById('statusText'),
             tabs: document.querySelectorAll('.tab'),
             panels: document.querySelectorAll('.panel'),
+            localePicker: document.getElementById('localePicker'),
+            localeInput: document.getElementById('localeInput'),
+            localeListbox: document.getElementById('localeListbox'),
+            jobsMenuBtn: document.getElementById('jobsMenuBtn'),
+            jobsDrawer: document.getElementById('jobsDrawer'),
+            jobsDrawerClose: document.getElementById('jobsDrawerClose'),
+            jobsDrawerBackdrop: document.getElementById('jobsDrawerBackdrop'),
+            jobsDrawerScroll: document.getElementById('jobsDrawerScroll'),
+            jobsListState: document.getElementById('jobsListState'),
+            jobsList: document.getElementById('jobsList'),
+            jobsFooter: document.getElementById('jobsFooter'),
+            jobsLoadMoreState: document.getElementById('jobsLoadMoreState'),
+            jobsListEnd: document.getElementById('jobsListEnd'),
+            jobsListSentinel: document.getElementById('jobsListSentinel'),
 
             sttDropzone: document.getElementById('sttDropzone'),
             sttFileInput: document.getElementById('sttFileInput'),
+            sttMicBox: document.getElementById('sttMicBox'),
+            sttMicHint: document.getElementById('sttMicHint'),
+            sttMicStart: document.getElementById('sttMicStart'),
+            sttMicStop: document.getElementById('sttMicStop'),
+            sttMicSend: document.getElementById('sttMicSend'),
+            sttMicDiscard: document.getElementById('sttMicDiscard'),
+            sttMicPreview: document.getElementById('sttMicPreview'),
+            sttMicAudio: document.getElementById('sttMicAudio'),
             sttProgress: document.getElementById('sttProgress'),
             sttProgressFill: document.getElementById('sttProgressFill'),
             sttProgressText: document.getElementById('sttProgressText'),
@@ -599,7 +1720,11 @@
             sttError: document.getElementById('sttError'),
             sttResult: document.getElementById('sttResult'),
             sttResultText: document.getElementById('sttResultText'),
+            sttResizeHandle: document.getElementById('sttResizeHandle'),
             sttMeta: document.getElementById('sttMeta'),
+            sttTimeRanges: document.getElementById('sttTimeRanges'),
+            sttViewBlocks: document.getElementById('sttViewBlocks'),
+            sttViewContinuous: document.getElementById('sttViewContinuous'),
             sttCopy: document.getElementById('sttCopy'),
             sttDownload: document.getElementById('sttDownload'),
 
@@ -620,43 +1745,473 @@
             ttsDownload: document.getElementById('ttsDownload'),
         };
 
-        async function checkHealth() {
-            try {
-                const res = await fetch(`${API_URL}/health`, { method: 'GET' });
-                const online = res.ok;
-                els.statusDot.className = 'status-dot ' + (online ? 'online' : 'offline');
-                els.statusText.textContent = online ? 'Online' : 'Offline';
-                return online;
-            } catch {
-                els.statusDot.className = 'status-dot offline';
-                els.statusText.textContent = 'Offline';
-                return false;
+        function refreshSttResultDisplay() {
+            const segs = state.stt.segments;
+            if (!segs || !segs.length) return;
+            const mergedText = getSttContinuousText();
+            els.sttTimeRanges.textContent = buildSttTimeRangesText(segs);
+            els.sttResultText.value = getActiveSttViewMode() === 'continuous'
+                ? mergedText
+                : getSttBlocksText();
+            els.sttMeta.textContent = formatSttMeta(segs.length);
+        }
+
+        function applySttResizeFromPointer(clientY) {
+            const resizeState = state.stt.resize;
+            const currentPageY = window.scrollY + clientY;
+            const nextHeight = Math.max(220, resizeState.startHeight + (currentPageY - resizeState.startPageY));
+            els.sttResultText.style.height = nextHeight + 'px';
+        }
+
+        function tickSttResizeAutoScroll() {
+            const resizeState = state.stt.resize;
+            if (!resizeState.active) {
+                resizeState.autoScrollRaf = null;
+                return;
             }
+            const edge = 56;
+            const topDelta = edge - resizeState.lastClientY;
+            const bottomDelta = resizeState.lastClientY - (window.innerHeight - edge);
+            let scrollStep = 0;
+            if (bottomDelta > 0) {
+                scrollStep = Math.min(24, Math.max(6, bottomDelta * 0.35));
+            } else if (topDelta > 0) {
+                scrollStep = -Math.min(24, Math.max(6, topDelta * 0.35));
+            }
+            if (scrollStep !== 0) {
+                window.scrollBy(0, scrollStep);
+                applySttResizeFromPointer(resizeState.lastClientY);
+            }
+            resizeState.autoScrollRaf = requestAnimationFrame(tickSttResizeAutoScroll);
+        }
+
+        function stopSttResize() {
+            const resizeState = state.stt.resize;
+            if (!resizeState.active) return;
+            resizeState.active = false;
+            resizeState.pointerId = null;
+            if (resizeState.autoScrollRaf != null) {
+                cancelAnimationFrame(resizeState.autoScrollRaf);
+                resizeState.autoScrollRaf = null;
+            }
+            els.sttResizeHandle.classList.remove('active');
+            document.body.classList.remove('stt-resizing');
+        }
+
+        function handleSttResizePointerMove(ev) {
+            const resizeState = state.stt.resize;
+            if (!resizeState.active || ev.pointerId !== resizeState.pointerId) return;
+            resizeState.lastClientY = ev.clientY;
+            applySttResizeFromPointer(ev.clientY);
+        }
+
+        function startSttResize(ev) {
+            if (ev.button !== 0) return;
+            ev.preventDefault();
+            const resizeState = state.stt.resize;
+            resizeState.active = true;
+            resizeState.pointerId = ev.pointerId;
+            resizeState.startHeight = els.sttResultText.getBoundingClientRect().height;
+            resizeState.startPageY = window.scrollY + ev.clientY;
+            resizeState.lastClientY = ev.clientY;
+            els.sttResizeHandle.classList.add('active');
+            document.body.classList.add('stt-resizing');
+            els.sttResizeHandle.setPointerCapture(ev.pointerId);
+            if (resizeState.autoScrollRaf == null) {
+                resizeState.autoScrollRaf = requestAnimationFrame(tickSttResizeAutoScroll);
+            }
+        }
+
+        async function fetchJobStatus(type, jobId) {
+            try {
+                const res = await fetch(API_URL + '/jobs/' + encodeURIComponent(jobId));
+                if (!res.ok) return null;
+                const data = await res.json();
+                if (!data || data.job_type !== type.toLowerCase()) return null;
+                return data;
+            } catch (e) {
+                return null;
+            }
+        }
+
+        function applySttJobStatus(status) {
+            const segs = Array.isArray(status.result && status.result.segments)
+                ? status.result.segments
+                    .filter(s => s && Number.isFinite(s.start) && Number.isFinite(s.end) && typeof s.text === 'string')
+                    .map(s => ({ start: s.start, end: s.end, text: s.text }))
+                : [];
+            if (!segs.length) return;
+            state.stt.segments = segs;
+            els.sttResult.classList.add('active');
+            els.sttProgress.classList.add('active');
+            const total = status.progress_total || segs.length;
+            const current = status.progress_current || segs.length;
+            const pct = total > 0 ? (current / total) * 100 : 0;
+            els.sttProgressFill.style.width = Math.max(0, Math.min(100, pct)) + '%';
+            if (status.state === 'completed') {
+                els.sttProgressText.textContent = t('progressComplete');
+            } else {
+                els.sttProgressText.textContent = t('progressChunk', { current, total });
+            }
+            if (status.result && status.result.filename) {
+                els.sttResultText.dataset.filename = status.result.filename;
+            }
+            refreshSttResultDisplay();
+        }
+
+        function applyTtsJobStatus(status) {
+            if (status.state !== 'completed') return;
+            const result = status.result || {};
+            if (!result.download_url) return;
+            els.ttsResult.classList.add('active');
+            els.ttsAudio.src = result.download_url;
+            els.ttsMeta.textContent = formatTtsMeta(
+                Number(result.chunks || status.progress_total || 0),
+                Number(result.duration || 0)
+            );
+            els.ttsDownload.onclick = () => {
+                const a = document.createElement('a');
+                a.href = result.download_url;
+                a.download = (result.filename || 'tts_output') + '.wav';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+            };
+        }
+
+        function setAudioElementSource(audio, sourceUrl) {
+            audio.pause();
+            audio.removeAttribute('src');
+            audio.load();
+            audio.src = sourceUrl;
+            audio.currentTime = 0;
+            audio.load();
+        }
+
+        function applyI18n() {
+            document.querySelectorAll('[data-i18n]').forEach(el => {
+                const key = el.getAttribute('data-i18n');
+                const attr = el.getAttribute('data-i18n-attr');
+                const val = t(key);
+                if (attr) el.setAttribute(attr, val);
+                else el.textContent = val;
+            });
+
+            document.title = t('pageTitle');
+            const meta = document.getElementById('meta-desc');
+            if (meta) meta.setAttribute('content', t('metaDescription'));
+            if (els.sttMicHint && els.sttMicHint.dataset.micHintKey) {
+                els.sttMicHint.textContent = t(els.sttMicHint.dataset.micHintKey);
+            }
+
+            const locale = getLocaleConfig(currentLocale);
+            if (els.localeInput && !els.localePicker.classList.contains('open')) {
+                els.localeInput.value = getLocaleDisplayValue(locale);
+            }
+            renderLocaleOptions();
+
+            applyConfig();
+            updateTtsCharCount();
+            if (els.jobsList.style.display !== 'none') {
+                rebuildJobsListFromState();
+                updateJobsFooterUi();
+            } else {
+                showJobsState(state.jobsListStateKey || 'jobsEmpty');
+            }
+        }
+
+        function updateTtsCharCount() {
+            const len = els.ttsInput.value.length;
+            const inputLimit = getTtsInputLimit();
+            els.ttsCharCount.textContent = formatTtsCharLine(len);
+            els.ttsCharCount.classList.toggle('warning', inputLimit > 0 && len > inputLimit);
         }
 
         function switchTab(tab) {
             state.activeTab = tab;
             localStorage.setItem('resonance_activeTab', tab);
 
-            els.tabs.forEach(t => {
-                const active = t.dataset.tab === tab;
-                t.classList.toggle('active', active);
-                t.setAttribute('aria-selected', active);
+            els.tabs.forEach(tn => {
+                const active = tn.dataset.tab === tab;
+                tn.classList.toggle('active', active);
+                tn.setAttribute('aria-selected', active);
             });
 
             els.panels.forEach(p => {
-                p.classList.toggle('active', p.id === `${tab}-panel`);
+                p.classList.toggle('active', p.id === tab + '-panel');
             });
         }
 
-        /* Initialize active tab on load */
+        function setJobsDrawerOpen(open) {
+            els.jobsDrawer.classList.toggle('open', open);
+            els.jobsDrawerBackdrop.classList.toggle('open', open);
+            els.jobsDrawer.setAttribute('aria-hidden', open ? 'false' : 'true');
+            if (open) {
+                loadJobsList();
+            } else {
+                disconnectJobsInfiniteScroll();
+            }
+        }
+
+        function formatJobType(jobType) {
+            return jobType === 'stt' ? t('jobsTypeStt') : t('jobsTypeTts');
+        }
+
+        function formatJobState(stateName) {
+            const map = {
+                queued: 'jobsStateQueued',
+                running: 'jobsStateRunning',
+                completed: 'jobsStateCompleted',
+                failed: 'jobsStateFailed',
+                cancelled: 'jobsStateCancelled',
+            };
+            return t(map[stateName] || 'jobsStateQueued');
+        }
+
+        function showJobsState(i18nKey) {
+            state.jobsListStateKey = i18nKey;
+            els.jobsListState.style.display = '';
+            els.jobsList.style.display = 'none';
+            els.jobsFooter.style.display = 'none';
+            els.jobsLoadMoreState.style.display = 'none';
+            els.jobsListEnd.style.display = 'none';
+            els.jobsListState.textContent = t(i18nKey);
+        }
+
+        function createJobListButton(job) {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'btn btn-secondary';
+            btn.style.display = 'block';
+            btn.style.width = '100%';
+            btn.style.textAlign = 'left';
+            btn.style.marginBottom = '0.5rem';
+            btn.style.padding = '0.625rem 0.75rem';
+            const total = Number(job.progress_total || 0);
+            const current = Number(job.progress_current || 0);
+            const progress = total > 0 ? `${current}/${total}` : '-';
+            const updated = new Date(Number(job.updated_at || 0) * 1000);
+            const updatedText = Number.isFinite(updated.getTime())
+                ? getLocaleHelpers(currentLocale).formatDateTime(updated)
+                : '-';
+            btn.innerHTML = `
+                <div style="font-weight: 600;">${formatJobType(job.job_type)} · ${formatJobState(job.state)}</div>
+                <div style="opacity: 0.85; font-size: 0.85rem;">progress: ${progress}</div>
+                <div style="opacity: 0.75; font-size: 0.8rem;">${updatedText}</div>
+            `;
+            btn.addEventListener('click', () => restoreJob(job.job_id, job.job_type));
+            return btn;
+        }
+
+        function rebuildJobsListFromState() {
+            els.jobsList.innerHTML = '';
+            state.jobsList.forEach((job) => {
+                els.jobsList.appendChild(createJobListButton(job));
+            });
+        }
+
+        function updateJobsFooterUi() {
+            if (!state.jobsList.length) {
+                els.jobsFooter.style.display = 'none';
+                return;
+            }
+            els.jobsFooter.style.display = '';
+            if (state.jobsLoadingMore) {
+                els.jobsLoadMoreState.style.display = '';
+                els.jobsListEnd.style.display = 'none';
+            } else if (!state.jobsHasMore) {
+                els.jobsLoadMoreState.style.display = 'none';
+                els.jobsListEnd.style.display = '';
+            } else {
+                els.jobsLoadMoreState.style.display = 'none';
+                els.jobsListEnd.style.display = 'none';
+            }
+        }
+
+        function disconnectJobsInfiniteScroll() {
+            if (state.jobsInfiniteObserver) {
+                state.jobsInfiniteObserver.disconnect();
+                state.jobsInfiniteObserver = null;
+            }
+        }
+
+        function setupJobsInfiniteScroll() {
+            disconnectJobsInfiniteScroll();
+            if (!state.jobsHasMore || !els.jobsDrawerScroll || !els.jobsListSentinel) {
+                return;
+            }
+            const obs = new IntersectionObserver((entries) => {
+                for (const entry of entries) {
+                    if (entry.isIntersecting) {
+                        loadMoreJobs();
+                    }
+                }
+            }, {
+                root: els.jobsDrawerScroll,
+                rootMargin: '200px 0px',
+                threshold: 0,
+            });
+            obs.observe(els.jobsListSentinel);
+            state.jobsInfiniteObserver = obs;
+        }
+
+        function showJobsListUi() {
+            els.jobsListState.style.display = 'none';
+            els.jobsList.style.display = '';
+            rebuildJobsListFromState();
+            updateJobsFooterUi();
+            setupJobsInfiniteScroll();
+        }
+
+        async function loadMoreJobs() {
+            if (!state.jobsHasMore || state.jobsLoadingMore || state.jobsLoadingInitial) {
+                return;
+            }
+            if (!els.jobsDrawer.classList.contains('open')) {
+                return;
+            }
+            state.jobsLoadingMore = true;
+            updateJobsFooterUi();
+            try {
+                const res = await fetch(
+                    API_URL + '/jobs?limit=' + JOBS_PAGE_SIZE + '&offset=' + encodeURIComponent(String(state.jobsNextOffset))
+                );
+                if (!res.ok) {
+                    throw new Error('jobs-more-failed');
+                }
+                const payload = await res.json();
+                const incoming = Array.isArray(payload.jobs) ? payload.jobs : [];
+                const existing = new Set(state.jobsList.map((j) => j.job_id));
+                for (const j of incoming) {
+                    if (j && j.job_id && !existing.has(j.job_id)) {
+                        existing.add(j.job_id);
+                        state.jobsList.push(j);
+                    }
+                }
+                state.jobsHasMore = !!payload.has_more;
+                state.jobsNextOffset = typeof payload.next_offset === 'number'
+                    ? payload.next_offset
+                    : state.jobsNextOffset + incoming.length;
+            } catch (e) {
+                showToast(t('errNetwork'));
+            } finally {
+                state.jobsLoadingMore = false;
+                rebuildJobsListFromState();
+                updateJobsFooterUi();
+                disconnectJobsInfiniteScroll();
+                if (state.jobsHasMore && els.jobsDrawer.classList.contains('open')) {
+                    setupJobsInfiniteScroll();
+                }
+            }
+        }
+
+        async function loadJobsList() {
+            disconnectJobsInfiniteScroll();
+            state.jobsList = [];
+            state.jobsNextOffset = 0;
+            state.jobsHasMore = false;
+            state.jobsLoadingInitial = true;
+            showJobsState('jobsLoading');
+            try {
+                const res = await fetch(API_URL + '/jobs?limit=' + JOBS_PAGE_SIZE + '&offset=0');
+                if (!res.ok) {
+                    throw new Error('jobs-list-failed');
+                }
+                const payload = await res.json();
+                state.jobsList = Array.isArray(payload.jobs) ? payload.jobs : [];
+                state.jobsHasMore = !!payload.has_more;
+                state.jobsNextOffset = typeof payload.next_offset === 'number'
+                    ? payload.next_offset
+                    : state.jobsList.length;
+            } catch (e) {
+                state.jobsLoadingInitial = false;
+                showJobsState('jobsLoadError');
+                return;
+            }
+            state.jobsLoadingInitial = false;
+            if (!els.jobsDrawer.classList.contains('open')) {
+                return;
+            }
+            if (!state.jobsList.length) {
+                showJobsState('jobsEmpty');
+                return;
+            }
+            showJobsListUi();
+        }
+
+        function refreshJobsListIfOpen() {
+            if (!els.jobsDrawer.classList.contains('open')) {
+                return;
+            }
+            loadJobsList();
+        }
+
+        function clearAllStreamsAndSelections() {
+            closeJobStreams('STT');
+            closeJobStreams('TTS');
+            setActiveJobId('STT', null);
+            setActiveJobId('TTS', null);
+        }
+
+        async function restoreJob(jobId, jobType) {
+            clearAllStreamsAndSelections();
+            resetUI('STT', false);
+            resetUI('TTS', false);
+            switchTab(jobType === 'stt' ? 'stt' : 'tts');
+
+            const type = jobType === 'stt' ? 'STT' : 'TTS';
+            const status = await fetchJobStatus(type, jobId);
+            if (!status) {
+                await loadJobsList();
+                return;
+            }
+
+            if (jobType === 'stt') {
+                if (status.state === 'failed' || status.state === 'cancelled') {
+                    resetUI('STT', false);
+                    await loadJobsList();
+                    return;
+                }
+                applySttJobStatus(status);
+                if (status.state === 'running' || status.state === 'queued') {
+                    setActiveJobId('STT', jobId);
+                    els.sttCancel.classList.add('active');
+                    els.sttStop.classList.add('active');
+                    els.sttProgress.classList.add('active');
+                    subscribeSttJobEvents(jobId, state.stt.segments || [], refreshSttResultDisplay);
+                }
+            } else {
+                if (status.state === 'failed' || status.state === 'cancelled') {
+                    resetUI('TTS', false);
+                    await loadJobsList();
+                    return;
+                }
+                if (status.state === 'completed') {
+                    applyTtsJobStatus(status);
+                } else {
+                    setActiveJobId('TTS', jobId);
+                    els.ttsSubmit.disabled = true;
+                    els.ttsProgress.classList.add('active');
+                    els.ttsCancel.classList.add('active');
+                    const total = status.progress_total || 1;
+                    const current = status.progress_current || 0;
+                    const pct = total > 0 ? (current / total) * 100 : 0;
+                    els.ttsProgressFill.style.width = pct + '%';
+                    els.ttsProgressText.textContent = t('progressChunk', { current, total });
+                    subscribeTtsJobEvents(jobId, status.result && status.result.filename ? status.result.filename : 'tts_output');
+                }
+            }
+
+            setJobsDrawerOpen(false);
+        }
+
         if (savedTab) {
             switchTab(savedTab);
         } else {
             switchTab('stt');
         }
 
-        const savedTtsText = localStorage.getItem('resonance_ttsText');
+        const savedTtsText = localStorage.getItem(TTS_TEXT_STORAGE_KEY);
         if (savedTtsText) {
             els.ttsInput.value = savedTtsText;
             updateTtsCharCount();
@@ -665,6 +2220,120 @@
         els.tabs.forEach(tab => {
             tab.addEventListener('click', () => switchTab(tab.dataset.tab));
         });
+
+        els.localeInput.value = getLocaleDisplayValue(getLocaleConfig(currentLocale));
+        els.localeInput.addEventListener('focus', () => {
+            state.localeSearchTerm = '';
+            state.localeHighlightIndex = -1;
+            els.localeInput.select();
+            openLocalePicker();
+        });
+        els.localeInput.addEventListener('input', () => {
+            state.localeSearchTerm = els.localeInput.value;
+            state.localeHighlightIndex = -1;
+            openLocalePicker();
+        });
+        els.localeInput.addEventListener('keydown', async (e) => {
+            const filtered = getFilteredLocales();
+            if (e.key === 'Escape') {
+                closeLocalePicker(true);
+                els.localeInput.blur();
+                return;
+            }
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault();
+                if (!els.localePicker.classList.contains('open')) {
+                    openLocalePicker();
+                    return;
+                }
+                if (!filtered.length) return;
+                const delta = e.key === 'ArrowDown' ? 1 : -1;
+                const nextIndex = state.localeHighlightIndex < 0
+                    ? getInitialLocaleHighlightIndex(filtered)
+                    : (state.localeHighlightIndex + delta + filtered.length) % filtered.length;
+                highlightLocaleOption(nextIndex, true);
+                return;
+            }
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                if (!filtered.length) return;
+                const selected = filtered[state.localeHighlightIndex] || filtered[0];
+                await commitLocaleSelection(selected.code);
+                els.localeInput.blur();
+            }
+        });
+        els.localeInput.addEventListener('blur', () => {
+            setTimeout(() => closeLocalePicker(true), 120);
+        });
+        els.localeListbox.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+        });
+        els.localeListbox.addEventListener('mousemove', (e) => {
+            const option = e.target.closest('.locale-option');
+            if (!option) return;
+            const index = Number(option.dataset.index);
+            if (!Number.isFinite(index) || index === state.localeHighlightIndex) return;
+            highlightLocaleOption(index, false);
+        });
+        els.localeListbox.addEventListener('click', async (e) => {
+            const option = e.target.closest('.locale-option');
+            if (!option) return;
+            await commitLocaleSelection(option.dataset.locale);
+            els.localeInput.blur();
+        });
+
+        els.jobsMenuBtn.addEventListener('click', () => setJobsDrawerOpen(true));
+        els.jobsDrawerClose.addEventListener('click', () => setJobsDrawerOpen(false));
+        els.jobsDrawerBackdrop.addEventListener('click', () => setJobsDrawerOpen(false));
+
+        captureEnDefaultsFromDom();
+        applyI18n();
+        if (initialLocale !== DEFAULT_LOCALE) {
+            void setLocale(initialLocale, { persist: false });
+        }
+
+        setSttViewMode(localStorage.getItem('resonance_stt_view_mode') || 'blocks');
+
+        (async function restoreActiveJobs() {
+            const sttJobId = localStorage.getItem(STT_ACTIVE_JOB_KEY);
+            if (sttJobId) {
+                const status = await fetchJobStatus('STT', sttJobId);
+                if (!status || status.state === 'failed' || status.state === 'cancelled') {
+                    setActiveJobId('STT', null);
+                } else {
+                    setActiveJobId('STT', sttJobId);
+                    applySttJobStatus(status);
+                    if (status.state !== 'completed') {
+                        els.sttCancel.classList.add('active');
+                        els.sttStop.classList.add('active');
+                        subscribeSttJobEvents(sttJobId, state.stt.segments || [], refreshSttResultDisplay);
+                    } else {
+                        setActiveJobId('STT', null);
+                    }
+                }
+            }
+            const ttsJobId = localStorage.getItem(TTS_ACTIVE_JOB_KEY);
+            if (ttsJobId) {
+                const status = await fetchJobStatus('TTS', ttsJobId);
+                if (!status || status.state === 'failed' || status.state === 'cancelled') {
+                    setActiveJobId('TTS', null);
+                } else if (status.state === 'completed') {
+                    applyTtsJobStatus(status);
+                    setActiveJobId('TTS', null);
+                } else {
+                    setActiveJobId('TTS', ttsJobId);
+                    els.ttsProgress.classList.add('active');
+                    els.ttsCancel.classList.add('active');
+                    els.ttsSubmit.disabled = true;
+                    const total = status.progress_total || 1;
+                    const current = status.progress_current || 0;
+                    const pct = total > 0 ? (current / total) * 100 : 0;
+                    els.ttsProgressFill.style.width = pct + '%';
+                    els.ttsProgressText.textContent = t('progressChunk', { current, total });
+                    subscribeTtsJobEvents(ttsJobId, status.result && status.result.filename ? status.result.filename : 'tts_output');
+                }
+            }
+        })();
 
         function showToast(message) {
             const toast = document.createElement('div');
@@ -676,56 +2345,509 @@
 
         function resetUI(type, keepResult = false) {
             const prefix = type.toLowerCase();
-            els[`${prefix}Progress`].classList.remove('active');
-            els[`${prefix}ProgressFill`].style.width = '0%';
+            els[prefix + 'Progress'].classList.remove('active');
+            els[prefix + 'ProgressFill'].style.width = '0%';
             if (!keepResult) {
-                els[`${prefix}ProgressText`].textContent = '';
+                els[prefix + 'ProgressText'].textContent = '';
             }
-            els[`${prefix}Error`].classList.remove('active');
+            els[prefix + 'Error'].classList.remove('active');
 
             if (type === 'STT') {
+                stopSttResize();
                 els.sttDropzone.classList.remove('processing');
                 els.sttCancel.classList.remove('active');
                 els.sttStop.classList.remove('active');
                 if (!keepResult) {
                     els.sttResult.classList.remove('active');
-                    els.sttResultText.textContent = '';
+                    els.sttResultText.value = '';
                     els.sttMeta.textContent = '';
+                    els.sttTimeRanges.textContent = '';
+                    state.stt.segments = null;
+                    delete els.sttResultText.dataset.filename;
                 }
             } else if (type === 'TTS') {
                 els.ttsCancel.classList.remove('active');
+                els.ttsSubmit.disabled = false;
                 if (!keepResult) {
                     els.ttsResult.classList.remove('active');
-                    els.ttsAudio.src = '';
+                    els.ttsAudio.pause();
+                    els.ttsAudio.removeAttribute('src');
+                    els.ttsAudio.load();
                     els.ttsMeta.textContent = '';
                 }
             }
         }
 
-        function cancelJob(type) {
+        function activeJobStorageKey(type) {
+            return type === 'STT' ? STT_ACTIVE_JOB_KEY : TTS_ACTIVE_JOB_KEY;
+        }
+
+        function setActiveJobId(type, jobId) {
+            const key = activeJobStorageKey(type);
+            if (jobId) {
+                localStorage.setItem(key, jobId);
+            } else {
+                localStorage.removeItem(key);
+            }
+            state[type.toLowerCase()].jobId = jobId || null;
+        }
+
+        const sttMicState = {
+            stream: null,
+            audioContext: null,
+            sourceNode: null,
+            processorNode: null,
+            monitorGainNode: null,
+            pcmChunks: [],
+            pcmSampleRate: 0,
+            pcmSampleCount: 0,
+            blob: null,
+            file: null,
+            previewUrl: null,
+            recordingStartTime: null,
+            duration: null,
+            timerInterval: null,
+        };
+
+        function updateSttMicTimer() {
+            if (!sttMicState.recordingStartTime) return;
+            const elapsed = Math.floor((Date.now() - sttMicState.recordingStartTime) / 1000);
+            const mins = Math.floor(elapsed / 60);
+            const secs = elapsed % 60;
+            const timerEl = document.getElementById('sttMicTimer');
+            if (timerEl) {
+                timerEl.textContent = mins + ':' + String(secs).padStart(2, '0');
+            }
+        }
+
+        function startSttMicTimer() {
+            stopSttMicTimer();
+            sttMicState.recordingStartTime = Date.now();
+            updateSttMicTimer();
+            sttMicState.timerInterval = setInterval(updateSttMicTimer, 1000);
+        }
+
+        function stopSttMicTimer() {
+            if (sttMicState.timerInterval) {
+                clearInterval(sttMicState.timerInterval);
+                sttMicState.timerInterval = null;
+            }
+        }
+
+        function setSttMicHint(key) {
+            if (!els.sttMicHint) return;
+            els.sttMicHint.dataset.micHintKey = key;
+            els.sttMicHint.textContent = t(key);
+        }
+
+        function setSttMicRecordingUi(active) {
+            els.sttMicBox.classList.toggle('mic-recording', active);
+            els.sttMicStart.style.display = active ? 'none' : '';
+            els.sttMicStop.style.display = active ? '' : 'none';
+        }
+
+        function formatMicDuration(seconds) {
+            return getLocaleHelpers(currentLocale).formatMicDuration(seconds);
+        }
+
+        function clearSttMicPreview() {
+            stopSttMicTimer();
+            if (sttMicState.previewUrl) {
+                URL.revokeObjectURL(sttMicState.previewUrl);
+            }
+            sttMicState.previewUrl = null;
+            sttMicState.blob = null;
+            sttMicState.file = null;
+            sttMicState.pcmChunks = [];
+            sttMicState.pcmSampleRate = 0;
+            sttMicState.pcmSampleCount = 0;
+            sttMicState.recordingStartTime = null;
+            sttMicState.duration = null;
+            els.sttMicAudio.removeAttribute('src');
+            els.sttMicAudio.load();
+            els.sttMicPreview.classList.remove('active');
+            els.sttMicSend.style.display = 'none';
+            els.sttMicDiscard.style.display = 'none';
+            const timerEl = document.getElementById('sttMicTimer');
+            if (timerEl) timerEl.textContent = '0:00';
+        }
+
+        function stopSttMicTracks() {
+            if (sttMicState.sourceNode) {
+                sttMicState.sourceNode.disconnect();
+            }
+            if (sttMicState.processorNode) {
+                sttMicState.processorNode.disconnect();
+            }
+            if (sttMicState.monitorGainNode) {
+                sttMicState.monitorGainNode.disconnect();
+            }
+            if (sttMicState.stream) {
+                sttMicState.stream.getTracks().forEach((track) => track.stop());
+            }
+            if (sttMicState.audioContext) {
+                sttMicState.audioContext.close().catch(() => {});
+            }
+            sttMicState.sourceNode = null;
+            sttMicState.processorNode = null;
+            sttMicState.monitorGainNode = null;
+            sttMicState.audioContext = null;
+            sttMicState.stream = null;
+        }
+
+        function mergeMicPcmChunks(chunks, totalSamples) {
+            const merged = new Float32Array(totalSamples);
+            let offset = 0;
+            for (const chunk of chunks) {
+                merged.set(chunk, offset);
+                offset += chunk.length;
+            }
+            return merged;
+        }
+
+        function encodeMicWav(samples, sampleRate) {
+            const bytesPerSample = 2;
+            const dataSize = samples.length * bytesPerSample;
+            const buffer = new ArrayBuffer(44 + dataSize);
+            const view = new DataView(buffer);
+            const writeAscii = (offset, text) => {
+                for (let i = 0; i < text.length; i++) {
+                    view.setUint8(offset + i, text.charCodeAt(i));
+                }
+            };
+
+            writeAscii(0, 'RIFF');
+            view.setUint32(4, 36 + dataSize, true);
+            writeAscii(8, 'WAVE');
+            writeAscii(12, 'fmt ');
+            view.setUint32(16, 16, true);
+            view.setUint16(20, 1, true);
+            view.setUint16(22, 1, true);
+            view.setUint32(24, sampleRate, true);
+            view.setUint32(28, sampleRate * bytesPerSample, true);
+            view.setUint16(32, bytesPerSample, true);
+            view.setUint16(34, 16, true);
+            writeAscii(36, 'data');
+            view.setUint32(40, dataSize, true);
+
+            let offset = 44;
+            for (let i = 0; i < samples.length; i++) {
+                const sample = Math.max(-1, Math.min(1, samples[i]));
+                view.setInt16(
+                    offset,
+                    sample < 0 ? sample * 0x8000 : sample * 0x7fff,
+                    true
+                );
+                offset += bytesPerSample;
+            }
+
+            return new Blob([buffer], { type: 'audio/wav' });
+        }
+
+        function showSttError(message) {
+            els.sttError.textContent = message;
+            els.sttError.classList.add('active');
+        }
+
+        async function startSttMicRecording() {
+            const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !AudioContextCtor) {
+                showSttError(t('errMicUnsupported'));
+                return;
+            }
+            els.sttError.classList.remove('active');
+            clearSttMicPreview();
+            sttMicState.pcmChunks = [];
+            sttMicState.pcmSampleRate = 0;
+            sttMicState.pcmSampleCount = 0;
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                sttMicState.stream = stream;
+                const audioContext = new AudioContextCtor();
+                await audioContext.resume();
+                const sourceNode = audioContext.createMediaStreamSource(stream);
+                const processorNode = audioContext.createScriptProcessor(4096, 1, 1);
+                const monitorGainNode = audioContext.createGain();
+                monitorGainNode.gain.value = 0;
+
+                sttMicState.audioContext = audioContext;
+                sttMicState.sourceNode = sourceNode;
+                sttMicState.processorNode = processorNode;
+                sttMicState.monitorGainNode = monitorGainNode;
+                sttMicState.pcmSampleRate = audioContext.sampleRate;
+
+                processorNode.onaudioprocess = (event) => {
+                    const input = event.inputBuffer.getChannelData(0);
+                    if (!input || input.length === 0) return;
+                    const chunk = new Float32Array(input.length);
+                    chunk.set(input);
+                    sttMicState.pcmChunks.push(chunk);
+                    sttMicState.pcmSampleCount += chunk.length;
+                };
+
+                sourceNode.connect(processorNode);
+                processorNode.connect(monitorGainNode);
+                monitorGainNode.connect(audioContext.destination);
+
+                startSttMicTimer();
+                setSttMicRecordingUi(true);
+                setSttMicHint('sttMicHintRecording');
+            } catch (e) {
+                stopSttMicTracks();
+                stopSttMicTimer();
+                setSttMicRecordingUi(false);
+                showSttError(t('errMicPermission'));
+                setSttMicHint('sttMicHintIdle');
+            }
+        }
+
+        function stopSttMicRecording() {
+            if (!sttMicState.audioContext) return;
+            setSttMicRecordingUi(false);
+            stopSttMicTimer();
+
+            const sampleRate = sttMicState.pcmSampleRate;
+            const sampleCount = sttMicState.pcmSampleCount;
+            const samples = mergeMicPcmChunks(sttMicState.pcmChunks, sampleCount);
+
+            stopSttMicTracks();
+
+            if (!samples.length || !sampleRate) {
+                showSttError(t('errMicEmpty'));
+                setSttMicHint('sttMicHintIdle');
+                return;
+            }
+
+            const blob = encodeMicWav(samples, sampleRate);
+            const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const file = new File([blob], 'mic_' + stamp + '.wav', { type: 'audio/wav' });
+
+            sttMicState.blob = blob;
+            sttMicState.file = file;
+            sttMicState.previewUrl = URL.createObjectURL(blob);
+            sttMicState.duration = sampleCount / sampleRate;
+
+            setAudioElementSource(els.sttMicAudio, sttMicState.previewUrl);
+            els.sttMicPreview.classList.add('active');
+            els.sttMicSend.style.display = '';
+            els.sttMicDiscard.style.display = '';
+            setSttMicHint('sttMicHintReady');
+        }
+
+        async function sendSttMicRecording() {
+            if (!sttMicState.file) return;
+            const file = sttMicState.file;
+            clearSttMicPreview();
+            setSttMicHint('sttMicHintIdle');
+            await handleSttFile(file);
+        }
+
+        function discardSttMicRecording() {
+            clearSttMicPreview();
+            setSttMicHint('sttMicHintIdle');
+        }
+
+        function closeJobStreams(type) {
             const job = state[type.toLowerCase()];
-            if (job.reader) {
-                job.reader.cancel().catch(() => {});
-                job.reader = null;
+            if (job.eventSource) {
+                job.eventSource.close();
+                job.eventSource = null;
             }
-            if (job.abortController) {
-                job.abortController.abort();
-                job.abortController = null;
+            if (job.statusPollTimer) {
+                clearInterval(job.statusPollTimer);
+                job.statusPollTimer = null;
             }
+        }
+
+        async function cancelActiveServerJob(type) {
+            const jobId = state[type.toLowerCase()].jobId;
+            if (!jobId) return;
+            try {
+                await fetch(API_URL + '/jobs/' + encodeURIComponent(jobId) + '/cancel', {
+                    method: 'POST'
+                });
+            } catch (e) {
+            }
+        }
+
+        function cancelJob(type) {
+            closeJobStreams(type);
+            cancelActiveServerJob(type);
+            setActiveJobId(type, null);
             resetUI(type, false);
+            refreshJobsListIfOpen();
         }
 
         function stopJob(type) {
-            const job = state[type.toLowerCase()];
-            if (job.reader) {
-                job.reader.cancel().catch(() => {});
-                job.reader = null;
-            }
-            if (job.abortController) {
-                job.abortController.abort();
-                job.abortController = null;
-            }
+            closeJobStreams(type);
             resetUI(type, true);
+        }
+
+        function subscribeSttJobEvents(jobId, segments, updateDisplay) {
+            closeJobStreams('STT');
+            const es = new EventSource(API_URL + '/jobs/' + encodeURIComponent(jobId) + '/events');
+            state.stt.eventSource = es;
+            es.onmessage = (ev) => {
+                let event;
+                try {
+                    event = JSON.parse(ev.data);
+                } catch {
+                    return;
+                }
+                switch (event.type) {
+                    case 'start':
+                        els.sttProgressText.textContent = t('progressProcessing');
+                        break;
+                    case 'progress':
+                        const pct = event.total > 0 ? (event.current / event.total) * 100 : 0;
+                        els.sttProgressFill.style.width = pct + '%';
+                        els.sttProgressText.textContent = t('progressChunk', {
+                            current: event.current,
+                            total: event.total
+                        });
+                        if (event.segment) {
+                            segments.push(event.segment);
+                            updateDisplay();
+                        }
+                        break;
+                    case 'complete':
+                        els.sttProgressFill.style.width = '100%';
+                        els.sttProgressText.textContent = t('progressComplete');
+                        updateDisplay();
+                        setActiveJobId('STT', null);
+                        closeJobStreams('STT');
+                        refreshJobsListIfOpen();
+                        setTimeout(() => resetUI('STT', true), 800);
+                        break;
+                    case 'error':
+                        els.sttError.textContent = event.message || t('errProcessingFailed');
+                        els.sttError.classList.add('active');
+                        setActiveJobId('STT', null);
+                        closeJobStreams('STT');
+                        refreshJobsListIfOpen();
+                        resetUI('STT');
+                        break;
+                    case 'cancelled':
+                        setActiveJobId('STT', null);
+                        closeJobStreams('STT');
+                        refreshJobsListIfOpen();
+                        resetUI('STT');
+                        break;
+                }
+            };
+            es.onerror = async () => {
+                closeJobStreams('STT');
+                const status = await fetchJobStatus('STT', jobId);
+                if (!status || status.state === 'failed') {
+                    els.sttError.textContent = (status && status.error) || t('errNetwork');
+                    els.sttError.classList.add('active');
+                    setActiveJobId('STT', null);
+                    resetUI('STT');
+                    return;
+                }
+                if (status.state === 'completed') {
+                    applySttJobStatus(status);
+                    setActiveJobId('STT', null);
+                    setTimeout(() => resetUI('STT', true), 800);
+                    return;
+                }
+                if (status.state === 'cancelled') {
+                    setActiveJobId('STT', null);
+                    resetUI('STT');
+                    return;
+                }
+                subscribeSttJobEvents(jobId, segments, updateDisplay);
+            };
+        }
+
+        function subscribeTtsJobEvents(jobId, filename) {
+            closeJobStreams('TTS');
+            const es = new EventSource(API_URL + '/jobs/' + encodeURIComponent(jobId) + '/events');
+            state.tts.eventSource = es;
+            es.onmessage = (ev) => {
+                let event;
+                try {
+                    event = JSON.parse(ev.data);
+                } catch {
+                    return;
+                }
+                switch (event.type) {
+                    case 'start':
+                        els.ttsProgressText.textContent = t('progressProcessing');
+                        break;
+                    case 'progress':
+                        const pct2 = event.total > 0 ? (event.current / event.total) * 100 : 0;
+                        els.ttsProgressFill.style.width = pct2 + '%';
+                        els.ttsProgressText.textContent = t('progressChunk', {
+                            current: event.current,
+                            total: event.total
+                        });
+                        break;
+                    case 'complete':
+                        els.ttsProgressFill.style.width = '100%';
+                        els.ttsProgressText.textContent = t('progressComplete');
+                        els.ttsResult.classList.add('active');
+                        const downloadUrl = event.download_url;
+                        els.ttsAudio.src = downloadUrl;
+                        els.ttsMeta.textContent = formatTtsMeta(event.chunks, event.duration);
+                        els.ttsDownload.onclick = () => {
+                            const a = document.createElement('a');
+                            a.href = downloadUrl;
+                            a.download = filename + '.wav';
+                            document.body.appendChild(a);
+                            a.click();
+                            document.body.removeChild(a);
+                        };
+                        setActiveJobId('TTS', null);
+                        closeJobStreams('TTS');
+                        refreshJobsListIfOpen();
+                        els.ttsSubmit.disabled = false;
+                        setTimeout(() => resetUI('TTS', true), 800);
+                        break;
+                    case 'error':
+                        els.ttsError.textContent = event.message || t('errProcessingFailed');
+                        els.ttsError.classList.add('active');
+                        setActiveJobId('TTS', null);
+                        closeJobStreams('TTS');
+                        refreshJobsListIfOpen();
+                        els.ttsSubmit.disabled = false;
+                        resetUI('TTS');
+                        break;
+                    case 'cancelled':
+                        setActiveJobId('TTS', null);
+                        closeJobStreams('TTS');
+                        refreshJobsListIfOpen();
+                        els.ttsSubmit.disabled = false;
+                        resetUI('TTS');
+                        break;
+                }
+            };
+            es.onerror = async () => {
+                closeJobStreams('TTS');
+                const status = await fetchJobStatus('TTS', jobId);
+                if (!status || status.state === 'failed') {
+                    els.ttsError.textContent = (status && status.error) || t('errNetwork');
+                    els.ttsError.classList.add('active');
+                    setActiveJobId('TTS', null);
+                    els.ttsSubmit.disabled = false;
+                    resetUI('TTS');
+                    return;
+                }
+                if (status.state === 'completed') {
+                    applyTtsJobStatus(status);
+                    setActiveJobId('TTS', null);
+                    els.ttsSubmit.disabled = false;
+                    setTimeout(() => resetUI('TTS', true), 800);
+                    return;
+                }
+                if (status.state === 'cancelled') {
+                    setActiveJobId('TTS', null);
+                    els.ttsSubmit.disabled = false;
+                    resetUI('TTS');
+                    return;
+                }
+                subscribeTtsJobEvents(jobId, filename);
+            };
         }
 
         async function handleSttFile(file) {
@@ -740,111 +2862,43 @@
             els.sttStop.classList.add('active');
             els.sttCancel.classList.add('active');
             els.sttProgressFill.style.width = '5%';
-            els.sttProgressText.textContent = 'Uploading...';
+            els.sttProgressText.textContent = t('progressUploading');
 
             const segments = [];
-            const abortController = new AbortController();
-            const myJobId = ++globalJobId;
-            state.stt.abortController = abortController;
-            state.stt.jobId = myJobId;
+            state.stt.segments = segments;
+            let myJobId = null;
 
             const updateDisplay = () => {
-                const fullText = segments.map(s => `[${s.start.toFixed(1)}s - ${s.end.toFixed(1)}s]: ${s.text}`).join('\n\n');
-                els.sttResultText.textContent = fullText;
-                els.sttMeta.textContent = `${segments.length} segment${segments.length !== 1 ? 's' : ''}`;
+                refreshSttResultDisplay();
             };
 
             try {
                 const formData = new FormData();
                 formData.append('file', file);
 
-                const res = await fetch(`${API_URL}/stream/stt`, {
+                const startRes = await fetch(API_URL + '/jobs/stt', {
                     method: 'POST',
                     body: formData,
-                    signal: abortController.signal
                 });
 
-                if (!res.ok) throw new Error('Upload failed');
-                if (!res.body) throw new Error('No response body');
-
-                const reader = res.body.getReader();
-                state.stt.reader = reader;
-                const decoder = new TextDecoder();
-                let buffer = '';
+                if (!startRes.ok) throw new Error(t('errUploadFailed'));
+                const startData = await startRes.json();
+                if (!startData.job_id) throw new Error(t('errNoResponseBody'));
+                myJobId = startData.job_id;
+                setActiveJobId('STT', myJobId);
+                refreshJobsListIfOpen();
 
                 els.sttResult.classList.add('active');
                 els.sttResultText.dataset.filename = file.name;
-
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    if (abortController.signal.aborted) break;
-                    if (state.stt.jobId !== myJobId) break;
-
-                    buffer += decoder.decode(value, { stream: true });
-                    const lines = buffer.split('\n');
-                    buffer = lines.pop() || '';
-
-                    for (const line of lines) {
-                        const trimmed = line.trim();
-                        if (!trimmed.startsWith('data: ')) continue;
-
-                        const data = trimmed.slice(6);
-                        if (!data) continue;
-
-                        try {
-                            const event = JSON.parse(data);
-
-                            switch (event.type) {
-                                case 'start':
-                                    els.sttProgressText.textContent = 'Processing...';
-                                    break;
-                                case 'progress':
-                                    const pct = event.total > 0 ? (event.current / event.total) * 100 : 0;
-                                    els.sttProgressFill.style.width = `${pct}%`;
-                                    els.sttProgressText.textContent = `Chunk ${event.current} / ${event.total}`;
-                                    if (event.segment) {
-                                        segments.push(event.segment);
-                                        updateDisplay();
-                                    }
-                                    break;
-                                case 'complete':
-                                    els.sttProgressFill.style.width = '100%';
-                                    els.sttProgressText.textContent = 'Complete';
-                                    updateDisplay();
-                                    setTimeout(() => {
-                                        if (state.stt.jobId === myJobId) {
-                                            resetUI('STT', true);
-                                            state.stt.abortController = null;
-                                        }
-                                    }, 800);
-                                    return;
-                                case 'error':
-                                    throw new Error(event.message || 'Processing failed');
-                            }
-                        } catch (e) {
-                            if (e instanceof SyntaxError) continue;
-                            throw e;
-                        }
-                    }
-                }
+                subscribeSttJobEvents(myJobId, segments, updateDisplay);
             } catch (err) {
                 console.error('STT Error:', err);
-                if (state.stt.jobId !== myJobId) {
-                    state.stt.abortController = null;
-                    resetUI('STT');
-                    return;
-                }
                 if (err.name !== 'AbortError') {
-                    els.sttError.textContent = err.message || 'Network error';
+                    els.sttError.textContent = err.message || t('errNetwork');
                     els.sttError.classList.add('active');
                 }
+                setActiveJobId('STT', null);
                 resetUI('STT');
-                state.stt.abortController = null;
-            } finally {
-                if (state.stt.jobId === myJobId) {
-                    state.stt.reader = null;
-                }
             }
         }
 
@@ -880,6 +2934,16 @@
             cancelJob('STT');
         });
 
+        els.sttMicStart.addEventListener('click', startSttMicRecording);
+        els.sttMicStop.addEventListener('click', stopSttMicRecording);
+        els.sttMicSend.addEventListener('click', sendSttMicRecording);
+        els.sttMicDiscard.addEventListener('click', discardSttMicRecording);
+        els.sttMicAudio.addEventListener('loadedmetadata', () => {
+            if (Number.isFinite(els.sttMicAudio.duration) && els.sttMicAudio.duration > 0) {
+                sttMicState.duration = els.sttMicAudio.duration;
+            }
+        });
+
         let ttsSourceFilename = null;
 
         function handleTtsFile(file) {
@@ -889,9 +2953,9 @@
             reader.onload = (e) => {
                 els.ttsInput.value = e.target.result;
                 updateTtsCharCount();
-                showToast(`Loaded: ${file.name}`);
+                syncTtsDraftStorage();
             };
-            reader.onerror = () => showToast('Failed to read file');
+            reader.onerror = () => showToast(t('toastReadFailed'));
             reader.readAsText(file);
         }
 
@@ -922,12 +2986,28 @@
             cancelJob('TTS');
         });
 
-        els.sttCopy.addEventListener('click', async () => {
-            const text = els.sttResultText.textContent;
+        els.sttViewBlocks.addEventListener('click', () => {
+            setSttViewMode('blocks');
+            refreshSttResultDisplay();
+        });
 
-            const copyFallback = (text) => {
+        els.sttViewContinuous.addEventListener('click', () => {
+            setSttViewMode('continuous');
+            refreshSttResultDisplay();
+        });
+
+        els.sttResizeHandle.addEventListener('pointerdown', startSttResize);
+        els.sttResizeHandle.addEventListener('pointermove', handleSttResizePointerMove);
+        els.sttResizeHandle.addEventListener('pointerup', stopSttResize);
+        els.sttResizeHandle.addEventListener('pointercancel', stopSttResize);
+        els.sttResizeHandle.addEventListener('lostpointercapture', stopSttResize);
+
+        els.sttCopy.addEventListener('click', async () => {
+            const text = getSttCopyText();
+
+            const copyFallback = (txt) => {
                 const textarea = document.createElement('textarea');
-                textarea.value = text;
+                textarea.value = txt;
                 textarea.style.position = 'fixed';
                 textarea.style.opacity = '0';
                 document.body.appendChild(textarea);
@@ -945,58 +3025,50 @@
             if (navigator.clipboard && navigator.clipboard.writeText) {
                 try {
                     await navigator.clipboard.writeText(text);
-                    showToast('Copied to clipboard');
+                    showToast(t('toastCopied'));
                     return;
                 } catch {
-                    // Fallback to execCommand
                 }
             }
 
             const success = copyFallback(text);
-            showToast(success ? 'Copied to clipboard' : 'Copy failed');
+            showToast(success ? t('toastCopied') : t('toastCopyFailed'));
         });
 
         els.sttDownload.addEventListener('click', () => {
-            const text = els.sttResultText.textContent;
-            const filename = (els.sttResultText.dataset.filename || 'transcription').replace(/\.[^/.]+$/, '');
+            const text = getSttContinuousText();
+            const base = els.sttResultText.dataset.filename || t('defaultTranscriptionFile');
+            const filename = base.replace(/\.[^/.]+$/, '');
             const blob = new Blob([text], { type: 'text/plain' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = `${filename}.txt`;
+            a.download = filename + '.txt';
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
         });
 
-        function updateTtsCharCount() {
-            const len = els.ttsInput.value.length;
-            const maxChars = CONFIG.tts_max_chars || 600;
-            const chunks = Math.ceil(len / maxChars);
-            els.ttsCharCount.textContent = `${len} chars · ${chunks} chunk${chunks !== 1 ? 's' : ''}`;
-            els.ttsCharCount.classList.toggle('warning', len > 50000);
-        }
-
         els.ttsInput.addEventListener('input', () => {
             updateTtsCharCount();
-            const text = els.ttsInput.value;
-            if (text) {
-                localStorage.setItem('resonance_ttsText', text);
-            } else {
-                localStorage.removeItem('resonance_ttsText');
-            }
+            syncTtsDraftStorage();
+        });
+
+        els.ttsSpeaker.addEventListener('change', () => {
+            localStorage.setItem(TTS_SPEAKER_KEY, els.ttsSpeaker.value);
         });
 
         els.ttsSubmit.addEventListener('click', async () => {
             const text = els.ttsInput.value.trim();
+            const inputLimit = getTtsInputLimit();
             if (!text) {
-                els.ttsError.textContent = 'Please enter text';
+                els.ttsError.textContent = t('errPleaseEnterText');
                 els.ttsError.classList.add('active');
                 return;
             }
-            if (text.length > 50000) {
-                els.ttsError.textContent = 'Text too long (max 50000 characters)';
+            if (inputLimit > 0 && text.length > inputLimit) {
+                els.ttsError.textContent = formatTtsInputTooLongMessage();
                 els.ttsError.classList.add('active');
                 return;
             }
@@ -1008,7 +3080,7 @@
             els.ttsProgress.classList.add('active');
             els.ttsCancel.classList.add('active');
             els.ttsProgressFill.style.width = '10%';
-            els.ttsProgressText.textContent = 'Starting...';
+            els.ttsProgressText.textContent = t('progressStarting');
 
             let filename = ttsSourceFilename;
             if (!filename) {
@@ -1017,121 +3089,33 @@
                     .replace(/[:.]/g, '-')
                     .replace(/T/, '_')
                     .slice(0, -5);
-                filename = `tts_${timestamp}`;
+                filename = 'tts_' + timestamp;
             }
             ttsSourceFilename = null;
 
-            const abortController = new AbortController();
-            const myJobId = ++globalJobId;
-            state.tts.abortController = abortController;
-            state.tts.jobId = myJobId;
-
             try {
                 const res = await fetch(
-                    `${API_URL}/stream/tts?text=${encodeURIComponent(text)}&speaker=${els.ttsSpeaker.value}&filename=${encodeURIComponent(filename)}`,
-                    { method: 'POST', signal: abortController.signal }
+                    API_URL + '/jobs/tts?text=' + encodeURIComponent(text) + '&speaker=' + els.ttsSpeaker.value + '&filename=' + encodeURIComponent(filename),
+                    { method: 'POST' }
                 );
-
-                if (!res.ok) throw new Error('Request failed');
-                if (!res.body) throw new Error('No response body');
-
-                const reader = res.body.getReader();
-                state.tts.reader = reader;
-                const decoder = new TextDecoder();
-                let buffer = '';
-                let downloadUrl = '';
-
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    if (abortController.signal.aborted) break;
-                    if (state.tts.jobId !== myJobId) break;
-
-                    buffer += decoder.decode(value, { stream: true });
-                    const lines = buffer.split('\n');
-                    buffer = lines.pop() || '';
-
-                    for (const line of lines) {
-                        const trimmed = line.trim();
-                        if (!trimmed.startsWith('data: ')) continue;
-
-                        const data = trimmed.slice(6);
-                        if (!data) continue;
-
-                        try {
-                            const event = JSON.parse(data);
-
-                            switch (event.type) {
-                                case 'start':
-                                    els.ttsProgressText.textContent = 'Processing...';
-                                    break;
-                                case 'progress':
-                                    const pct = event.total > 0 ? (event.current / event.total) * 100 : 0;
-                                    els.ttsProgressFill.style.width = `${pct}%`;
-                                    els.ttsProgressText.textContent = `Chunk ${event.current} / ${event.total}`;
-                                    break;
-                                case 'complete':
-                                    els.ttsProgressFill.style.width = '100%';
-                                    els.ttsProgressText.textContent = 'Complete';
-
-                                    downloadUrl = event.download_url;
-                                    els.ttsAudio.src = downloadUrl;
-                                    els.ttsMeta.textContent = `${event.chunks} chunks · ${event.duration.toFixed(1)}s`;
-                                    els.ttsResult.classList.add('active');
-                                    els.ttsDownload.onclick = () => {
-                                        const a = document.createElement('a');
-                                        a.href = downloadUrl;
-                                        a.download = filename + '.wav';
-                                        document.body.appendChild(a);
-                                        a.click();
-                                        document.body.removeChild(a);
-                                    };
-
-                                    setTimeout(() => {
-                                        if (state.tts.jobId === myJobId) {
-                                            resetUI('TTS', true);
-                                            state.tts.abortController = null;
-                                        }
-                                    }, 800);
-                                    return;
-                                case 'error':
-                                    throw new Error(event.message || 'Processing failed');
-                            }
-                        } catch (e) {
-                            if (e instanceof SyntaxError) continue;
-                            throw e;
-                        }
-                    }
-                }
+                if (!res.ok) throw new Error(t('errRequestFailed'));
+                const payload = await res.json();
+                if (!payload.job_id) throw new Error(t('errNoResponseBody'));
+                setActiveJobId('TTS', payload.job_id);
+                refreshJobsListIfOpen();
+                subscribeTtsJobEvents(payload.job_id, filename);
             } catch (err) {
                 console.error('TTS Error:', err);
-                if (state.tts.jobId !== myJobId) {
-                    state.tts.abortController = null;
-                    resetUI('TTS');
-                    return;
-                }
                 if (err.name !== 'AbortError') {
-                    els.ttsError.textContent = err.message || 'Network error';
+                    els.ttsError.textContent = err.message || t('errNetwork');
                     els.ttsError.classList.add('active');
                 }
+                setActiveJobId('TTS', null);
                 resetUI('TTS');
-                state.tts.abortController = null;
-            } finally {
-                if (state.tts.jobId === myJobId) {
-                    state.tts.reader = null;
-                    els.ttsSubmit.disabled = false;
-                }
             }
         });
 
         loadConfig();
-        checkHealth();
-
-        document.addEventListener('visibilitychange', () => {
-            if (document.visibilityState === 'visible') {
-                checkHealth();
-            }
-        });
     </script>
 </body>
 </html>

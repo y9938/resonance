@@ -19,8 +19,12 @@ default:
 # Install dev dependencies
 dev-deps:
     @command -v uv >/dev/null 2>&1 || { echo "uv not found. Install: https://docs.astral.sh/uv/getting-started/installation/"; exit 1; }
-    uv pip install -r pyproject.toml --group dev --torch-backend=auto
-    @echo "Dev env ready. Run: just dev-local"
+    @if [[ -n "{{PYTORCH_BACKEND}}" ]]; then \
+        uv pip install -r pyproject.toml --group dev --torch-backend={{PYTORCH_BACKEND}}; \
+    else \
+        uv pip install -r pyproject.toml --group dev; \
+    fi
+    @echo "Dev env ready. Start server with: just dev"
 
 # Run server locally
 dev:
