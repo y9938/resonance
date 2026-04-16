@@ -7,7 +7,9 @@ Rules for UI translations:
 - `public/locales/manifest.js` is the single source of truth for available locales.
 - Locale codes in the manifest must be canonical BCP 47 tags such as `en`, `ru`, `zh-CN`.
 - `public/locales/*.js` stores non-English locale dictionaries.
-- A locale file may export `messages`, optional `helpers`, and optional `speakerNames`.
+- A locale file may export `messages`, optional `helpers`, and optional `tts`.
+- `tts` may contain `languages` and `voiceGroups` maps for localized TTS labels.
+- `voiceGroups` keys must match backend ids such as `silero_ru` or `kokoro_en`.
 - Non-English locales are loaded lazily from `src` entries in `window.__resonanceLocaleManifest`.
 - Do not duplicate English `data-i18n` values in locale files.
 - JS-only English strings stay in `public/index.html` as the runtime fallback.
@@ -17,6 +19,6 @@ Rules for UI translations:
 To add a new language:
 
 1. Create `public/locales/<lang>.js`
-2. Register it via `window.__registerResonanceLocale('<lang>', { messages, helpers, speakerNames })`
+2. Register it via `window.__registerResonanceLocale('<lang>', { messages, helpers, tts })`
 3. Add one entry to `public/locales/manifest.js`
    Example: `{ code: 'de', label: 'German', nativeLabel: 'Deutsch', src: '/locales/de.js' }`

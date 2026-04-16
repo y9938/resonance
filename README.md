@@ -5,7 +5,7 @@ Unified Speech-to-Text (STT) and Text-to-Speech (TTS) API Server.
 ## Features
 
 - **STT**: GigaAM-v3 model for Russian speech recognition
-- **TTS**: Silero v5_ru with 27 voices
+- **TTS**: Russian Silero v5 voices and English Kokoro voices
 - **i18n**: Interface available in English, Russian, Chinese
 
 ## Demo
@@ -24,16 +24,22 @@ Open http://localhost:8000
 
 **GPU:** set `DEVICE=cuda` in `.env` before building.
 
+Models are loaded lazily on first real STT/TTS use. Container startup does not pre-download or pre-load model weights, so the first request to a specific backend may take noticeably longer.
+
+## Configuration
+
+See `.env.example` for available options.
+
 ## API Endpoints
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/api/health` | GET | Health check |
-| `/api/config` | GET | Public configuration |
-| `/api/models` | GET | List available models |
+| `/api/config` | GET | Public configuration including TTS `language -> voice` catalog |
+| `/api/models` | GET | List backend/model status plus TTS catalog |
 | `/api/jobs` | GET | List current session jobs (compact DTO); query `limit` (default 60), `offset`; JSON includes `has_more`, `next_offset` |
 | `/api/jobs/stt` | POST | Start STT job, returns `job_id` |
-| `/api/jobs/tts` | POST | Start TTS job, returns `job_id` |
+| `/api/jobs/tts` | POST | Start TTS job with `text`, `language`, `voice_id`; returns `job_id` |
 | `/api/jobs/{job_id}` | GET | Get job status/result (session-scoped) |
 | `/api/jobs/{job_id}/events` | GET | Stream job events (SSE, session-scoped) |
 | `/api/jobs/{job_id}/cancel` | POST | Cancel active job (session-scoped) |
@@ -48,7 +54,3 @@ Open http://localhost:8000
 - Backend assigns `resonance_session_id` cookie and enforces ownership on `status/events/cancel` endpoints.
 - After page reload, UI restores state via `GET /api/jobs/{job_id}` and continues progress via `/events`.
 - Job data is in-memory on server (`JobRegistry`), so after server restart unknown `job_id` is cleared on client and UI resets to neutral state.
-
-## Configuration
-
-See `.env.example` for available options.

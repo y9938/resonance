@@ -7,8 +7,8 @@ from pathlib import Path
 
 from playwright.sync_api import Page, expect
 
-AUDIO_FILE = Path(__file__).parent.parent / "fixtures" / "audio.wav"
-TEXT_FILE = Path(__file__).parent.parent / "fixtures" / "text.txt"
+AUDIO_FILE = Path(__file__).parent.parent / "fixtures" / "ru_audio.wav"
+TEXT_FILE = Path(__file__).parent.parent / "fixtures" / "ru_text.txt"
 
 
 def test_demo_flow(page: Page, base_url: str):

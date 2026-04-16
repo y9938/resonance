@@ -15,10 +15,6 @@ COPY pyproject.toml .
 
 RUN uv pip install --system -r pyproject.toml
 
-# Pre-download models (speeds up startup)
-RUN python -c "import torch; torch.hub.load('snakers4/silero-models', model='silero_tts', language='ru', speaker='v5_cis_base', trust_repo=True)"
-RUN python -c "import gigaam; gigaam.load_model('v3_e2e_ctc')"
-
 # -----------------------------------------------------------------------------
 # Runtime stage
 # -----------------------------------------------------------------------------
@@ -27,6 +23,7 @@ FROM python:3.11-slim-bookworm AS runtime
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    espeak-ng \
     ffmpeg \
     libsndfile1 \
     tini \
@@ -36,8 +33,6 @@ RUN groupadd -r resonance && useradd -r -g resonance -s /bin/false resonance
 
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
-COPY --chown=resonance:resonance --from=builder /root/.cache/gigaam /home/resonance/.cache/gigaam
-COPY --chown=resonance:resonance --from=builder /root/.cache/torch /home/resonance/.cache/torch
 
 COPY --chown=resonance:resonance server.py .
 COPY --chown=resonance:resonance public/ ./public/

@@ -8,8 +8,8 @@ from pathlib import Path
 
 from playwright.sync_api import Page, expect
 
-AUDIO_FILE = Path(__file__).parent.parent / "fixtures" / "audio.wav"
-TEXT_FILE = Path(__file__).parent.parent / "fixtures" / "text.txt"
+AUDIO_FILE = Path(__file__).parent.parent / "fixtures" / "ru_audio.wav"
+TEXT_FILE = Path(__file__).parent.parent / "fixtures" / "ru_text.txt"
 
 
 def test_cancel_restart_shows_progress(page: Page, base_url: str):
@@ -23,8 +23,8 @@ def test_cancel_restart_shows_progress(page: Page, base_url: str):
     page.evaluate(
         f"""
         const bytes = new Uint8Array({list(audio_bytes)});
-        const blob = new Blob([bytes], {{ type: 'audio/mpeg' }});
-        const file = new File([blob], 'audio.mp3', {{ type: 'audio/mpeg' }});
+        const blob = new Blob([bytes], {{ type: 'audio/wav' }});
+        const file = new File([blob], 'audio.wav', {{ type: 'audio/wav' }});
         window.testFile = file;
     """
     )

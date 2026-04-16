@@ -4,18 +4,18 @@
     window.__resonanceLocales = locales;
     window.__registerResonanceLocale = function (locale, definition) {
         if (!locale || typeof locale !== 'string') return;
-        if (definition && typeof definition === 'object' && ('messages' in definition || 'helpers' in definition || 'speakerNames' in definition)) {
+        if (definition && typeof definition === 'object' && ('messages' in definition || 'helpers' in definition || 'tts' in definition)) {
             locales[locale] = {
                 messages: definition.messages || {},
                 helpers: definition.helpers || {},
-                speakerNames: definition.speakerNames || {}
+                tts: definition.tts || {}
             };
             return;
         }
         locales[locale] = {
             messages: definition || {},
             helpers: {},
-            speakerNames: {}
+            tts: {}
         };
     };
 })();

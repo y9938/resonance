@@ -20,6 +20,8 @@ dependencies = [
     "hydra-core>=1.3.0",
     "tqdm",
     "gigaam @ git+https://github.com/salute-developers/GigaAM.git",
+    "kokoro>=0.9.4",
+    "misaki[en]", # kokoro uses misaki
 ]
 
 [dependency-groups]

@@ -941,7 +941,8 @@
             </div>
 
             <div class="input-footer">
-                <select class="speaker-select" id="ttsSpeaker"></select>
+                <select class="speaker-select" id="ttsLanguage"></select>
+                <select class="speaker-select" id="ttsVoice"></select>
                 <span class="char-count" id="ttsCharCount">0 chars</span>
             </div>
 
@@ -1081,34 +1082,72 @@
                 return date.toLocaleString('en-US');
             }
         };
-        const DEFAULT_SPEAKER_NAMES = {
-            ru_alexandr: 'Alexandr (Male)',
-            ru_alfia: 'Alfia (Female)',
-            ru_alfia2: 'Alfia 2 (Female)',
-            ru_bogdan: 'Bogdan (Male)',
-            ru_dmitriy: 'Dmitriy (Male)',
-            ru_ekaterina: 'Ekaterina (Female)',
-            ru_vika: 'Vika (Female)',
-            ru_gamat: 'Gamat (Male)',
-            ru_igor: 'Igor (Male)',
-            ru_karina: 'Karina (Female)',
-            ru_kejilgan: 'Kejilgan (Male)',
-            ru_kermen: 'Kermen (Female)',
-            ru_marat: 'Marat (Male)',
-            ru_miyau: 'Miyau (Female)',
-            ru_nurgul: 'Nurgul (Female)',
-            ru_oksana: 'Oksana (Female)',
-            ru_onaoy: 'Onaoy (Male)',
-            ru_ramilia: 'Ramilia (Female)',
-            ru_roman: 'Roman (Male) ★',
-            ru_safarhuja: 'Safarhuja (Male)',
-            ru_saida: 'Saia (Female)',
-            ru_sibday: 'Sibday (Male)',
-            ru_zara: 'Zara (Female)',
-            ru_zhadyra: 'Zhadyra (Female) ★',
-            ru_zhazira: 'Zhazira (Female)',
-            ru_zinaida: 'Zinaida (Female)',
-            ru_eduard: 'Eduard (Male)'
+        const DEFAULT_TTS_LABELS = {
+            languages: {
+                ru: 'Russian',
+                en: 'English'
+            },
+            voiceGroups: {
+                silero_ru: {
+                    ru_alexandr: 'Alexandr (Male)',
+                    ru_alfia: 'Alfia (Female)',
+                    ru_alfia2: 'Alfia 2 (Female)',
+                    ru_bogdan: 'Bogdan (Male)',
+                    ru_dmitriy: 'Dmitriy (Male)',
+                    ru_ekaterina: 'Ekaterina (Female)',
+                    ru_vika: 'Vika (Female)',
+                    ru_gamat: 'Gamat (Male)',
+                    ru_igor: 'Igor (Male)',
+                    ru_karina: 'Karina (Female)',
+                    ru_kejilgan: 'Kejilgan (Male)',
+                    ru_kermen: 'Kermen (Female)',
+                    ru_marat: 'Marat (Male)',
+                    ru_miyau: 'Miyau (Female)',
+                    ru_nurgul: 'Nurgul (Female)',
+                    ru_oksana: 'Oksana (Female)',
+                    ru_onaoy: 'Onaoy (Male)',
+                    ru_ramilia: 'Ramilia (Female)',
+                    ru_roman: 'Roman (Male) ★',
+                    ru_safarhuja: 'Safarhuja (Male)',
+                    ru_saida: 'Saia (Female)',
+                    ru_sibday: 'Sibday (Male)',
+                    ru_zara: 'Zara (Female)',
+                    ru_zhadyra: 'Zhadyra (Female) ★',
+                    ru_zhazira: 'Zhazira (Female)',
+                    ru_zinaida: 'Zinaida (Female)',
+                    ru_eduard: 'Eduard (Male)'
+                },
+                kokoro_en: {
+                    af_heart: 'Heart (Female)',
+                    af_alloy: 'Alloy (Female)',
+                    af_aoede: 'Aoede (Female)',
+                    af_bella: 'Bella (Female)',
+                    af_jessica: 'Jessica (Female)',
+                    af_kore: 'Kore (Female)',
+                    af_nicole: 'Nicole (Female)',
+                    af_nova: 'Nova (Female)',
+                    af_river: 'River (Female)',
+                    af_sarah: 'Sarah (Female)',
+                    af_sky: 'Sky (Female)',
+                    am_adam: 'Adam (Male)',
+                    am_echo: 'Echo (Male)',
+                    am_eric: 'Eric (Male)',
+                    am_fenrir: 'Fenrir (Male)',
+                    am_liam: 'Liam (Male)',
+                    am_michael: 'Michael (Male)',
+                    am_onyx: 'Onyx (Male)',
+                    am_puck: 'Puck (Male)',
+                    am_santa: 'Santa (Male)',
+                    bf_alice: 'Alice (Female)',
+                    bf_emma: 'Emma (Female)',
+                    bf_isabella: 'Isabella (Female)',
+                    bf_lily: 'Lily (Female)',
+                    bm_daniel: 'Daniel (Male)',
+                    bm_fable: 'Fable (Male)',
+                    bm_george: 'George (Male)',
+                    bm_lewis: 'Lewis (Male)'
+                }
+            }
         };
 
         function captureEnDefaultsFromDom() {
@@ -1220,11 +1259,38 @@
             return { ...DEFAULT_LOCALE_HELPERS, ...entry.helpers };
         }
 
-        function getLocaleSpeakerNames(loc) {
-            if (loc === DEFAULT_LOCALE) return DEFAULT_SPEAKER_NAMES;
+        function getLocaleTtsLabels(loc) {
+            if (loc === DEFAULT_LOCALE) return DEFAULT_TTS_LABELS;
             const entry = I18N_LOCALES[loc] || null;
-            if (!entry || !entry.speakerNames) return DEFAULT_SPEAKER_NAMES;
-            return { ...DEFAULT_SPEAKER_NAMES, ...entry.speakerNames };
+            if (!entry || !entry.tts) return DEFAULT_TTS_LABELS;
+            return {
+                languages: { ...DEFAULT_TTS_LABELS.languages, ...(entry.tts.languages || {}) },
+                voiceGroups: {
+                    ...DEFAULT_TTS_LABELS.voiceGroups,
+                    ...(entry.tts.voiceGroups || {})
+                }
+            };
+        }
+
+        function getVoiceLabel(labels, voice) {
+            if (!voice || !voice.id) return '';
+            const backendId = voice.backend_id || '';
+            const group = backendId ? labels.voiceGroups[backendId] : null;
+            return (group && group[voice.id]) || formatFallbackVoiceLabel(voice.id);
+        }
+
+        function titleCaseWord(value) {
+            if (!value) return '';
+            return value.charAt(0).toUpperCase() + value.slice(1);
+        }
+
+        function formatFallbackVoiceLabel(voiceId) {
+            if (!voiceId) return '';
+            if (voiceId.startsWith('ru_')) return voiceId;
+            const parts = voiceId.split('_');
+            if (parts.length !== 2) return voiceId;
+            const region = { af: 'US', am: 'US', bf: 'UK', bm: 'UK' }[parts[0]] || parts[0].toUpperCase();
+            return titleCaseWord(parts[1]) + ' (' + region + ')';
         }
 
         const initialLocale = getLocale();
@@ -1556,7 +1622,8 @@
         }
 
         const savedTab = localStorage.getItem('resonance_activeTab');
-        const TTS_SPEAKER_KEY = 'resonance_ttsSpeaker';
+        const TTS_LANGUAGE_KEY = 'resonance_ttsLanguage';
+        const TTS_VOICE_BY_LANGUAGE_KEY = 'resonance_ttsVoiceByLanguage';
         const TTS_TEXT_STORAGE_KEY = 'resonance_ttsText';
         const TTS_DRAFT_STORAGE_MAX_CHARS = 100000;
         const STT_ACTIVE_JOB_KEY = 'resonance_stt_active_job_id';
@@ -1648,6 +1715,89 @@
             }
         }
 
+        function getTtsCatalog() {
+            const tts = CONFIG.tts;
+            if (!tts || !Array.isArray(tts.languages)) {
+                return { default_language: null, languages: [] };
+            }
+            return tts;
+        }
+
+        function getSavedTtsVoiceByLanguage() {
+            try {
+                const raw = localStorage.getItem(TTS_VOICE_BY_LANGUAGE_KEY);
+                if (!raw) return {};
+                const parsed = JSON.parse(raw);
+                if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+                return parsed;
+            } catch (e) {
+                return {};
+            }
+        }
+
+        function persistTtsVoiceSelection(languageId, voiceId) {
+            if (!languageId || !voiceId) return;
+            const savedVoices = getSavedTtsVoiceByLanguage();
+            savedVoices[languageId] = voiceId;
+            localStorage.setItem(TTS_VOICE_BY_LANGUAGE_KEY, JSON.stringify(savedVoices));
+        }
+
+        function getTtsLanguageConfig(languageId) {
+            return getTtsCatalog().languages.find((entry) => entry.id === languageId) || null;
+        }
+
+        function getTtsVoiceIdsForLanguage(languageId) {
+            const language = getTtsLanguageConfig(languageId);
+            if (!language || !Array.isArray(language.voices)) return [];
+            return language.voices.map((voice) => voice.id).filter(Boolean);
+        }
+
+        function getTtsVoicesForLanguage(languageId) {
+            const language = getTtsLanguageConfig(languageId);
+            if (!language || !Array.isArray(language.voices)) return [];
+            return language.voices.filter(Boolean);
+        }
+
+        function renderTtsLanguageOptions(selectedLanguage) {
+            const catalog = getTtsCatalog();
+            const labels = getLocaleTtsLabels(currentLocale);
+            els.ttsLanguage.innerHTML = '';
+            catalog.languages.forEach((language) => {
+                const option = document.createElement('option');
+                option.value = language.id;
+                option.textContent = labels.languages[language.id] || language.id;
+                els.ttsLanguage.appendChild(option);
+            });
+            if (selectedLanguage && getTtsLanguageConfig(selectedLanguage)) {
+                els.ttsLanguage.value = selectedLanguage;
+            } else if (catalog.default_language && getTtsLanguageConfig(catalog.default_language)) {
+                els.ttsLanguage.value = catalog.default_language;
+            } else if (catalog.languages.length > 0) {
+                els.ttsLanguage.value = catalog.languages[0].id;
+            }
+        }
+
+        function renderTtsVoiceOptions(languageId, selectedVoiceId) {
+            const labels = getLocaleTtsLabels(currentLocale);
+            const voices = getTtsVoicesForLanguage(languageId);
+            const voiceIds = voices.map((voice) => voice.id).filter(Boolean);
+            const language = getTtsLanguageConfig(languageId);
+            els.ttsVoice.innerHTML = '';
+            voices.forEach((voice) => {
+                const option = document.createElement('option');
+                option.value = voice.id;
+                option.textContent = getVoiceLabel(labels, voice);
+                els.ttsVoice.appendChild(option);
+            });
+            if (selectedVoiceId && voiceIds.includes(selectedVoiceId)) {
+                els.ttsVoice.value = selectedVoiceId;
+            } else if (language && language.default_voice_id && voiceIds.includes(language.default_voice_id)) {
+                els.ttsVoice.value = language.default_voice_id;
+            } else if (voiceIds.length > 0) {
+                els.ttsVoice.value = voiceIds[0];
+            }
+        }
+
         function applyConfig() {
             const hint = document.getElementById('sttDropzoneHint');
             if (hint) {
@@ -1657,26 +1807,13 @@
                 hint.textContent = t('hintSttMedia', { limit: limitText });
             }
 
-            const speakerSelect = document.getElementById('ttsSpeaker');
-            if (speakerSelect && CONFIG.tts_speakers && CONFIG.tts_speakers.length > 0) {
-                const savedSpeaker = localStorage.getItem(TTS_SPEAKER_KEY);
-                const currentValue = savedSpeaker || speakerSelect.value;
-                const names = getLocaleSpeakerNames(currentLocale);
-                speakerSelect.innerHTML = '';
-                CONFIG.tts_speakers.forEach(speaker => {
-                    const option = document.createElement('option');
-                    option.value = speaker;
-                    option.textContent = names[speaker] || speaker;
-                    speakerSelect.appendChild(option);
-                });
-                if (CONFIG.tts_speakers.includes(currentValue)) {
-                    speakerSelect.value = currentValue;
-                } else if (CONFIG.tts_default_speaker && CONFIG.tts_speakers.includes(CONFIG.tts_default_speaker)) {
-                    speakerSelect.value = CONFIG.tts_default_speaker;
-                } else {
-                    speakerSelect.value = CONFIG.tts_speakers[0];
-                }
-                localStorage.setItem(TTS_SPEAKER_KEY, speakerSelect.value);
+            if (els.ttsLanguage && els.ttsVoice && CONFIG.tts && CONFIG.tts.languages && CONFIG.tts.languages.length > 0) {
+                const savedLanguage = localStorage.getItem(TTS_LANGUAGE_KEY);
+                const savedVoices = getSavedTtsVoiceByLanguage();
+                renderTtsLanguageOptions(savedLanguage || els.ttsLanguage.value);
+                renderTtsVoiceOptions(els.ttsLanguage.value, savedVoices[els.ttsLanguage.value] || els.ttsVoice.value);
+                localStorage.setItem(TTS_LANGUAGE_KEY, els.ttsLanguage.value);
+                persistTtsVoiceSelection(els.ttsLanguage.value, els.ttsVoice.value);
             }
 
             if (els.ttsInput) {
@@ -1729,7 +1866,8 @@
             sttDownload: document.getElementById('sttDownload'),
 
             ttsInput: document.getElementById('ttsInput'),
-            ttsSpeaker: document.getElementById('ttsSpeaker'),
+            ttsLanguage: document.getElementById('ttsLanguage'),
+            ttsVoice: document.getElementById('ttsVoice'),
             ttsDropzone: document.getElementById('ttsDropzone'),
             ttsFileInput: document.getElementById('ttsFileInput'),
             ttsCharCount: document.getElementById('ttsCharCount'),
@@ -1957,51 +2095,69 @@
             return jobType === 'stt' ? t('jobsTypeStt') : t('jobsTypeTts');
         }
 
-        function formatJobState(stateName) {
-            const map = {
-                queued: 'jobsStateQueued',
-                running: 'jobsStateRunning',
-                completed: 'jobsStateCompleted',
-                failed: 'jobsStateFailed',
-                cancelled: 'jobsStateCancelled',
-            };
-            return t(map[stateName] || 'jobsStateQueued');
-        }
+	        function formatJobState(stateName) {
+	            const map = {
+	                queued: 'jobsStateQueued',
+	                running: 'jobsStateRunning',
+	                completed: 'jobsStateCompleted',
+	                failed: 'jobsStateFailed',
+	                cancelled: 'jobsStateCancelled',
+	            };
+	            return t(map[stateName] || 'jobsStateQueued');
+	        }
 
-        function showJobsState(i18nKey) {
-            state.jobsListStateKey = i18nKey;
-            els.jobsListState.style.display = '';
-            els.jobsList.style.display = 'none';
-            els.jobsFooter.style.display = 'none';
+	        function getJobDurationSec(job) {
+	            if (job && Number.isFinite(Number(job.duration)) && Number(job.duration) > 0) {
+	                return Number(job.duration);
+	            }
+	            const result = job && job.result ? job.result : null;
+	            if (result && Number.isFinite(Number(result.duration)) && Number(result.duration) > 0) {
+	                return Number(result.duration);
+	            }
+	            if (job && job.job_type === 'stt' && result && Array.isArray(result.segments)) {
+	                let maxEnd = 0;
+	                for (const s of result.segments) {
+	                    const end = s && Number.isFinite(Number(s.end)) ? Number(s.end) : 0;
+	                    if (end > maxEnd) maxEnd = end;
+	                }
+	                if (maxEnd > 0) return maxEnd;
+	            }
+	            return null;
+	        }
+
+	        function showJobsState(i18nKey) {
+	            state.jobsListStateKey = i18nKey;
+	            els.jobsListState.style.display = '';
+	            els.jobsList.style.display = 'none';
+	            els.jobsFooter.style.display = 'none';
             els.jobsLoadMoreState.style.display = 'none';
             els.jobsListEnd.style.display = 'none';
             els.jobsListState.textContent = t(i18nKey);
         }
 
-        function createJobListButton(job) {
-            const btn = document.createElement('button');
-            btn.type = 'button';
-            btn.className = 'btn btn-secondary';
-            btn.style.display = 'block';
-            btn.style.width = '100%';
-            btn.style.textAlign = 'left';
-            btn.style.marginBottom = '0.5rem';
-            btn.style.padding = '0.625rem 0.75rem';
-            const total = Number(job.progress_total || 0);
-            const current = Number(job.progress_current || 0);
-            const progress = total > 0 ? `${current}/${total}` : '-';
-            const updated = new Date(Number(job.updated_at || 0) * 1000);
-            const updatedText = Number.isFinite(updated.getTime())
-                ? getLocaleHelpers(currentLocale).formatDateTime(updated)
-                : '-';
-            btn.innerHTML = `
-                <div style="font-weight: 600;">${formatJobType(job.job_type)} · ${formatJobState(job.state)}</div>
-                <div style="opacity: 0.85; font-size: 0.85rem;">progress: ${progress}</div>
-                <div style="opacity: 0.75; font-size: 0.8rem;">${updatedText}</div>
-            `;
-            btn.addEventListener('click', () => restoreJob(job.job_id, job.job_type));
-            return btn;
-        }
+	        function createJobListButton(job) {
+	            const btn = document.createElement('button');
+	            btn.type = 'button';
+	            btn.className = 'btn btn-secondary';
+	            btn.style.display = 'block';
+	            btn.style.width = '100%';
+	            btn.style.textAlign = 'left';
+	            btn.style.marginBottom = '0.5rem';
+	            btn.style.padding = '0.625rem 0.75rem';
+	            const durationSec = getJobDurationSec(job);
+	            const durationText = Number.isFinite(durationSec) ? formatSttProcessedTextDuration(durationSec) : '-';
+	            const durationSuffix = durationText !== '-' ? ` · ${durationText}` : '';
+	            const updated = new Date(Number(job.updated_at || 0) * 1000);
+	            const updatedText = Number.isFinite(updated.getTime())
+	                ? getLocaleHelpers(currentLocale).formatDateTime(updated)
+	                : '-';
+	            btn.innerHTML = `
+	                <div style="font-weight: 600;">${formatJobType(job.job_type)} · ${formatJobState(job.state)}${durationSuffix}</div>
+	                <div style="opacity: 0.75; font-size: 0.8rem;">${updatedText}</div>
+	            `;
+	            btn.addEventListener('click', () => restoreJob(job.job_id, job.job_type));
+	            return btn;
+	        }
 
         function rebuildJobsListFromState() {
             els.jobsList.innerHTML = '';
@@ -3055,8 +3211,15 @@
             syncTtsDraftStorage();
         });
 
-        els.ttsSpeaker.addEventListener('change', () => {
-            localStorage.setItem(TTS_SPEAKER_KEY, els.ttsSpeaker.value);
+        els.ttsLanguage.addEventListener('change', () => {
+            const savedVoices = getSavedTtsVoiceByLanguage();
+            renderTtsVoiceOptions(els.ttsLanguage.value, savedVoices[els.ttsLanguage.value] || null);
+            localStorage.setItem(TTS_LANGUAGE_KEY, els.ttsLanguage.value);
+            persistTtsVoiceSelection(els.ttsLanguage.value, els.ttsVoice.value);
+        });
+
+        els.ttsVoice.addEventListener('change', () => {
+            persistTtsVoiceSelection(els.ttsLanguage.value, els.ttsVoice.value);
         });
 
         els.ttsSubmit.addEventListener('click', async () => {
@@ -3095,7 +3258,7 @@
 
             try {
                 const res = await fetch(
-                    API_URL + '/jobs/tts?text=' + encodeURIComponent(text) + '&speaker=' + els.ttsSpeaker.value + '&filename=' + encodeURIComponent(filename),
+                    API_URL + '/jobs/tts?text=' + encodeURIComponent(text) + '&language=' + encodeURIComponent(els.ttsLanguage.value) + '&voice_id=' + encodeURIComponent(els.ttsVoice.value) + '&filename=' + encodeURIComponent(filename),
                     { method: 'POST' }
                 );
                 if (!res.ok) throw new Error(t('errRequestFailed'));
