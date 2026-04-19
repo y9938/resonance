@@ -843,11 +843,11 @@
                 </div>
 
                 <div style="display: flex; gap: 0.5rem; justify-content: center; margin-top: 0.75rem;">
-                    <button class="cancel-btn" id="sttStop">
+                    <button class="cancel-btn" id="sttHide">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                             <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
                         </svg>
-                        <span data-i18n="btnStop">Stop</span>
+                        <span data-i18n="btnHide">Hide</span>
                     </button>
                     <button class="cancel-btn" id="sttCancel">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1053,7 +1053,18 @@
                 return n + ' ' + (n === 1 ? 'segment' : 'segments');
             },
             formatSttProcessedTextDuration(seconds) {
-                return seconds.toFixed(1) + 's';
+                if (!Number.isFinite(seconds) || seconds <= 0) return '0.0s';
+                if (seconds < 60) {
+                    return seconds.toFixed(1) + 's';
+                }
+                const total = Math.max(1, Math.round(seconds));
+                const hours = Math.floor(total / 3600);
+                const mins = Math.floor((total % 3600) / 60);
+                const secs = total % 60;
+                if (hours > 0) {
+                    return String(hours) + 'h ' + String(mins) + 'm';
+                }
+                return String(mins) + 'm ' + String(secs) + 's';
             },
             formatSttProcessedTextLabel(durationText) {
                 return 'Processed text: ' + durationText;
@@ -1636,6 +1647,8 @@
                 eventSource: null,
                 jobId: null,
                 segments: null,
+                progressCurrent: 0,
+                progressTotal: 0,
                 statusPollTimer: null,
                 resize: {
                     active: false,
@@ -1646,7 +1659,7 @@
                     autoScrollRaf: null
                 }
             },
-            tts: { eventSource: null, jobId: null, statusPollTimer: null },
+            tts: { eventSource: null, jobId: null, progressCurrent: 0, progressTotal: 0, statusPollTimer: null },
             jobsList: [],
             jobsListStateKey: 'jobsEmpty',
             jobsNextOffset: 0,
@@ -1852,7 +1865,7 @@
             sttProgress: document.getElementById('sttProgress'),
             sttProgressFill: document.getElementById('sttProgressFill'),
             sttProgressText: document.getElementById('sttProgressText'),
-            sttStop: document.getElementById('sttStop'),
+            sttHide: document.getElementById('sttHide'),
             sttCancel: document.getElementById('sttCancel'),
             sttError: document.getElementById('sttError'),
             sttResult: document.getElementById('sttResult'),
@@ -1892,6 +1905,29 @@
                 ? mergedText
                 : getSttBlocksText();
             els.sttMeta.textContent = formatSttMeta(segs.length);
+        }
+
+        function refreshActiveProgressLabels() {
+            if (els.sttProgress.classList.contains('active') && state.stt.progressTotal > 0) {
+                if (state.stt.progressCurrent >= state.stt.progressTotal) {
+                    els.sttProgressText.textContent = t('progressComplete');
+                } else if (state.stt.progressCurrent > 0) {
+                    els.sttProgressText.textContent = t('progressChunk', {
+                        current: state.stt.progressCurrent,
+                        total: state.stt.progressTotal
+                    });
+                }
+            }
+            if (els.ttsProgress.classList.contains('active') && state.tts.progressTotal > 0) {
+                if (state.tts.progressCurrent >= state.tts.progressTotal) {
+                    els.ttsProgressText.textContent = t('progressComplete');
+                } else if (state.tts.progressCurrent > 0) {
+                    els.ttsProgressText.textContent = t('progressChunk', {
+                        current: state.tts.progressCurrent,
+                        total: state.tts.progressTotal
+                    });
+                }
+            }
         }
 
         function applySttResizeFromPointer(clientY) {
@@ -1984,6 +2020,8 @@
             els.sttProgress.classList.add('active');
             const total = status.progress_total || segs.length;
             const current = status.progress_current || segs.length;
+            state.stt.progressCurrent = current;
+            state.stt.progressTotal = total;
             const pct = total > 0 ? (current / total) * 100 : 0;
             els.sttProgressFill.style.width = Math.max(0, Math.min(100, pct)) + '%';
             if (status.state === 'completed') {
@@ -2050,6 +2088,8 @@
 
             applyConfig();
             updateTtsCharCount();
+            refreshSttResultDisplay();
+            refreshActiveProgressLabels();
             if (els.jobsList.style.display !== 'none') {
                 rebuildJobsListFromState();
                 updateJobsFooterUi();
@@ -2323,7 +2363,7 @@
             }
 
             if (jobType === 'stt') {
-                if (status.state === 'failed' || status.state === 'cancelled') {
+                if (status.state === 'failed') {
                     resetUI('STT', false);
                     await loadJobsList();
                     return;
@@ -2332,7 +2372,7 @@
                 if (status.state === 'running' || status.state === 'queued') {
                     setActiveJobId('STT', jobId);
                     els.sttCancel.classList.add('active');
-                    els.sttStop.classList.add('active');
+                    els.sttHide.classList.add('active');
                     els.sttProgress.classList.add('active');
                     subscribeSttJobEvents(jobId, state.stt.segments || [], refreshSttResultDisplay);
                 }
@@ -2351,6 +2391,8 @@
                     els.ttsCancel.classList.add('active');
                     const total = status.progress_total || 1;
                     const current = status.progress_current || 0;
+                    state.tts.progressCurrent = current;
+                    state.tts.progressTotal = total;
                     const pct = total > 0 ? (current / total) * 100 : 0;
                     els.ttsProgressFill.style.width = pct + '%';
                     els.ttsProgressText.textContent = t('progressChunk', { current, total });
@@ -2461,7 +2503,7 @@
                     applySttJobStatus(status);
                     if (status.state !== 'completed') {
                         els.sttCancel.classList.add('active');
-                        els.sttStop.classList.add('active');
+                        els.sttHide.classList.add('active');
                         subscribeSttJobEvents(sttJobId, state.stt.segments || [], refreshSttResultDisplay);
                     } else {
                         setActiveJobId('STT', null);
@@ -2483,6 +2525,8 @@
                     els.ttsSubmit.disabled = true;
                     const total = status.progress_total || 1;
                     const current = status.progress_current || 0;
+                    state.tts.progressCurrent = current;
+                    state.tts.progressTotal = total;
                     const pct = total > 0 ? (current / total) * 100 : 0;
                     els.ttsProgressFill.style.width = pct + '%';
                     els.ttsProgressText.textContent = t('progressChunk', { current, total });
@@ -2512,7 +2556,9 @@
                 stopSttResize();
                 els.sttDropzone.classList.remove('processing');
                 els.sttCancel.classList.remove('active');
-                els.sttStop.classList.remove('active');
+                els.sttHide.classList.remove('active');
+                state.stt.progressCurrent = 0;
+                state.stt.progressTotal = 0;
                 if (!keepResult) {
                     els.sttResult.classList.remove('active');
                     els.sttResultText.value = '';
@@ -2524,6 +2570,8 @@
             } else if (type === 'TTS') {
                 els.ttsCancel.classList.remove('active');
                 els.ttsSubmit.disabled = false;
+                state.tts.progressCurrent = 0;
+                state.tts.progressTotal = 0;
                 if (!keepResult) {
                     els.ttsResult.classList.remove('active');
                     els.ttsAudio.pause();
@@ -2834,9 +2882,11 @@
             refreshJobsListIfOpen();
         }
 
-        function stopJob(type) {
+        function hideJob(type) {
             closeJobStreams(type);
+            setActiveJobId(type, null);
             resetUI(type, true);
+            refreshJobsListIfOpen();
         }
 
         function subscribeSttJobEvents(jobId, segments, updateDisplay) {
@@ -2852,9 +2902,13 @@
                 }
                 switch (event.type) {
                     case 'start':
+                        state.stt.progressCurrent = 0;
+                        state.stt.progressTotal = event.total || 0;
                         els.sttProgressText.textContent = t('progressProcessing');
                         break;
                     case 'progress':
+                        state.stt.progressCurrent = event.current || 0;
+                        state.stt.progressTotal = event.total || 0;
                         const pct = event.total > 0 ? (event.current / event.total) * 100 : 0;
                         els.sttProgressFill.style.width = pct + '%';
                         els.sttProgressText.textContent = t('progressChunk', {
@@ -2867,6 +2921,7 @@
                         }
                         break;
                     case 'complete':
+                        state.stt.progressCurrent = state.stt.progressTotal || 0;
                         els.sttProgressFill.style.width = '100%';
                         els.sttProgressText.textContent = t('progressComplete');
                         updateDisplay();
@@ -2929,9 +2984,13 @@
                 }
                 switch (event.type) {
                     case 'start':
+                        state.tts.progressCurrent = 0;
+                        state.tts.progressTotal = event.total || 0;
                         els.ttsProgressText.textContent = t('progressProcessing');
                         break;
                     case 'progress':
+                        state.tts.progressCurrent = event.current || 0;
+                        state.tts.progressTotal = event.total || 0;
                         const pct2 = event.total > 0 ? (event.current / event.total) * 100 : 0;
                         els.ttsProgressFill.style.width = pct2 + '%';
                         els.ttsProgressText.textContent = t('progressChunk', {
@@ -2940,6 +2999,7 @@
                         });
                         break;
                     case 'complete':
+                        state.tts.progressCurrent = state.tts.progressTotal || 0;
                         els.ttsProgressFill.style.width = '100%';
                         els.ttsProgressText.textContent = t('progressComplete');
                         els.ttsResult.classList.add('active');
@@ -3015,7 +3075,7 @@
             els.sttError.classList.remove('active');
             els.sttDropzone.classList.add('processing');
             els.sttProgress.classList.add('active');
-            els.sttStop.classList.add('active');
+            els.sttHide.classList.add('active');
             els.sttCancel.classList.add('active');
             els.sttProgressFill.style.width = '5%';
             els.sttProgressText.textContent = t('progressUploading');
@@ -3080,9 +3140,9 @@
             if (e.target.files.length > 0) handleSttFile(e.target.files[0]);
         });
 
-        els.sttStop.addEventListener('click', (e) => {
+        els.sttHide.addEventListener('click', (e) => {
             e.stopPropagation();
-            stopJob('STT');
+            hideJob('STT');
         });
 
         els.sttCancel.addEventListener('click', (e) => {

@@ -1,4 +1,6 @@
 *
+!public/
 !pyproject.toml
 !server.py
-!public/
+!stt/
+!tts/

@@ -8,11 +8,13 @@
 !Dockerfile
 !pyproject.toml
 !server.py
-!justfile
-!README.md
-!LICENSE
+!stt/
+!stt/**
+!tts/
+!tts/**
 
 !demo-gif.sh
+!justfile
 
 !public/
 !public/**
@@ -22,4 +24,6 @@
 
 **/__pycache__/**
 
+!README.md
+!LICENSE
 !media

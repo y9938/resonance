@@ -12,7 +12,6 @@ Architecture:
 from __future__ import annotations
 
 import os
-import re
 import sys
 import json
 import shutil
@@ -21,7 +20,6 @@ import copy
 import logging
 import secrets
 import tempfile
-import subprocess
 import threading
 import asyncio
 import time
@@ -33,13 +31,15 @@ from contextlib import asynccontextmanager, suppress
 from dotenv import load_dotenv
 
 import torch
-import torchaudio
-import torchaudio.transforms as T
-from scipy.io import wavfile
 from fastapi import FastAPI, File, UploadFile, HTTPException, Query, Request, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse, PlainTextResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from stt.pipeline import (
+    run_stt_worker,
+    save_upload_to_path,
+)
+from tts.service import TtsService
 
 load_dotenv()
 
@@ -57,12 +57,19 @@ class Config:
     TTS_MAX_CHARS: int = int(os.getenv("RESONANCE_TTS_MAX_CHARS", "600"))
     TTS_MAX_INPUT_CHARS: int = int(os.getenv("RESONANCE_TTS_MAX_INPUT_CHARS", "0"))
     MAX_WORKERS: int = int(os.getenv("RESONANCE_MAX_WORKERS", "2"))
+    STT_MAX_CONCURRENT_JOBS: int = int(
+        os.getenv("RESONANCE_STT_MAX_CONCURRENT_JOBS", str(MAX_WORKERS))
+    )
+    STT_MAX_DURATION_SEC: int = int(os.getenv("RESONANCE_STT_MAX_DURATION_SEC", "0"))
     UPLOAD_LIMIT_MB: int = int(os.getenv("RESONANCE_UPLOAD_LIMIT_MB", "0"))
     TTS_FILE_TTL_SEC: int = int(os.getenv("RESONANCE_TTS_FILE_TTL_SEC", "5400"))
     TTS_SWEEP_INTERVAL_SEC: int = int(
         os.getenv("RESONANCE_TTS_SWEEP_INTERVAL_SEC", "900")
     )
 TTS_OUTPUT_DIR = Path(tempfile.gettempdir()) / "resonance-tts"
+STT_WORKER_SEMAPHORE = threading.BoundedSemaphore(
+    max(1, Config.STT_MAX_CONCURRENT_JOBS)
+)
 
 
 def cors_allow_origins() -> list[str]:
@@ -167,539 +174,13 @@ def _load_tts() -> Any:
 
 
 models = ModelManager()
-
-
-# -----------------------------------------------------------------------------
-# TTS Backends
-# -----------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class TtsVoice:
-    voice_id: str
-    language: str
-    backend_id: str
-
-
-@dataclass(frozen=True)
-class TtsLanguage:
-    language_id: str
-    default_voice_id: str
-    voice_ids: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class KokoroVoiceSpec:
-    voice_id: str
-    lang_code: str
-
-
-@dataclass
-class TtsSynthesisResult:
-    audio: torch.Tensor
-    sample_rate: int
-    chunks: int
-
-
-class TtsBackend:
-    backend_id: str = ""
-    name: str = ""
-
-    @property
-    def loaded(self) -> bool:
-        raise NotImplementedError
-
-    def estimate_chunks(self, text: str) -> int:
-        raise NotImplementedError
-
-    def synthesize(self, text: str, voice_id: str) -> TtsSynthesisResult:
-        raise NotImplementedError
-
-
-class SileroRuTtsBackend(TtsBackend):
-    backend_id = "silero_ru"
-    name = "Silero v5_cis_base"
-
-    @property
-    def loaded(self) -> bool:
-        return models.tts_loaded
-
-    def estimate_chunks(self, text: str) -> int:
-        clean = clean_tts_text(text)
-        return len(split_tts_text(clean))
-
-    def synthesize(self, text: str, voice_id: str) -> TtsSynthesisResult:
-        model = models.tts()
-        clean = clean_tts_text(text)
-        chunks = split_tts_text(clean)
-        audio_parts: list[torch.Tensor] = []
-
-        for chunk_text in chunks:
-            audio = model.apply_tts(
-                text=chunk_text,
-                speaker=voice_id,
-                sample_rate=Config.TTS_SR,
-            )
-            audio_parts.append(audio)
-
-        if not audio_parts:
-            raise RuntimeError("All TTS chunks failed")
-
-        return TtsSynthesisResult(
-            audio=torch.cat(audio_parts, dim=0),
-            sample_rate=Config.TTS_SR,
-            chunks=len(chunks),
-        )
-
-class KokoroEnTtsBackend(TtsBackend):
-    backend_id = "kokoro_en"
-    name = "Kokoro English"
-    sample_rate = 24000
-    _voice_specs = {
-        "af_heart": KokoroVoiceSpec(voice_id="af_heart", lang_code="a"),
-        "af_alloy": KokoroVoiceSpec(voice_id="af_alloy", lang_code="a"),
-        "af_aoede": KokoroVoiceSpec(voice_id="af_aoede", lang_code="a"),
-        "af_bella": KokoroVoiceSpec(voice_id="af_bella", lang_code="a"),
-        "af_jessica": KokoroVoiceSpec(voice_id="af_jessica", lang_code="a"),
-        "af_kore": KokoroVoiceSpec(voice_id="af_kore", lang_code="a"),
-        "af_nicole": KokoroVoiceSpec(voice_id="af_nicole", lang_code="a"),
-        "af_nova": KokoroVoiceSpec(voice_id="af_nova", lang_code="a"),
-        "af_river": KokoroVoiceSpec(voice_id="af_river", lang_code="a"),
-        "af_sarah": KokoroVoiceSpec(voice_id="af_sarah", lang_code="a"),
-        "af_sky": KokoroVoiceSpec(voice_id="af_sky", lang_code="a"),
-        "am_adam": KokoroVoiceSpec(voice_id="am_adam", lang_code="a"),
-        "am_echo": KokoroVoiceSpec(voice_id="am_echo", lang_code="a"),
-        "am_eric": KokoroVoiceSpec(voice_id="am_eric", lang_code="a"),
-        "am_fenrir": KokoroVoiceSpec(voice_id="am_fenrir", lang_code="a"),
-        "am_liam": KokoroVoiceSpec(voice_id="am_liam", lang_code="a"),
-        "am_michael": KokoroVoiceSpec(voice_id="am_michael", lang_code="a"),
-        "am_onyx": KokoroVoiceSpec(voice_id="am_onyx", lang_code="a"),
-        "am_puck": KokoroVoiceSpec(voice_id="am_puck", lang_code="a"),
-        "am_santa": KokoroVoiceSpec(voice_id="am_santa", lang_code="a"),
-        "bf_alice": KokoroVoiceSpec(voice_id="bf_alice", lang_code="b"),
-        "bf_emma": KokoroVoiceSpec(voice_id="bf_emma", lang_code="b"),
-        "bf_isabella": KokoroVoiceSpec(voice_id="bf_isabella", lang_code="b"),
-        "bf_lily": KokoroVoiceSpec(voice_id="bf_lily", lang_code="b"),
-        "bm_daniel": KokoroVoiceSpec(voice_id="bm_daniel", lang_code="b"),
-        "bm_fable": KokoroVoiceSpec(voice_id="bm_fable", lang_code="b"),
-        "bm_george": KokoroVoiceSpec(voice_id="bm_george", lang_code="b"),
-        "bm_lewis": KokoroVoiceSpec(voice_id="bm_lewis", lang_code="b"),
-    }
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._model: Any | None = None
-        self._pipelines: dict[str, Any] = {}
-
-    @property
-    def loaded(self) -> bool:
-        return self._model is not None
-
-    def estimate_chunks(self, text: str) -> int:
-        return 1
-
-    def synthesize(self, text: str, voice_id: str) -> TtsSynthesisResult:
-        with self._lock:
-            spec = self._get_voice_spec(voice_id)
-            pipeline = self._get_pipeline(spec.lang_code)
-            audio_parts: list[torch.Tensor] = []
-            for result in pipeline(clean_tts_text(text), voice=spec.voice_id):
-                if getattr(result, "audio", None) is None:
-                    continue
-                audio_parts.append(torch.as_tensor(result.audio).detach().cpu())
-        if not audio_parts:
-            raise RuntimeError("Kokoro returned no audio chunks")
-        return TtsSynthesisResult(
-            audio=torch.cat(audio_parts, dim=-1),
-            sample_rate=self.sample_rate,
-            chunks=len(audio_parts),
-        )
-
-    def _get_model(self) -> Any:
-        if self._model is None:
-            try:
-                from kokoro import KModel
-            except ImportError as exc:
-                raise RuntimeError(
-                    "Kokoro dependency is not installed. Add 'kokoro' to the environment."
-                ) from exc
-            device = os.getenv("DEVICE", "cpu")
-            log.info(f"Loading TTS model (Kokoro English) on {device}...")
-            self._model = KModel(repo_id="hexgrad/Kokoro-82M").to(torch.device(device)).eval()
-            log.info("Kokoro English model loaded")
-        return self._model
-
-    def _get_pipeline(self, lang_code: str) -> Any:
-        if lang_code not in self._pipelines:
-            try:
-                from kokoro import KPipeline
-            except ImportError as exc:
-                raise RuntimeError(
-                    "Kokoro dependency is not installed. Add 'kokoro' to the environment."
-                ) from exc
-            self._pipelines[lang_code] = KPipeline(
-                lang_code=lang_code,
-                model=self._get_model(),
-                repo_id="hexgrad/Kokoro-82M",
-            )
-        return self._pipelines[lang_code]
-
-    def _get_voice_spec(self, voice_id: str) -> KokoroVoiceSpec:
-        spec = self._voice_specs.get(voice_id)
-        if spec is None:
-            raise RuntimeError(f"Unsupported Kokoro voice: {voice_id}")
-        return spec
-
-
-def _build_tts_voice_catalog() -> dict[str, TtsVoice]:
-    ru_voices = (
-        "ru_alexandr",
-        "ru_alfia",
-        "ru_alfia2",
-        "ru_bogdan",
-        "ru_dmitriy",
-        "ru_ekaterina",
-        "ru_vika",
-        "ru_gamat",
-        "ru_igor",
-        "ru_karina",
-        "ru_kejilgan",
-        "ru_kermen",
-        "ru_marat",
-        "ru_miyau",
-        "ru_nurgul",
-        "ru_oksana",
-        "ru_onaoy",
-        "ru_ramilia",
-        "ru_roman",
-        "ru_safarhuja",
-        "ru_saida",
-        "ru_sibday",
-        "ru_zara",
-        "ru_zhadyra",
-        "ru_zhazira",
-        "ru_zinaida",
-        "ru_eduard",
-    )
-    en_voices = tuple(KokoroEnTtsBackend._voice_specs)
-    catalog = {
-        voice_id: TtsVoice(
-            voice_id=voice_id,
-            language="ru",
-            backend_id=SileroRuTtsBackend.backend_id,
-        )
-        for voice_id in ru_voices
-    }
-    for voice_id in en_voices:
-        catalog[voice_id] = TtsVoice(
-            voice_id=voice_id,
-            language="en",
-            backend_id=KokoroEnTtsBackend.backend_id,
-        )
-    return catalog
-
-
-def _build_tts_language_catalog() -> dict[str, TtsLanguage]:
-    return {
-        "ru": TtsLanguage(
-            language_id="ru",
-            default_voice_id="ru_roman",
-            voice_ids=tuple(
-                voice_id for voice_id, voice in TTS_VOICES.items() if voice.language == "ru"
-            ),
-        ),
-        "en": TtsLanguage(
-            language_id="en",
-            default_voice_id="af_heart",
-            voice_ids=tuple(
-                voice_id for voice_id, voice in TTS_VOICES.items() if voice.language == "en"
-            ),
-        ),
-    }
-
-
-TTS_BACKENDS: dict[str, TtsBackend] = {
-    SileroRuTtsBackend.backend_id: SileroRuTtsBackend(),
-    KokoroEnTtsBackend.backend_id: KokoroEnTtsBackend(),
-}
-TTS_VOICES = _build_tts_voice_catalog()
-TTS_LANGUAGES = _build_tts_language_catalog()
-
-
-def list_tts_voice_ids() -> list[str]:
-    return list(TTS_VOICES)
-
-
-def list_tts_languages() -> list[str]:
-    return list(TTS_LANGUAGES)
-
-
-def default_tts_voice_id() -> str:
-    configured = Config.TTS_VOICE_ID
-    if configured in TTS_VOICES:
-        return configured
-    fallback = next(iter(TTS_VOICES))
-    log.warning(f"Invalid default TTS voice_id '{configured}', using '{fallback}'")
-    return fallback
-
-
-def get_tts_voice_or_400(voice_id: str) -> TtsVoice:
-    voice = TTS_VOICES.get(voice_id)
-    if voice is None:
-        raise HTTPException(400, f"Invalid voice_id. Use: {list_tts_voice_ids()}")
-    return voice
-
-
-def get_tts_language_or_400(language: str) -> TtsLanguage:
-    entry = TTS_LANGUAGES.get(language)
-    if entry is None:
-        raise HTTPException(400, f"Invalid language. Use: {list_tts_languages()}")
-    return entry
-
-
-def get_tts_backend_for_voice(voice_id: str) -> tuple[TtsVoice, TtsBackend]:
-    voice = get_tts_voice_or_400(voice_id)
-    backend = TTS_BACKENDS[voice.backend_id]
-    return voice, backend
-
-
-def validate_tts_language_voice(language: str, voice_id: str) -> TtsVoice:
-    get_tts_language_or_400(language)
-    voice = get_tts_voice_or_400(voice_id)
-    if voice.language != language:
-        raise HTTPException(
-            400,
-            f"voice_id '{voice_id}' does not belong to language '{language}'",
-        )
-    return voice
-
-
-def default_tts_language() -> str:
-    voice = get_tts_voice_or_400(default_tts_voice_id())
-    return voice.language
-
-
-def serialize_tts_catalog() -> dict[str, Any]:
-    return {
-        "default_language": default_tts_language(),
-        "languages": [
-            {
-                "id": language.language_id,
-                "default_voice_id": language.default_voice_id,
-                "voices": [
-                    {
-                        "id": voice_id,
-                        "backend_id": TTS_VOICES[voice_id].backend_id,
-                    }
-                    for voice_id in language.voice_ids
-                ],
-            }
-            for language in TTS_LANGUAGES.values()
-        ],
-    }
-
-
-# -----------------------------------------------------------------------------
-# Audio Processing
-# -----------------------------------------------------------------------------
-
-
-def extract_audio_ffmpeg(input_path: str, output_path: str) -> None:
-    """
-    Caller must ensure: ffmpeg installed and in PATH.
-    Raises: subprocess.CalledProcessError on failure.
-    """
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-i",
-        input_path,
-        "-vn",
-        "-acodec",
-        "pcm_s16le",
-        "-ar",
-        str(Config.SR),
-        "-ac",
-        "1",
-        output_path,
-    ]
-    subprocess.run(cmd, check=True, capture_output=True)
-
-
-def load_audio(input_path: str) -> tuple[torch.Tensor, int]:
-    """
-    Returns: (waveform, sample_rate)
-    Note: Output always mono, resampled to Config.SR.
-    """
-    try:
-        wav, sr = torchaudio.load_with_torchcodec(input_path)
-    except Exception:
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            tmp_path = tmp.name
-        try:
-            extract_audio_ffmpeg(input_path, tmp_path)
-            wav, sr = torchaudio.load_with_torchcodec(tmp_path)
-        finally:
-            os.unlink(tmp_path)
-
-    if wav.shape[0] > 1:
-        wav = wav.mean(dim=0, keepdim=True)
-
-    if sr != Config.SR:
-        resampler = T.Resample(sr, Config.SR)
-        wav = resampler(wav)
-
-    return wav, Config.SR
-
-
-def split_audio_chunks(
-    wav: torch.Tensor, sr: int
-) -> list[tuple[float, float, torch.Tensor]]:
-    """
-    Assumes: wav is mono, already at target sample rate.
-    Returns: List of (start_sec, end_sec, chunk_tensor).
-    """
-    chunk_samples = int(Config.CHUNK_SEC * sr)
-    overlap_samples = int(Config.OVERLAP_SEC * sr)
-    step = chunk_samples - overlap_samples
-    total = wav.shape[1]
-
-    chunks: list[tuple[float, float, torch.Tensor]] = []
-    i = 0
-    while i < total:
-        end = min(i + chunk_samples, total)
-        chunk = wav[:, i:end]
-        if chunk.shape[1] < 1000:
-            break
-        chunks.append((i / sr, end / sr, chunk))
-        i += step
-
-    return chunks
-
-
-# -----------------------------------------------------------------------------
-# Text Processing
-# -----------------------------------------------------------------------------
-
-
-def clean_tts_text(text: str) -> str:
-    if text.startswith("\ufeff"):
-        text = text[1:]
-
-    lines = [ln for ln in text.split("\n") if not re.search(r"https?://", ln)]
-    text = "\n".join(lines)
-
-    text = re.sub(r"\[.*?\]", "", text)
-    text = re.sub(r"\(.*?\)", "", text)
-
-    return text.strip()
-
-
-def _split_long_token(token: str, max_len: int) -> list[str]:
-    """Assumes: len(token) > max_len"""
-    return [token[i : i + max_len] for i in range(0, len(token), max_len)]
-
-
-def split_tts_text(text: str, max_len: int = Config.TTS_MAX_CHARS) -> list[str]:
-    """Returns: List of text chunks, each <= max_len."""
-    if not text:
-        return []
-    if len(text) <= max_len:
-        return [text]
-
-    sentences = re.split(r"(?<=[.!?])\s+", text)
-    chunks: list[str] = []
-    current = ""
-
-    def flush() -> None:
-        nonlocal current
-        if current:
-            chunks.append(current)
-            current = ""
-
-    def append_text(text: str) -> None:
-        nonlocal current
-        if not current:
-            current = text
-        elif len(current) + 1 + len(text) <= max_len:
-            current = current + " " + text
-        else:
-            flush()
-            current = text
-
-    for sent in sentences:
-        sent = sent.strip()
-        if not sent:
-            continue
-        if len(sent) <= max_len:
-            append_text(sent)
-            continue
-
-        flush()
-        for chunk in _split_long_sentence(sent, max_len):
-            if len(chunk) <= max_len:
-                append_text(chunk)
-            else:
-                flush()
-                chunks.extend(_split_long_token(chunk, max_len))
-    flush()
-
-    return chunks if chunks else [text[:max_len]]
-
-
-def _split_long_sentence(sent: str, max_len: int) -> list[str]:
-    """Assumes: len(sent) > max_len. Split by clauses."""
-    clauses = re.split(r"(?<=[,;—])\s+", sent)
-    result: list[str] = []
-    current = ""
-
-    for clause in clauses:
-        clause = clause.strip()
-        if not clause:
-            continue
-        if len(clause) <= max_len:
-            if not current:
-                current = clause
-            elif len(current) + 1 + len(clause) <= max_len:
-                current = current + " " + clause
-            else:
-                result.append(current)
-                current = clause
-        else:
-            if current:
-                result.append(current)
-                current = ""
-            result.extend(_split_by_words(clause, max_len))
-    if current:
-        result.append(current)
-    return result
-
-
-def _split_by_words(text: str, max_len: int) -> list[str]:
-    """Split long clause by words."""
-    words = text.split()
-    result: list[str] = []
-    current = ""
-
-    for word in words:
-        if len(word) > max_len:
-            if current:
-                result.append(current)
-                current = ""
-            result.extend(_split_long_token(word, max_len))
-        elif not current:
-            current = word
-        elif len(current) + 1 + len(word) <= max_len:
-            current = current + " " + word
-        else:
-            result.append(current)
-            current = word
-    if current:
-        result.append(current)
-    return result
+tts_service = TtsService(
+    config=Config,
+    get_model=models.tts,
+    is_model_loaded=lambda: models.tts_loaded,
+    log=log,
+    output_dir=TTS_OUTPUT_DIR,
+)
 
 
 # -----------------------------------------------------------------------------
@@ -995,206 +476,6 @@ def get_or_set_session_id(request: Request, response: Response) -> str:
     return sid
 
 
-def _segment_text_from_transcribe(result: Any) -> str:
-    """Normalize GigaAM transcribe() output to a plain string for JSON/SSE."""
-    if isinstance(result, str):
-        return result
-    text = getattr(result, "text", None)
-    if isinstance(text, str):
-        return text
-    return str(result)
-
-
-_DEFAULT_STT_TRANSCRIBE_MAX_SEC = 25.0
-
-
-def _stt_transcribe_hard_limit_sec() -> float:
-    """
-    GigaAM transcribe() hard cap in seconds.
-    Read from gigaam.model.LONGFORM_THRESHOLD when available.
-    """
-    try:
-        from gigaam.model import LONGFORM_THRESHOLD  # type: ignore
-        from gigaam.preprocess import SAMPLE_RATE  # type: ignore
-
-        if SAMPLE_RATE > 0:
-            return float(LONGFORM_THRESHOLD) / float(SAMPLE_RATE)
-    except Exception:
-        pass
-    return _DEFAULT_STT_TRANSCRIBE_MAX_SEC
-
-
-def _stt_single_pass_max_sec() -> float:
-    return _stt_transcribe_hard_limit_sec()
-
-
-def _stt_worker(job_id: str, audio_path: str, upload_root: str) -> None:
-    """Worker thread for STT streaming. Removes upload_root when finished."""
-    start_time = time.time()
-    try:
-        model = models.stt()
-
-        wav, sr = load_audio(audio_path)
-        total_samples = wav.shape[1]
-        duration_sec = total_samples / sr
-        max_sec = _stt_single_pass_max_sec()
-        use_single_pass = duration_sec <= max_sec and total_samples > 0
-
-        if use_single_pass:
-            tmp = tempfile.mkdtemp()
-            try:
-                path = os.path.join(tmp, "full.wav")
-                wavfile.write(
-                    path, sr, (wav.squeeze(0).numpy() * 32767).astype("int16")
-                )
-                jobs.update_event(job_id, "start", {"total": 1, "duration": duration_sec})
-                raw = model.transcribe(path)
-                if jobs.is_cancelled(job_id):
-                    jobs.update_event(job_id, "cancelled", {})
-                    return
-                segment_text = _segment_text_from_transcribe(raw)
-                jobs.update_event(
-                    job_id,
-                    "progress",
-                    {
-                        "current": 1,
-                        "total": 1,
-                        "segment": {
-                            "start": 0.0,
-                            "end": duration_sec,
-                            "text": segment_text,
-                        },
-                    },
-                )
-            finally:
-                shutil.rmtree(tmp, ignore_errors=True)
-        else:
-            chunks = split_audio_chunks(wav, sr)
-            if not chunks:
-                raise ValueError("Audio too short or empty after loading")
-
-            jobs.update_event(job_id, "start", {"total": len(chunks), "duration": duration_sec})
-
-            tmp = tempfile.mkdtemp()
-            try:
-                for idx, (start, end, chunk) in enumerate(chunks, 1):
-                    path = os.path.join(tmp, f"c_{idx}.wav")
-                    wavfile.write(
-                        path, sr, (chunk.squeeze(0).numpy() * 32767).astype("int16")
-                    )
-                    raw = model.transcribe(path)
-                    if jobs.is_cancelled(job_id):
-                        jobs.update_event(job_id, "cancelled", {})
-                        return
-                    segment_text = _segment_text_from_transcribe(raw)
-                    jobs.update_event(
-                        job_id,
-                        "progress",
-                        {
-                            "current": idx,
-                            "total": len(chunks),
-                            "segment": {
-                                "start": start,
-                                "end": end,
-                                "text": segment_text,
-                            },
-                        },
-                    )
-            finally:
-                shutil.rmtree(tmp, ignore_errors=True)
-
-        if jobs.is_cancelled(job_id):
-            jobs.update_event(job_id, "cancelled", {})
-            return
-        jobs.update_event(job_id, "complete", {"duration": duration_sec})
-        elapsed = time.time() - start_time
-        log.info(f"STT completed: {elapsed:.2f}s")
-    except Exception as e:
-        elapsed = time.time() - start_time
-        log.error(f"STT failed: {e} ({elapsed:.2f}s)")
-        jobs.update_event(job_id, "error", {"message": str(e)})
-    finally:
-        shutil.rmtree(upload_root, ignore_errors=True)
-
-
-def _tts_worker(job_id: str, text: str, voice_id: str, filename: str | None = None) -> None:
-    """Worker thread for TTS streaming."""
-    start_time = time.time()
-    try:
-        _, backend = get_tts_backend_for_voice(voice_id)
-        estimated_chunks = backend.estimate_chunks(text)
-
-        jobs.update_event(job_id, "start", {"total": estimated_chunks})
-        result = backend.synthesize(text, voice_id)
-
-        if jobs.is_cancelled(job_id):
-            jobs.update_event(job_id, "cancelled", {})
-            return
-        jobs.update_event(
-            job_id,
-            "progress",
-            {"current": result.chunks, "total": result.chunks},
-        )
-
-        full_audio = result.audio
-        TTS_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-        out_name = f"{secrets.token_urlsafe(24)}.wav"
-        output_path = str(TTS_OUTPUT_DIR / out_name)
-        wavfile.write(
-            output_path,
-            result.sample_rate,
-            (full_audio.numpy() * 32767).astype("int16"),
-        )
-
-        download_url = f"/api/stream/download?p={out_name}"
-        if filename:
-            download_url += f"&filename={filename}"
-
-        if jobs.is_cancelled(job_id):
-            jobs.update_event(job_id, "cancelled", {})
-            return
-        jobs.update_event(
-            job_id,
-            "complete",
-            {
-                "download_url": download_url,
-                "duration": len(full_audio) / result.sample_rate,
-                "chunks": result.chunks,
-                "filename": filename,
-            },
-        )
-        elapsed = time.time() - start_time
-        log.info(f"TTS completed: {elapsed:.2f}s")
-    except Exception as e:
-        elapsed = time.time() - start_time
-        log.error(f"TTS failed: {e} ({elapsed:.2f}s)")
-        jobs.update_event(job_id, "error", {"message": str(e)})
-
-
-def _sweep_stale_tts_files(max_age_sec: int) -> None:
-    if not TTS_OUTPUT_DIR.is_dir():
-        return
-    now = time.time()
-    for path in TTS_OUTPUT_DIR.iterdir():
-        if not path.is_file() or path.suffix.lower() != ".wav":
-            continue
-        try:
-            age = now - path.stat().st_mtime
-        except OSError:
-            continue
-        if age > max_age_sec:
-            try:
-                path.unlink()
-            except OSError:
-                pass
-
-
-async def _tts_file_sweeper() -> None:
-    while True:
-        await asyncio.sleep(Config.TTS_SWEEP_INTERVAL_SEC)
-        await asyncio.to_thread(_sweep_stale_tts_files, Config.TTS_FILE_TTL_SEC)
-
-
 # -----------------------------------------------------------------------------
 # FastAPI Application
 # -----------------------------------------------------------------------------
@@ -1205,14 +486,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     device = os.getenv("DEVICE", "cpu")
     log.info(f"Using device: {device}")
 
-    TTS_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    tts_service.output_dir.mkdir(parents=True, exist_ok=True)
     log.info(
-        f"TTS output dir: {TTS_OUTPUT_DIR} "
+        f"TTS output dir: {tts_service.output_dir} "
         f"(TTL {Config.TTS_FILE_TTL_SEC}s, sweep every {Config.TTS_SWEEP_INTERVAL_SEC}s)"
     )
-    sweep_task = asyncio.create_task(_tts_file_sweeper())
+    sweep_task = asyncio.create_task(
+        tts_service.run_file_sweeper(
+            Config.TTS_SWEEP_INTERVAL_SEC,
+            Config.TTS_FILE_TTL_SEC,
+        )
+    )
 
-    await asyncio.to_thread(_sweep_stale_tts_files, Config.TTS_FILE_TTL_SEC)
+    await asyncio.to_thread(tts_service.sweep_stale_files, Config.TTS_FILE_TTL_SEC)
     log.info("Server ready.")
     try:
         yield
@@ -1250,18 +536,18 @@ async def health() -> PlainTextResponse:
 
 @app.get("/api/models")
 async def list_models() -> dict[str, Any]:
-    primary_backend = TTS_BACKENDS[SileroRuTtsBackend.backend_id]
+    primary_backend = tts_service.backends["silero_ru"]
     return {
         "stt": {"name": "GigaAM-v3", "loaded": models.stt_loaded},
         "tts": {"name": primary_backend.name, "loaded": primary_backend.loaded},
-        "tts_catalog": serialize_tts_catalog(),
+        "tts_catalog": tts_service.serialize_catalog(),
         "tts_backends": [
             {
                 "id": backend_id,
                 "name": backend.name,
                 "loaded": backend.loaded,
             }
-            for backend_id, backend in TTS_BACKENDS.items()
+            for backend_id, backend in tts_service.backends.items()
         ],
     }
 
@@ -1272,27 +558,43 @@ async def start_stt_job(
     response: Response,
     file: UploadFile = File(...),
 ) -> dict[str, Any]:
-    content = await file.read()
+    tmp_dir = tempfile.mkdtemp()
+    audio_path = os.path.join(tmp_dir, "input")
+    try:
+        size_bytes = await save_upload_to_path(
+            file,
+            audio_path,
+            max_bytes=Config.UPLOAD_LIMIT_MB * 1024 * 1024,
+        )
+    except ValueError as exc:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise HTTPException(413, str(exc)) from exc
+    except Exception:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise
 
-    if (
-        Config.UPLOAD_LIMIT_MB > 0
-        and len(content) > Config.UPLOAD_LIMIT_MB * 1024 * 1024
-    ):
-        raise HTTPException(413, f"File too large (max {Config.UPLOAD_LIMIT_MB}MB)")
-
-    size_kb = len(content) / 1024
+    size_kb = size_bytes / 1024
     size_str = f"{size_kb:.1f} KB" if size_kb < 1024 else f"{size_kb / 1024:.1f} MB"
     log.info(f"STT started: {file.filename or 'unknown'} ({size_str})")
 
     session_id = get_or_set_session_id(request, response)
     rec = jobs.create("stt", session_id, {"filename": file.filename or None})
-    tmp_dir = tempfile.mkdtemp()
-    audio_path = os.path.join(tmp_dir, "input")
-    with open(audio_path, "wb") as f:
-        f.write(content)
 
     asyncio.create_task(
-        asyncio.to_thread(_stt_worker, rec.job_id, audio_path, tmp_dir)
+        asyncio.to_thread(
+            run_stt_worker,
+            job_id=rec.job_id,
+            audio_path=audio_path,
+            upload_root=tmp_dir,
+            semaphore=STT_WORKER_SEMAPHORE,
+            jobs=jobs,
+            model=models.stt(),
+            log=log,
+            sample_rate=Config.SR,
+            chunk_sec=Config.CHUNK_SEC,
+            overlap_sec=Config.OVERLAP_SEC,
+            max_duration_sec=Config.STT_MAX_DURATION_SEC,
+        )
     )
     return {"job_id": rec.job_id}
 
@@ -1311,9 +613,9 @@ async def start_tts_job(
         raise HTTPException(
             413, f"Text too long (max {Config.TTS_MAX_INPUT_CHARS} chars)"
         )
-    resolved_voice_id = voice_id or default_tts_voice_id()
-    resolved_language = language or get_tts_voice_or_400(resolved_voice_id).language
-    validate_tts_language_voice(resolved_language, resolved_voice_id)
+    resolved_voice_id = voice_id or tts_service.default_voice_id()
+    resolved_language = language or tts_service.get_voice_or_400(resolved_voice_id).language
+    tts_service.validate_language_voice(resolved_language, resolved_voice_id)
 
     log.info(
         f"TTS started: {len(text)} chars, language={resolved_language}, voice_id={resolved_voice_id}"
@@ -1322,7 +624,14 @@ async def start_tts_job(
     session_id = get_or_set_session_id(request, response)
     rec = jobs.create("tts", session_id, {"filename": filename})
     asyncio.create_task(
-        asyncio.to_thread(_tts_worker, rec.job_id, text, resolved_voice_id, filename)
+        asyncio.to_thread(
+            tts_service.run_job,
+            job_id=rec.job_id,
+            text=text,
+            voice_id=resolved_voice_id,
+            jobs=jobs,
+            filename=filename,
+        )
     )
     return {"job_id": rec.job_id}
 
@@ -1386,9 +695,12 @@ async def cancel_job(job_id: str, request: Request, response: Response) -> dict[
     session_id = get_or_set_session_id(request, response)
     if not jobs.belongs_to_session(job_id, session_id):
         raise HTTPException(404, "Job not found")
+    status = jobs.get_status(job_id)
     ok = jobs.mark_cancelled(job_id)
     if not ok:
         raise HTTPException(404, "Job not found")
+    job_type = str((status or {}).get("job_type", "job")).upper()
+    log.info(f"{job_type} cancel requested: job_id={job_id}")
     return {"ok": True}
 
 
@@ -1399,7 +711,7 @@ async def stream_download(p: str, filename: str | None = None) -> FileResponse:
     if not file_basename.endswith(".wav") or ".." in file_basename:
         raise HTTPException(400, "Invalid file type")
 
-    root = TTS_OUTPUT_DIR.resolve()
+    root = tts_service.output_dir.resolve()
     try:
         candidate = (root / file_basename).resolve()
     except (OSError, RuntimeError):
@@ -1431,7 +743,7 @@ async def get_config() -> dict[str, Any]:
         "upload_limit_mb": Config.UPLOAD_LIMIT_MB,
         "tts_max_chars": Config.TTS_MAX_CHARS,
         "tts_max_input_chars": Config.TTS_MAX_INPUT_CHARS,
-        "tts": serialize_tts_catalog(),
+        "tts": tts_service.serialize_catalog(),
     }
 
 

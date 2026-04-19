@@ -35,6 +35,8 @@ COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/pytho
 COPY --from=builder /usr/local/bin /usr/local/bin
 
 COPY --chown=resonance:resonance server.py .
+COPY --chown=resonance:resonance stt/ ./stt/
+COPY --chown=resonance:resonance tts/ ./tts/
 COPY --chown=resonance:resonance public/ ./public/
 
 ENV PYTHONUNBUFFERED=1 \

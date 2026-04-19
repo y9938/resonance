@@ -2,7 +2,8 @@
 
 import json
 
-from server import StreamEvent, _segment_text_from_transcribe
+from server import StreamEvent
+from stt.pipeline import _segment_text_from_transcribe
 
 
 class FakeTranscriptionResult:

@@ -19,7 +19,7 @@
             tabTts: 'Текст → речь',
             sttDropzoneText: 'Перетащите аудио или нажмите, чтобы выбрать файл',
             configLoading: 'Загрузка настроек…',
-            btnStop: 'Стоп',
+            btnHide: 'Скрыть',
             btnCancel: 'Отмена',
             resultTitleTranscription: 'Транскрипт',
             btnCopy: 'Копировать',
@@ -90,7 +90,18 @@
                 return n + ' ' + pluralRu(n, ['сегмент', 'сегмента', 'сегментов']);
             },
             formatSttProcessedTextDuration: function (seconds) {
-                return seconds.toFixed(1) + 'с';
+                if (!Number.isFinite(seconds) || seconds <= 0) return '0.0с';
+                if (seconds < 60) {
+                    return seconds.toFixed(1) + 'с';
+                }
+                var total = Math.max(1, Math.round(seconds));
+                var hours = Math.floor(total / 3600);
+                var mins = Math.floor((total % 3600) / 60);
+                var secs = total % 60;
+                if (hours > 0) {
+                    return String(hours) + 'ч ' + String(mins) + 'м';
+                }
+                return String(mins) + 'м ' + String(secs) + 'с';
             },
             formatSttProcessedTextLabel: function (durationText) {
                 return 'Обработано текста: ' + durationText;

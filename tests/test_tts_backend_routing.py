@@ -1,20 +1,12 @@
 """Regression tests for internal TTS voice catalog and backend routing."""
 
 import pytest
+import torch
 from fastapi import HTTPException
 
-from server import (
-    Config,
-    KokoroEnTtsBackend,
-    SileroRuTtsBackend,
-    default_tts_voice_id,
-    get_config,
-    list_models,
-    get_tts_backend_for_voice,
-    validate_tts_language_voice,
-    get_tts_voice_or_400,
-    list_tts_voice_ids,
-)
+import server
+from server import Config, get_config, list_models
+from tts.service import KokoroEnTtsBackend, SileroRuTtsBackend, TtsSynthesisResult
 
 KOKORO_EN_VOICE_IDS = {
     "af_heart",
@@ -49,7 +41,7 @@ KOKORO_EN_VOICE_IDS = {
 
 
 def test_ru_voice_routes_to_silero_backend() -> None:
-    voice, backend = get_tts_backend_for_voice("ru_roman")
+    voice, backend = server.tts_service.get_backend_for_voice("ru_roman")
 
     assert voice.voice_id == "ru_roman"
     assert voice.backend_id == SileroRuTtsBackend.backend_id
@@ -58,7 +50,7 @@ def test_ru_voice_routes_to_silero_backend() -> None:
 
 def test_unknown_tts_voice_is_rejected() -> None:
     with pytest.raises(HTTPException) as exc:
-        get_tts_voice_or_400("en_missing")
+        server.tts_service.get_voice_or_400("en_missing")
 
     assert exc.value.status_code == 400
     assert "Invalid voice_id" in str(exc.value.detail)
@@ -69,7 +61,7 @@ def test_invalid_default_tts_voice_falls_back_to_first_catalog_entry(
 ) -> None:
     monkeypatch.setattr(Config, "TTS_VOICE_ID", "invalid_voice")
 
-    assert default_tts_voice_id() == list_tts_voice_ids()[0]
+    assert server.tts_service.default_voice_id() == server.tts_service.list_voice_ids()[0]
 
 
 @pytest.mark.asyncio
@@ -78,11 +70,11 @@ async def test_public_config_uses_voice_catalog_and_default_resolution() -> None
 
     assert config["tts"]["default_language"] == "ru"
     assert [language["id"] for language in config["tts"]["languages"]] == ["ru", "en"]
-    assert config["tts"]["languages"][0]["default_voice_id"] == default_tts_voice_id()
+    assert config["tts"]["languages"][0]["default_voice_id"] == server.tts_service.default_voice_id()
 
 
 def test_en_voice_routes_to_kokoro_backend() -> None:
-    voice, backend = get_tts_backend_for_voice("af_heart")
+    voice, backend = server.tts_service.get_backend_for_voice("af_heart")
 
     assert voice.voice_id == "af_heart"
     assert voice.backend_id == KokoroEnTtsBackend.backend_id
@@ -126,7 +118,58 @@ async def test_public_config_exposes_backend_id_per_voice() -> None:
 
 def test_validate_tts_language_voice_rejects_voice_from_another_language() -> None:
     with pytest.raises(HTTPException) as exc:
-        validate_tts_language_voice("ru", "af_heart")
+        server.tts_service.validate_language_voice("ru", "af_heart")
 
     assert exc.value.status_code == 400
     assert "does not belong to language" in str(exc.value.detail)
+
+
+def test_tts_worker_logs_when_job_is_cancelled_after_synthesis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeBackend:
+        def estimate_chunks(self, text: str) -> int:
+            return 1
+
+        def synthesize(self, text: str, voice_id: str) -> TtsSynthesisResult:
+            return TtsSynthesisResult(audio=torch.zeros(1), sample_rate=24000, chunks=1)
+
+    class FakeJobs:
+        def __init__(self) -> None:
+            self.events: list[tuple[str, dict]] = []
+
+        def update_event(self, job_id: str, event_type: str, data: dict) -> None:
+            self.events.append((event_type, data))
+
+        def is_cancelled(self, job_id: str) -> bool:
+            return True
+
+    class FakeLog:
+        def __init__(self) -> None:
+            self.messages: list[str] = []
+
+        def info(self, message: str) -> None:
+            self.messages.append(message)
+
+        def error(self, message: str) -> None:
+            self.messages.append(message)
+
+    jobs = FakeJobs()
+    log = FakeLog()
+
+    monkeypatch.setattr(
+        server.tts_service,
+        "get_backend_for_voice",
+        lambda voice_id: (None, FakeBackend()),
+    )
+    monkeypatch.setattr(server.tts_service, "_log", log)
+
+    server.tts_service.run_job(
+        job_id="job-1",
+        text="hello",
+        voice_id="bm_george",
+        jobs=jobs,
+    )
+
+    assert [event for event, _ in jobs.events] == ["start", "cancelled"]
+    assert any(message.startswith("TTS cancelled: ") for message in log.messages)

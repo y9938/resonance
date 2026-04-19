@@ -10,7 +10,7 @@
             tabTts: '文本 → 语音',
             sttDropzoneText: '拖拽音频文件或点击选择',
             configLoading: '正在加载设置…',
-            btnStop: '停止',
+            btnHide: '隐藏',
             btnCancel: '取消',
             resultTitleTranscription: '转录结果',
             btnCopy: '复制',
@@ -81,7 +81,18 @@
                 return n + ' 段';
             },
             formatSttProcessedTextDuration: function (seconds) {
-                return seconds.toFixed(1) + '秒';
+                if (!Number.isFinite(seconds) || seconds <= 0) return '0.0秒';
+                if (seconds < 60) {
+                    return seconds.toFixed(1) + '秒';
+                }
+                var total = Math.max(1, Math.round(seconds));
+                var hours = Math.floor(total / 3600);
+                var mins = Math.floor((total % 3600) / 60);
+                var secs = total % 60;
+                if (hours > 0) {
+                    return String(hours) + '小时 ' + String(mins) + '分';
+                }
+                return String(mins) + '分 ' + String(secs) + '秒';
             },
             formatSttProcessedTextLabel: function (durationText) {
                 return '已处理文本：' + durationText;
