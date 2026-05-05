@@ -40,11 +40,11 @@ check:
     .venv/bin/ruff check server.py tests/
 
 # Build image
-build:
+build *ARGS:
     @if [[ -n "{{PYTORCH_BACKEND}}" ]]; then \
-        docker build --build-arg PYTORCH_BACKEND={{PYTORCH_BACKEND}} -t {{IMAGE}} .; \
+        docker build --build-arg PYTORCH_BACKEND={{PYTORCH_BACKEND}} -t {{IMAGE}} {{ARGS}} .; \
     else \
-        docker build -t {{IMAGE}} .; \
+        docker build -t {{IMAGE}} {{ARGS}} .; \
     fi
 
 # Run container
