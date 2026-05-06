@@ -59,7 +59,7 @@ just dev
 
 ## Note
 
-Site on http://localhost:8000
+Open http://localhost:8000
 
 Models are loaded lazily on first real STT/TTS use. Startup does not pre-download or pre-load model weights, so the first request to a specific backend may take noticeably longer.
 
