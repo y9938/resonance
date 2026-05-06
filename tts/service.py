@@ -207,7 +207,7 @@ class SileroRuTtsBackend(TtsBackend):
                 speaker=voice_id,
                 sample_rate=self._sample_rate,
             )
-            audio_parts.append(audio)
+            audio_parts.append(audio.detach().cpu())
 
         if not audio_parts:
             raise RuntimeError("All TTS chunks failed")
@@ -519,7 +519,7 @@ class TtsService:
             wavfile.write(
                 output_path,
                 result.sample_rate,
-                (full_audio.numpy() * 32767).astype("int16"),
+                (full_audio.detach().cpu().numpy() * 32767).astype("int16"),
             )
 
             download_url = f"/api/stream/download?p={out_name}"

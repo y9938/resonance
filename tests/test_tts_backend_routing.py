@@ -1,5 +1,7 @@
 """Regression tests for internal TTS voice catalog and backend routing."""
 
+from pathlib import Path
+
 import pytest
 import torch
 from fastapi import HTTPException
@@ -83,6 +85,24 @@ def test_en_voice_routes_to_kokoro_backend() -> None:
 
 def test_kokoro_backend_exposes_all_documented_english_voices() -> None:
     assert set(KokoroEnTtsBackend._voice_specs) == KOKORO_EN_VOICE_IDS
+
+
+def test_silero_backend_returns_detached_cpu_audio() -> None:
+    class FakeModel:
+        def apply_tts(self, *, text: str, speaker: str, sample_rate: int) -> torch.Tensor:
+            return torch.ones(2, requires_grad=True)
+
+    backend = SileroRuTtsBackend(
+        get_model=lambda: FakeModel(),
+        is_loaded=lambda: True,
+        sample_rate=24000,
+        max_chars=100,
+    )
+
+    result = backend.synthesize("hello", "ru_roman")
+
+    assert result.audio.device.type == "cpu"
+    assert not result.audio.requires_grad
 
 
 @pytest.mark.asyncio
@@ -173,3 +193,55 @@ def test_tts_worker_logs_when_job_is_cancelled_after_synthesis(
 
     assert [event for event, _ in jobs.events] == ["start", "cancelled"]
     assert any(message.startswith("TTS cancelled: ") for message in log.messages)
+
+
+def test_tts_worker_detaches_audio_before_wav_write(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class FakeBackend:
+        def estimate_chunks(self, text: str) -> int:
+            return 1
+
+        def synthesize(self, text: str, voice_id: str) -> TtsSynthesisResult:
+            return TtsSynthesisResult(
+                audio=torch.ones(2, requires_grad=True),
+                sample_rate=24000,
+                chunks=1,
+            )
+
+    class FakeJobs:
+        def __init__(self) -> None:
+            self.events: list[tuple[str, dict]] = []
+
+        def update_event(self, job_id: str, event_type: str, data: dict) -> None:
+            self.events.append((event_type, data))
+
+        def is_cancelled(self, job_id: str) -> bool:
+            return False
+
+    written: dict[str, object] = {}
+
+    def fake_write(path: str, sample_rate: int, samples: object) -> None:
+        written["path"] = path
+        written["sample_rate"] = sample_rate
+        written["samples"] = samples
+
+    monkeypatch.setattr(
+        server.tts_service,
+        "get_backend_for_voice",
+        lambda voice_id: (None, FakeBackend()),
+    )
+    monkeypatch.setattr(server.tts_service, "output_dir", tmp_path)
+    monkeypatch.setattr("tts.service.wavfile.write", fake_write)
+
+    jobs = FakeJobs()
+    server.tts_service.run_job(
+        job_id="job-1",
+        text="hello",
+        voice_id="ru_roman",
+        jobs=jobs,
+    )
+
+    assert written["sample_rate"] == 24000
+    assert [event for event, _ in jobs.events] == ["start", "progress", "complete"]

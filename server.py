@@ -30,6 +30,8 @@ from contextlib import asynccontextmanager, suppress
 
 from dotenv import load_dotenv
 
+load_dotenv()
+
 import torch
 from fastapi import FastAPI, File, UploadFile, HTTPException, Query, Request, Response
 from fastapi.staticfiles import StaticFiles
@@ -40,8 +42,6 @@ from stt.pipeline import (
     save_upload_to_path,
 )
 from tts.service import TtsService
-
-load_dotenv()
 
 # -----------------------------------------------------------------------------
 # Configuration
