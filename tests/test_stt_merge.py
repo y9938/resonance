@@ -122,6 +122,10 @@ def get_stt_copy_text(segments: list[dict], mode: str) -> str:
     return merge_adjacent_stt_texts(segments)
 
 
+def get_stt_download_text(segments: list[dict], mode: str) -> str:
+    return get_stt_copy_text(segments, mode)
+
+
 def test_merge_overlap_suffix_prefix() -> None:
     a = "hello world"
     b = "world foo"
@@ -206,3 +210,11 @@ def test_get_stt_copy_text_uses_continuous_text_in_continuous_mode() -> None:
         {"start": 18.0, "end": 26.0, "text": "middle end"},
     ]
     assert get_stt_copy_text(segs, "continuous") == "start middle end"
+
+
+def test_get_stt_download_text_matches_copy_text_for_active_mode() -> None:
+    segs = [
+        {"start": 0.0, "end": 20.0, "text": "start middle"},
+        {"start": 18.0, "end": 26.0, "text": "middle end"},
+    ]
+    assert get_stt_download_text(segs, "blocks") == get_stt_copy_text(segs, "blocks")

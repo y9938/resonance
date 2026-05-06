@@ -3252,7 +3252,7 @@
         });
 
         els.sttDownload.addEventListener('click', () => {
-            const text = getSttContinuousText();
+            const text = getSttCopyText();
             const base = els.sttResultText.dataset.filename || t('defaultTranscriptionFile');
             const filename = base.replace(/\.[^/.]+$/, '');
             const blob = new Blob([text], { type: 'text/plain' });
