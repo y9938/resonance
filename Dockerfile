@@ -29,7 +29,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tini \
     && rm -rf /var/lib/apt/lists/*
 
-RUN groupadd -r resonance && useradd -r -g resonance -s /bin/false resonance
+RUN groupadd -r resonance && useradd -r -m -g resonance -s /bin/false resonance
 
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
