@@ -1,6 +1,6 @@
 FROM ghcr.io/astral-sh/uv:python3.11-bookworm-slim AS builder
 
-ARG PYTORCH_BACKEND=
+ARG PYTORCH_BACKEND=cpu
 
 WORKDIR /app
 
