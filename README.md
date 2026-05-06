@@ -12,23 +12,56 @@ Unified Speech-to-Text (STT) and Text-to-Speech (TTS) API Server.
 
 ![Demo](https://raw.githubusercontent.com/y9938/assets/main/resonance/demo.gif)
 
-## Quick Start
+## Configuration
+
+Create `.env` before running:
 
 ```bash
 cp .env.example .env
+```
+
+See `.env.example` for available options.
+
+Before installing dependencies, configure `.env`:
+- **CUDA**: set `DEVICE=cuda`, leave `PYTORCH_BACKEND=` for PyPI default or set a specific backend like `cu128`
+- **CPU**: set `DEVICE=cpu` and `PYTORCH_BACKEND=cpu`
+- **macOS**: use the setup script below
+
+## Docker
+
+```bash
 just build
 just run
 ```
 
-Open http://localhost:8000
+## Local
 
-**GPU:** set `DEVICE=cuda` in `.env` before building.
+Deps: `just`, `uv`, `ffmpeg`
 
-Models are loaded lazily on first real STT/TTS use. Container startup does not pre-download or pre-load model weights, so the first request to a specific backend may take noticeably longer.
+### macOS
 
-## Configuration
+```bash
+./docs/macOS/dev-install.sh
+./docs/macOS/create-run-dev.sh
+```
 
-See `.env.example` for available options.
+This creates `.env` if missing, configures the device, installs dev dependencies, and creates `~/Desktop/Resonance.command` for double-click startup.
+
+### Linux
+
+1. Install deps
+2. Run:
+
+```bash
+just dev-deps
+just dev
+```
+
+## Note
+
+Site on http://localhost:8000
+
+Models are loaded lazily on first real STT/TTS use. Startup does not pre-download or pre-load model weights, so the first request to a specific backend may take noticeably longer.
 
 ## API Endpoints
 
@@ -54,3 +87,4 @@ See `.env.example` for available options.
 - Backend assigns `resonance_session_id` cookie and enforces ownership on `status/events/cancel` endpoints.
 - After page reload, UI restores state via `GET /api/jobs/{job_id}` and continues progress via `/events`.
 - Job data is in-memory on server (`JobRegistry`), so after server restart unknown `job_id` is cleared on client and UI resets to neutral state.
+
