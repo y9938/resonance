@@ -4,6 +4,7 @@ import contextlib
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -86,6 +87,20 @@ async def save_upload_to_path(
     return total
 
 
+def _decode_duration(input_path: str | Path) -> float:
+    """Fallback for browser WebM files where MediaRecorder omits duration from the container header."""
+    raw = subprocess.run(
+        ["ffmpeg", "-i", str(input_path), "-f", "null", "-"],
+        capture_output=True,
+        text=True,
+    )
+    matches = re.findall(r"time=(\d+:\d+:\d+\.\d+)", raw.stderr)
+    if not matches:
+        return 0.0
+    h, m, s = matches[-1].split(":")
+    return int(h) * 3600 + int(m) * 60 + float(s)
+
+
 def probe_media(input_path: str | Path) -> MediaInfo:
     cmd = [
         "ffprobe",
@@ -114,6 +129,8 @@ def probe_media(input_path: str | Path) -> MediaInfo:
         duration_sec = float(fmt.get("duration") or 0.0)
     except (TypeError, ValueError) as exc:
         raise ValueError("Invalid media duration") from exc
+    if duration_sec <= 0:
+        duration_sec = _decode_duration(input_path)
     if duration_sec <= 0:
         raise ValueError("Audio too short or empty after probing")
 
