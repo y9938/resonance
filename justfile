@@ -19,6 +19,7 @@ default:
 # Install dev dependencies
 dev-deps:
     @command -v uv >/dev/null 2>&1 || { echo "uv not found. Install: https://docs.astral.sh/uv/getting-started/installation/"; exit 1; }
+    @[[ -d .venv ]] || uv venv
     @if [[ -n "{{PYTORCH_BACKEND}}" ]]; then \
         uv pip install -r pyproject.toml --group dev --torch-backend={{PYTORCH_BACKEND}}; \
     else \
