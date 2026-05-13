@@ -12,6 +12,8 @@ DEVICE := env("DEVICE", "cpu")
 PYTORCH_BACKEND := env("PYTORCH_BACKEND")
 GPU_FLAGS := if DEVICE == "cuda" { "--gpus all" } else { "" }
 
+RESONANCE_PORT := env("RESONANCE_PORT", "8000")
+
 # Show available recipes
 default:
     @{{just_executable()}} --list
@@ -30,11 +32,11 @@ dev-deps:
 # Run server locally
 dev:
     @command -v ffmpeg >/dev/null 2>&1 || { echo "ffmpeg not found."; exit 1; }
-    .venv/bin/uvicorn server:app --reload
+    .venv/bin/uvicorn server:app --reload --port {{RESONANCE_PORT}}
 
 # Run pytest
 test:
-    .venv/bin/pytest tests/
+    .venv/bin/pytest tests/ --base-url "http://localhost:{{RESONANCE_PORT}}"
 
 # Run ruff
 check:
@@ -50,7 +52,7 @@ build *ARGS:
 
 # Run container
 run:
-    docker run -it --rm --name resonance {{GPU_FLAGS}} --env-file .env -p 8000:8000 {{IMAGE}}
+    docker run -it --rm --name resonance {{GPU_FLAGS}} --env-file .env -e RESONANCE_PORT={{RESONANCE_PORT}} -p {{RESONANCE_PORT}}:{{RESONANCE_PORT}} {{IMAGE}}
 
 # Save image to compressed archive
 save:

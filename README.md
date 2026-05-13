@@ -26,6 +26,8 @@ Before installing dependencies, configure `.env`:
 - **CUDA**: set `DEVICE=cuda`, leave `PYTORCH_BACKEND=` for PyPI default or set a specific backend like `cu128`
 - **CPU**: set `DEVICE=cpu` and `PYTORCH_BACKEND=cpu`
 - **macOS**: use the setup script below
+- **Port**: set `RESONANCE_PORT` (default `8000`)
+- **CORS**: set `RESONANCE_CORS_ORIGINS` only for custom origins; default follows `RESONANCE_PORT`
 
 ## Docker
 
@@ -59,7 +61,7 @@ just dev
 
 ## Note
 
-Open http://localhost:8000
+Open `http://localhost:${RESONANCE_PORT}` (default: http://localhost:8000)
 
 Models are loaded lazily on first real STT/TTS use. Startup does not pre-download or pre-load model weights, so the first request to a specific backend may take noticeably longer.
 
@@ -87,4 +89,3 @@ Models are loaded lazily on first real STT/TTS use. Startup does not pre-downloa
 - Backend assigns `resonance_session_id` cookie and enforces ownership on `status/events/cancel` endpoints.
 - After page reload, UI restores state via `GET /api/jobs/{job_id}` and continues progress via `/events`.
 - Job data is in-memory on server (`JobRegistry`), so after server restart unknown `job_id` is cleared on client and UI resets to neutral state.
-

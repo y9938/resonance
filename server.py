@@ -73,13 +73,14 @@ STT_WORKER_SEMAPHORE = threading.BoundedSemaphore(
 
 
 def cors_allow_origins() -> list[str]:
-    raw = os.getenv("RESONANCE_CORS_ORIGINS", "http://localhost:8000").strip()
+    default_origin = f"http://localhost:{os.getenv('RESONANCE_PORT', '8000')}"
+    raw = os.getenv("RESONANCE_CORS_ORIGINS", default_origin).strip()
     if not raw:
-        return ["http://localhost:8000"]
+        return [default_origin]
     if raw == "*":
         return ["*"]
     origins = [origin.strip() for origin in raw.split(",") if origin.strip()]
-    return origins if origins else ["http://localhost:8000"]
+    return origins if origins else [default_origin]
 
 
 # -----------------------------------------------------------------------------
