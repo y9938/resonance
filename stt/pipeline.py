@@ -90,9 +90,10 @@ async def save_upload_to_path(
 def _decode_duration(input_path: str | Path) -> float:
     """Fallback for browser WebM files where MediaRecorder omits duration from the container header."""
     raw = subprocess.run(
-        ["ffmpeg", "-i", str(input_path), "-f", "null", "-"],
+        ["ffmpeg", "-nostdin", "-i", str(input_path), "-f", "null", "-"],
         capture_output=True,
         text=True,
+        stdin=subprocess.DEVNULL,
     )
     matches = re.findall(r"time=(\d+:\d+:\d+\.\d+)", raw.stderr)
     if not matches:
@@ -114,7 +115,7 @@ def probe_media(input_path: str | Path) -> MediaInfo:
         "json",
         str(input_path),
     ]
-    raw = subprocess.run(cmd, check=True, capture_output=True, text=True)
+    raw = subprocess.run(cmd, check=True, capture_output=True, text=True, stdin=subprocess.DEVNULL)
     payload = json.loads(raw.stdout or "{}")
     streams = payload.get("streams") or []
     audio_stream = next(
@@ -193,6 +194,7 @@ def extract_segment_ffmpeg(
 ) -> None:
     cmd = [
         "ffmpeg",
+        "-nostdin",
         "-y",
         "-hide_banner",
         "-loglevel",
@@ -212,7 +214,7 @@ def extract_segment_ffmpeg(
         "1",
         str(output_path),
     ]
-    subprocess.run(cmd, check=True, capture_output=True)
+    subprocess.run(cmd, check=True, capture_output=True, stdin=subprocess.DEVNULL)
 
 
 def run_stt_job(
