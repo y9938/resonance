@@ -62,7 +62,7 @@
             --border-hover: #3a3a3a;
             --text-primary: #f5f0e6;
             --text-secondary: #a0a0a0;
-            --text-muted: #606060;
+            --text-muted: #7a7a7a;
             --accent: #c9a962;
             --accent-hover: #d4b76d;
             --error: #c95c5c;
@@ -297,10 +297,15 @@
             transition: background var(--transition), color var(--transition);
         }
 
-        .locale-option:hover,
+        .locale-option:hover { background: var(--bg-tertiary); }
+
         .locale-option.active {
-            background: var(--bg-tertiary);
+            background: color-mix(in srgb, var(--accent) 14%, var(--bg-tertiary));
+            box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 52%, transparent);
         }
+
+        .locale-option.active .locale-option-code { color: var(--accent); }
+        .locale-option.active .locale-option-name { color: var(--text-primary); }
 
         .locale-option:focus-visible {
             outline: 1px solid var(--accent);
@@ -469,6 +474,155 @@
             width: 100%;
             height: 40px;
         }
+
+        .stt-batch-panel {
+            display: none;
+            margin-top: 1rem;
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            background:
+                linear-gradient(135deg, rgba(201, 169, 98, 0.07), transparent 46%),
+                var(--bg-secondary);
+            overflow: hidden;
+        }
+
+        .stt-batch-panel.active { display: block; animation: fadeIn 200ms ease; }
+
+        .stt-batch-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+            padding: 0.85rem 1rem;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .stt-batch-title {
+            font-size: 0.78rem;
+            font-weight: 700;
+            color: var(--accent);
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .stt-batch-summary {
+            margin-top: 0.15rem;
+            color: var(--text-muted);
+            font-size: 0.75rem;
+        }
+
+        .stt-batch-actions {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+            gap: 0.32rem;
+        }
+
+        .stt-batch-actions .btn {
+            padding: 0.42rem 0.68rem;
+            font-size: 0.74rem;
+        }
+
+        .stt-batch-actions .btn[hidden] {
+            display: none;
+        }
+
+        .stt-batch-list {
+            display: grid;
+            gap: 0.35rem;
+            padding: 0.6rem;
+        }
+
+        .stt-batch-row,
+        .jobs-child-row {
+            width: 100%;
+            align-items: center;
+            gap: 0.7rem;
+            border: 1px solid transparent;
+            border-radius: var(--radius-sm);
+            background: rgba(255, 255, 255, 0.025);
+            color: inherit;
+            text-align: left;
+            cursor: pointer;
+            transition: border-color var(--transition), background var(--transition), transform var(--transition);
+        }
+
+        .stt-batch-row {
+            display: block;
+            padding: 0.62rem 0.7rem;
+        }
+
+        .jobs-child-row {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+        }
+
+        .jobs-batch-open {
+            justify-self: end;
+            align-self: center;
+            padding: 0.32rem 0.58rem;
+            border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+            border-radius: 999px;
+            background: rgba(201, 169, 98, 0.07);
+            color: var(--accent);
+            font-size: 0.7rem;
+            font-weight: 650;
+            cursor: pointer;
+            transition: background var(--transition), border-color var(--transition);
+        }
+
+        .jobs-batch-open:hover {
+            border-color: var(--accent);
+            background: rgba(201, 169, 98, 0.12);
+        }
+
+        .stt-batch-row:hover,
+        .jobs-child-row:hover {
+            border-color: var(--border-hover);
+            background: rgba(255, 255, 255, 0.045);
+        }
+
+        .stt-batch-row.selected {
+            border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+            background: rgba(201, 169, 98, 0.08);
+        }
+
+        .stt-batch-file,
+        .jobs-child-file {
+            overflow: hidden;
+            color: var(--text-primary);
+            font-size: 0.82rem;
+            font-weight: 550;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .stt-batch-detail,
+        .jobs-child-detail {
+            margin-top: 0.12rem;
+            color: var(--text-muted);
+            font-family: var(--font-mono);
+            font-size: 0.7rem;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .stt-batch-state,
+        .jobs-batch-state {
+            padding: 0.2rem 0.45rem;
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            color: var(--text-secondary);
+            font-family: var(--font-mono);
+            font-size: 0.68rem;
+            text-transform: uppercase;
+        }
+
+        .stt-batch-state.completed,
+        .jobs-batch-state.completed { color: var(--accent); border-color: rgba(201, 169, 98, 0.45); }
+        .stt-batch-state.failed,
+        .jobs-batch-state.failed { color: var(--error); border-color: rgba(201, 92, 92, 0.45); }
+        .stt-batch-state.running,
+        .jobs-batch-state.running { color: var(--text-primary); }
 
 
 
@@ -832,7 +986,7 @@
                     <polyline points="17 8 12 3 7 8"/>
                     <line x1="12" x2="12" y1="3" y2="15"/>
                 </svg>
-                <div class="dropzone-text" data-i18n="sttDropzoneText">Drop audio file or click to browse</div>
+                <div class="dropzone-text" data-i18n="sttDropzoneText">Drop audio files or click to browse</div>
                 <div class="dropzone-hint" id="sttDropzoneHint" data-i18n="configLoading">Loading configuration...</div>
 
                 <div class="progress" id="sttProgress">
@@ -858,7 +1012,23 @@
                     </button>
                 </div>
             </div>
-            <input type="file" id="sttFileInput" accept="audio/*,video/*">
+            <input type="file" id="sttFileInput" accept="audio/*,video/*" multiple>
+
+            <div class="stt-batch-panel" id="sttBatchPanel" aria-live="polite">
+                <div class="stt-batch-header">
+                    <div>
+                        <div class="stt-batch-title" data-i18n="sttBatchTitle">Batch queue</div>
+                        <div class="stt-batch-summary" id="sttBatchSummary"></div>
+                    </div>
+                    <div class="stt-batch-actions">
+                        <button class="btn btn-secondary" id="sttBatchNext" type="button" data-i18n="sttBatchNextReady">Next ready</button>
+                        <button class="btn btn-secondary" id="sttBatchDownloadAll" type="button" data-i18n="sttBatchDownloadAll">Download all</button>
+                        <button class="btn btn-secondary" id="sttBatchCancelCurrent" type="button" data-i18n="sttBatchCancelCurrent">Cancel current</button>
+                        <button class="btn btn-secondary" id="sttBatchCancel" type="button" data-i18n="sttBatchCancel">Cancel active</button>
+                    </div>
+                </div>
+                <div class="stt-batch-list" id="sttBatchList"></div>
+            </div>
 
             <div class="mic-box" id="sttMicBox">
                 <div class="mic-header">
@@ -926,7 +1096,7 @@
                     <line x1="12" y1="18" x2="12" y2="12"/>
                     <line x1="9" y1="15" x2="15" y2="15"/>
                 </svg>
-                <span class="dropzone-text" data-i18n="ttsDropzoneText">Drop text file or click to browse</span>
+                <span class="dropzone-text" data-i18n="ttsDropzoneText">Drop text files or click to browse</span>
                 <span class="dropzone-hint" data-i18n="ttsDropzoneHint">Any text — any size</span>
             </div>
 
@@ -1002,7 +1172,7 @@
 
         /** English DOM text stays in HTML for SEO/static fallback. JS-only English strings stay here. */
         const I18N_EN_SCRIPT = {
-            hintSttMedia: 'Any media — {limit}',
+            hintSttMedia: 'Any files — {limit}',
             hintLimitMb: 'up to {mb} MB',
             hintAnySize: 'any size',
             progressUploading: 'Uploading…',
@@ -1033,13 +1203,23 @@
             errMicEmpty: 'Recorded audio is empty',
             jobsLoading: 'Loading jobs…',
             jobsLoadError: 'Failed to load jobs list.',
-            jobsTypeStt: 'Speech to Text',
-            jobsTypeTts: 'Text to Speech',
+            jobsTypeStt: 'STT',
+            jobsTypeTts: 'TTS',
             jobsStateQueued: 'Queued',
             jobsStateRunning: 'Running',
             jobsStateCompleted: 'Completed',
             jobsStateFailed: 'Failed',
             jobsStateCancelled: 'Cancelled',
+            sttBatchTitle: 'Batch queue',
+            sttBatchNextReady: 'Next ready',
+            sttBatchDownloadAll: 'Download all',
+            sttBatchCancelCurrent: 'Cancel current',
+            sttBatchCancel: 'Cancel active',
+            sttBatchSummary: '{done} / {total} complete',
+            sttBatchEmpty: 'No files in this batch.',
+            jobsBatchTitle: 'STT batch',
+            jobsBatchSummary: '{done} / {total}',
+            jobsBatchOpen: 'Open',
         };
 
         const I18N_LOCALES = window.__resonanceLocales || {};
@@ -1500,6 +1680,13 @@
             return getActiveSttViewMode() === 'blocks' ? getSttBlocksText() : getSttContinuousText();
         }
 
+        function getSttCopyTextForSegments(segments) {
+            if (!segments || !segments.length) return '';
+            return getActiveSttViewMode() === 'blocks'
+                ? buildSttBlocksText(segments)
+                : mergeAdjacentSttTexts(segments);
+        }
+
         function setSttViewMode(mode) {
             const nextMode = mode === 'continuous' ? 'continuous' : 'blocks';
             els.sttViewBlocks.classList.toggle('active', nextMode === 'blocks');
@@ -1638,6 +1825,7 @@
         const TTS_TEXT_STORAGE_KEY = 'resonance_ttsText';
         const TTS_DRAFT_STORAGE_MAX_CHARS = 100000;
         const STT_ACTIVE_JOB_KEY = 'resonance_stt_active_job_id';
+        const STT_ACTIVE_BATCH_KEY = 'resonance_stt_active_batch_id';
         const TTS_ACTIVE_JOB_KEY = 'resonance_tts_active_job_id';
 
         let CONFIG = {};
@@ -1667,6 +1855,12 @@
             jobsLoadingMore: false,
             jobsLoadingInitial: false,
             jobsInfiniteObserver: null,
+            sttBatch: {
+                batchId: null,
+                selectedJobId: null,
+                jobs: [],
+                pollTimer: null,
+            },
             localeSearchTerm: '',
             localeHighlightIndex: -1,
             activeTab: savedTab || 'stt'
@@ -1854,6 +2048,13 @@
 
             sttDropzone: document.getElementById('sttDropzone'),
             sttFileInput: document.getElementById('sttFileInput'),
+            sttBatchPanel: document.getElementById('sttBatchPanel'),
+            sttBatchSummary: document.getElementById('sttBatchSummary'),
+            sttBatchList: document.getElementById('sttBatchList'),
+            sttBatchNext: document.getElementById('sttBatchNext'),
+            sttBatchDownloadAll: document.getElementById('sttBatchDownloadAll'),
+            sttBatchCancelCurrent: document.getElementById('sttBatchCancelCurrent'),
+            sttBatchCancel: document.getElementById('sttBatchCancel'),
             sttMicBox: document.getElementById('sttMicBox'),
             sttMicHint: document.getElementById('sttMicHint'),
             sttMicStart: document.getElementById('sttMicStart'),
@@ -2090,6 +2291,7 @@
             updateTtsCharCount();
             refreshSttResultDisplay();
             refreshActiveProgressLabels();
+            renderSttBatchPanel();
             if (els.jobsList.style.display !== 'none') {
                 rebuildJobsListFromState();
                 updateJobsFooterUi();
@@ -2165,6 +2367,65 @@
 	            return null;
 	        }
 
+            function getJobFilename(job) {
+                return (job && job.filename) || (job && job.result && job.result.filename) || t('defaultTranscriptionFile');
+            }
+
+            function countCompletedJobs(jobs) {
+                return jobs.filter((job) => job.state === 'completed').length;
+            }
+
+            function hasActiveJobs(jobs) {
+                return jobs.some((job) => job.state === 'queued' || job.state === 'running');
+            }
+
+            function aggregateBatchState(jobs) {
+                if (jobs.some((job) => job.state === 'running')) return 'running';
+                if (jobs.some((job) => job.state === 'queued')) return 'queued';
+                if (jobs.some((job) => job.state === 'failed')) return 'failed';
+                if (jobs.length && jobs.every((job) => job.state === 'cancelled')) return 'cancelled';
+                if (jobs.length && jobs.every((job) => job.state === 'completed')) return 'completed';
+                return jobs[0] ? jobs[0].state : 'queued';
+            }
+
+            function formatBatchSummary(jobs) {
+                return t('jobsBatchSummary', { done: countCompletedJobs(jobs), total: jobs.length });
+            }
+
+            function sortBatchJobs(jobs) {
+                return [...jobs].sort((a, b) => {
+                    const ai = Number(a.batch_index || 0);
+                    const bi = Number(b.batch_index || 0);
+                    if (ai !== bi) return ai - bi;
+                    return Number(a.created_at || 0) - Number(b.created_at || 0);
+                });
+            }
+
+            function groupJobsForDisplay(jobs) {
+                const groups = [];
+                const batchMap = new Map();
+                for (const job of jobs) {
+                    if (job && job.job_type === 'stt' && job.batch_id) {
+                        let group = batchMap.get(job.batch_id);
+                        if (!group) {
+                            group = { kind: 'batch', batch_id: job.batch_id, jobs: [], updated_at: 0 };
+                            batchMap.set(job.batch_id, group);
+                            groups.push(group);
+                        }
+                        group.jobs.push(job);
+                        group.updated_at = Math.max(group.updated_at, Number(job.updated_at || 0));
+                    } else if (job) {
+                        groups.push({ kind: 'job', job, updated_at: Number(job.updated_at || 0) });
+                    }
+                }
+                for (const group of groups) {
+                    if (group.kind === 'batch') {
+                        group.jobs = sortBatchJobs(group.jobs);
+                    }
+                }
+                return groups.sort((a, b) => Number(b.updated_at || 0) - Number(a.updated_at || 0));
+            }
+
 	        function showJobsState(i18nKey) {
 	            state.jobsListStateKey = i18nKey;
 	            els.jobsListState.style.display = '';
@@ -2186,23 +2447,93 @@
 	            btn.style.padding = '0.625rem 0.75rem';
 	            const durationSec = getJobDurationSec(job);
 	            const durationText = Number.isFinite(durationSec) ? formatSttProcessedTextDuration(durationSec) : '-';
-	            const durationSuffix = durationText !== '-' ? ` · ${durationText}` : '';
+	            const durationSuffix = durationText !== '-' ? ' · ' + durationText : '';
 	            const updated = new Date(Number(job.updated_at || 0) * 1000);
 	            const updatedText = Number.isFinite(updated.getTime())
 	                ? getLocaleHelpers(currentLocale).formatDateTime(updated)
 	                : '-';
-	            btn.innerHTML = `
-	                <div style="font-weight: 600;">${formatJobType(job.job_type)} · ${formatJobState(job.state)}${durationSuffix}</div>
-	                <div style="opacity: 0.75; font-size: 0.8rem;">${updatedText}</div>
-	            `;
+                const title = document.createElement('div');
+                title.style.fontWeight = '600';
+                title.textContent = formatJobType(job.job_type) + ' · ' + formatJobState(job.state) + durationSuffix;
+                const meta = document.createElement('div');
+                meta.style.opacity = '0.75';
+                meta.style.fontSize = '0.8rem';
+                meta.textContent = updatedText;
+                btn.append(title, meta);
 	            btn.addEventListener('click', () => restoreJob(job.job_id, job.job_type));
 	            return btn;
 	        }
 
+            function createJobsChildRow(job) {
+                const row = document.createElement('button');
+                row.type = 'button';
+                row.className = 'jobs-child-row';
+                row.style.padding = '0.52rem 0.6rem';
+                const text = document.createElement('div');
+                const file = document.createElement('div');
+                file.className = 'jobs-child-file';
+                file.textContent = getJobFilename(job);
+                const detail = document.createElement('div');
+                detail.className = 'jobs-child-detail';
+                const durationSec = getJobDurationSec(job);
+                const durationText = Number.isFinite(durationSec) ? ' · ' + formatSttProcessedTextDuration(durationSec) : '';
+                detail.textContent = formatJobState(job.state) + durationText;
+                text.append(file, detail);
+                const badge = document.createElement('span');
+                badge.className = 'jobs-batch-state ' + job.state;
+                badge.textContent = formatJobState(job.state);
+                row.append(text, badge);
+                row.addEventListener('click', () => restoreJob(job.job_id, job.job_type));
+                return row;
+            }
+
+            function createJobBatchElement(group) {
+                const wrap = document.createElement('details');
+                wrap.style.marginBottom = '0.5rem';
+                const summary = document.createElement('summary');
+                summary.className = 'btn btn-secondary';
+                summary.style.display = 'grid';
+                summary.style.gridTemplateColumns = 'minmax(0, 1fr) auto';
+                summary.style.alignItems = 'center';
+                summary.style.width = '100%';
+                summary.style.textAlign = 'left';
+                summary.style.padding = '0.625rem 0.75rem';
+                summary.style.cursor = 'pointer';
+                const titleBox = document.createElement('div');
+                const title = document.createElement('div');
+                title.style.fontWeight = '600';
+                title.textContent = t('jobsBatchTitle') + ' · ' + formatBatchSummary(group.jobs);
+                const updated = new Date(Number(group.updated_at || 0) * 1000);
+                const meta = document.createElement('div');
+                meta.style.opacity = '0.75';
+                meta.style.fontSize = '0.8rem';
+                meta.textContent = Number.isFinite(updated.getTime()) ? getLocaleHelpers(currentLocale).formatDateTime(updated) : '-';
+                titleBox.append(title, meta);
+                const openBtn = document.createElement('button');
+                openBtn.type = 'button';
+                openBtn.className = 'jobs-batch-open';
+                openBtn.textContent = t('jobsBatchOpen');
+                openBtn.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    openJobsBatchOnSttPage(group.batch_id, group.jobs);
+                });
+                summary.append(titleBox, openBtn);
+                const children = document.createElement('div');
+                children.style.display = 'grid';
+                children.style.gap = '0.35rem';
+                children.style.padding = '0.45rem 0 0 0.5rem';
+                group.jobs.forEach((job) => children.appendChild(createJobsChildRow(job)));
+                wrap.append(summary, children);
+                return wrap;
+            }
+
         function rebuildJobsListFromState() {
             els.jobsList.innerHTML = '';
-            state.jobsList.forEach((job) => {
-                els.jobsList.appendChild(createJobListButton(job));
+            groupJobsForDisplay(state.jobsList).forEach((item) => {
+                els.jobsList.appendChild(item.kind === 'batch'
+                    ? createJobBatchElement(item)
+                    : createJobListButton(item.job));
             });
         }
 
@@ -2349,10 +2680,24 @@
             setActiveJobId('TTS', null);
         }
 
-        async function restoreJob(jobId, jobType) {
+        async function restoreJob(jobId, jobType, options = {}) {
+            const keepScroll = !!options.preserveScroll;
+            const preserveSttLayout = !!options.preserveSttLayout && jobType === 'stt';
+            const scrollLeft = window.scrollX;
+            const scrollTop = window.scrollY;
+            const sttResultHeight = preserveSttLayout
+                ? Math.max(300, Math.round(els.sttResultText.getBoundingClientRect().height || 0))
+                : 0;
             clearAllStreamsAndSelections();
-            resetUI('STT', false);
+            resetUI('STT', preserveSttLayout);
             resetUI('TTS', false);
+            if (preserveSttLayout) {
+                els.sttResult.classList.add('active');
+                els.sttResultText.style.minHeight = sttResultHeight + 'px';
+                els.sttResultText.value = '';
+                els.sttMeta.textContent = '';
+                els.sttTimeRanges.textContent = '';
+            }
             switchTab(jobType === 'stt' ? 'stt' : 'tts');
 
             const type = jobType === 'stt' ? 'STT' : 'TTS';
@@ -2368,12 +2713,19 @@
                     await loadJobsList();
                     return;
                 }
+                if (!(status.result && status.result.batch_id)) {
+                    clearSttBatchState();
+                }
                 applySttJobStatus(status);
                 if (status.state === 'running' || status.state === 'queued') {
                     setActiveJobId('STT', jobId);
                     els.sttCancel.classList.add('active');
                     els.sttHide.classList.add('active');
                     els.sttProgress.classList.add('active');
+                    els.sttResult.classList.add('active');
+                    if (status.result && status.result.filename) {
+                        els.sttResultText.dataset.filename = status.result.filename;
+                    }
                     subscribeSttJobEvents(jobId, state.stt.segments || [], refreshSttResultDisplay);
                 }
             } else {
@@ -2401,6 +2753,9 @@
             }
 
             setJobsDrawerOpen(false);
+            if (keepScroll) {
+                requestAnimationFrame(() => window.scrollTo(scrollLeft, scrollTop));
+            }
         }
 
         if (savedTab) {
@@ -2533,6 +2888,7 @@
                     subscribeTtsJobEvents(ttsJobId, status.result && status.result.filename ? status.result.filename : 'tts_output');
                 }
             }
+            await restoreActiveSttBatch();
         })();
 
         function showToast(message) {
@@ -3066,9 +3422,308 @@
             };
         }
 
+        function setSttBatchState(batchId, jobs) {
+            state.sttBatch.batchId = batchId || null;
+            state.sttBatch.jobs = sortBatchJobs(jobs || []);
+            renderSttBatchPanel();
+        }
+
+        function getSelectedSttBatchJob() {
+            const selectedId = state.sttBatch.selectedJobId || state.stt.jobId;
+            if (!selectedId) return null;
+            return (state.sttBatch.jobs || []).find((job) => job.job_id === selectedId) || null;
+        }
+
+        function isActiveJobState(job) {
+            return !!job && (job.state === 'queued' || job.state === 'running');
+        }
+
+        function stopSttBatchPolling() {
+            if (state.sttBatch.pollTimer) {
+                clearInterval(state.sttBatch.pollTimer);
+                state.sttBatch.pollTimer = null;
+            }
+        }
+
+        function clearSttBatchState() {
+            stopSttBatchPolling();
+            state.sttBatch.batchId = null;
+            state.sttBatch.selectedJobId = null;
+            state.sttBatch.jobs = [];
+            localStorage.removeItem(STT_ACTIVE_BATCH_KEY);
+            renderSttBatchPanel();
+        }
+
+        function renderSttBatchPanel() {
+            const jobs = state.sttBatch.jobs || [];
+            els.sttBatchPanel.classList.toggle('active', jobs.length > 0);
+            els.sttBatchList.innerHTML = '';
+            if (!jobs.length) {
+                els.sttBatchSummary.textContent = t('sttBatchEmpty');
+                return;
+            }
+
+            els.sttBatchSummary.textContent = t('sttBatchSummary', {
+                done: countCompletedJobs(jobs),
+                total: jobs.length,
+            });
+            const hasCompleted = jobs.some((job) => job.job_id && job.state === 'completed');
+            const canCancelCurrent = isActiveJobState(getSelectedSttBatchJob());
+            const canCancelAny = hasActiveJobs(jobs);
+            els.sttBatchNext.hidden = !hasCompleted;
+            els.sttBatchDownloadAll.hidden = !hasCompleted;
+            els.sttBatchCancelCurrent.hidden = !canCancelCurrent;
+            els.sttBatchCancel.hidden = !canCancelAny;
+
+            jobs.forEach((job) => {
+                const row = document.createElement('button');
+                row.type = 'button';
+                row.className = 'stt-batch-row';
+                if (job.job_id === state.sttBatch.selectedJobId) {
+                    row.classList.add('selected');
+                }
+                row.disabled = !job.job_id;
+                const text = document.createElement('div');
+                const file = document.createElement('div');
+                file.className = 'stt-batch-file';
+                file.textContent = getJobFilename(job);
+                const detail = document.createElement('div');
+                detail.className = 'stt-batch-detail';
+                if (job.progress_total > 0 && job.state !== 'completed') {
+                    detail.textContent = t('progressChunk', {
+                        current: job.progress_current || 0,
+                        total: job.progress_total,
+                    });
+                } else {
+                    const durationSec = getJobDurationSec(job);
+                    const durationText = Number.isFinite(durationSec) ? ' · ' + formatSttProcessedTextDuration(durationSec) : '';
+                    detail.textContent = formatJobState(job.state) + durationText;
+                }
+                text.append(file, detail);
+                row.appendChild(text);
+                row.addEventListener('click', () => {
+                    if (!job.job_id) return;
+                    state.sttBatch.selectedJobId = job.job_id;
+                    renderSttBatchPanel();
+                    restoreJob(job.job_id, 'stt', { preserveScroll: true, preserveSttLayout: true });
+                });
+                els.sttBatchList.appendChild(row);
+            });
+        }
+
+        async function fetchJobsForBatch(batchId) {
+            if (!batchId) return null;
+            const res = await fetch(API_URL + '/jobs?limit=200&offset=0');
+            if (!res.ok) throw new Error('batch-fetch-failed');
+            const payload = await res.json();
+            return Array.isArray(payload.jobs)
+                ? payload.jobs.filter((job) => job && job.batch_id === batchId)
+                : [];
+        }
+
+        async function refreshSttBatchJobs() {
+            const batchId = state.sttBatch.batchId;
+            if (!batchId) return;
+            try {
+                const jobs = await fetchJobsForBatch(batchId);
+                if (!jobs) return;
+
+                if (!jobs.length) {
+                    clearSttBatchState();
+                    return;
+                }
+                setSttBatchState(batchId, jobs);
+                if (hasActiveJobs(jobs)) {
+                    localStorage.setItem(STT_ACTIVE_BATCH_KEY, batchId);
+                } else {
+                    localStorage.removeItem(STT_ACTIVE_BATCH_KEY);
+                    stopSttBatchPolling();
+                }
+                refreshJobsListIfOpen();
+            } catch (e) {
+                showToast(t('errNetwork'));
+            }
+        }
+
+        async function restoreActiveSttBatch() {
+            const batchId = localStorage.getItem(STT_ACTIVE_BATCH_KEY);
+            if (!batchId) return;
+            try {
+                const jobs = await fetchJobsForBatch(batchId);
+                if (!jobs) return;
+                if (!jobs.length) {
+                    localStorage.removeItem(STT_ACTIVE_BATCH_KEY);
+                    return;
+                }
+                setSttBatchState(batchId, jobs);
+                if (hasActiveJobs(jobs)) {
+                    startSttBatchPolling();
+                } else {
+                    localStorage.removeItem(STT_ACTIVE_BATCH_KEY);
+                }
+            } catch (e) {
+                localStorage.removeItem(STT_ACTIVE_BATCH_KEY);
+            }
+        }
+
+        function startSttBatchPolling() {
+            stopSttBatchPolling();
+            state.sttBatch.pollTimer = setInterval(refreshSttBatchJobs, 1500);
+        }
+
+        function openNextReadySttBatchJob() {
+            const jobs = state.sttBatch.jobs || [];
+            const ready = jobs.filter((job) => job.job_id && job.state === 'completed');
+            if (!ready.length) return;
+            const currentIndex = ready.findIndex((job) => job.job_id === state.sttBatch.selectedJobId);
+            const next = ready[(currentIndex + 1) % ready.length];
+            state.sttBatch.selectedJobId = next.job_id;
+            renderSttBatchPanel();
+            restoreJob(next.job_id, 'stt', { preserveScroll: true, preserveSttLayout: true });
+        }
+
+        function openJobsBatchOnSttPage(batchId, jobs) {
+            const scrollLeft = window.scrollX;
+            const scrollTop = window.scrollY;
+            setSttBatchState(batchId, jobs);
+            if (hasActiveJobs(state.sttBatch.jobs)) {
+                localStorage.setItem(STT_ACTIVE_BATCH_KEY, batchId);
+                startSttBatchPolling();
+            } else {
+                localStorage.removeItem(STT_ACTIVE_BATCH_KEY);
+                stopSttBatchPolling();
+            }
+            switchTab('stt');
+            setJobsDrawerOpen(false);
+            requestAnimationFrame(() => window.scrollTo(scrollLeft, scrollTop));
+        }
+
+        async function downloadAllSttBatchTranscriptions() {
+            const completed = (state.sttBatch.jobs || []).filter((job) => job.job_id && job.state === 'completed');
+            if (!completed.length) return;
+            const parts = [];
+            for (const job of completed) {
+                const status = await fetchJobStatus('STT', job.job_id);
+                const segments = Array.isArray(status && status.result && status.result.segments)
+                    ? status.result.segments
+                        .filter(s => s && Number.isFinite(s.start) && Number.isFinite(s.end) && typeof s.text === 'string')
+                        .map(s => ({ start: s.start, end: s.end, text: s.text }))
+                    : [];
+                const text = getSttCopyTextForSegments(segments);
+                if (!text) continue;
+                parts.push('# ' + getJobFilename(job) + '\n\n' + text);
+            }
+            if (!parts.length) return;
+            const blob = new Blob([parts.join('\n\n---\n\n')], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = (state.sttBatch.batchId || 'stt_batch') + '_' + getActiveSttViewMode() + '.txt';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        async function cancelCurrentSttBatchJob() {
+            const selected = getSelectedSttBatchJob();
+            if (!isActiveJobState(selected)) return;
+            await fetch(
+                API_URL + '/jobs/' + encodeURIComponent(selected.job_id) + '/cancel',
+                { method: 'POST' }
+            ).catch(() => null);
+            await refreshSttBatchJobs();
+        }
+
+        async function cancelActiveSttBatch() {
+            const jobs = state.sttBatch.jobs || [];
+            const active = jobs.filter((job) => job.job_id && (job.state === 'queued' || job.state === 'running'));
+            await Promise.all(active.map((job) => fetch(
+                API_URL + '/jobs/' + encodeURIComponent(job.job_id) + '/cancel',
+                { method: 'POST' }
+            ).catch(() => null)));
+            await refreshSttBatchJobs();
+        }
+
+        async function startSttServerJob(file, batchMeta) {
+            const formData = new FormData();
+            formData.append('file', file);
+            const params = new URLSearchParams();
+            if (batchMeta && batchMeta.batch_id) {
+                params.set('batch_id', batchMeta.batch_id);
+                params.set('batch_index', String(batchMeta.batch_index));
+                params.set('batch_total', String(batchMeta.batch_total));
+            }
+            const url = API_URL + '/jobs/stt' + (params.toString() ? '?' + params.toString() : '');
+            const startRes = await fetch(url, {
+                method: 'POST',
+                body: formData,
+            });
+
+            if (!startRes.ok) throw new Error(t('errUploadFailed'));
+            const startData = await startRes.json();
+            if (!startData.job_id) throw new Error(t('errNoResponseBody'));
+            return startData.job_id;
+        }
+
+        async function handleSttFiles(files) {
+            const batchFiles = Array.from(files || []).filter(Boolean);
+            if (!batchFiles.length) return;
+            if (batchFiles.length === 1) {
+                clearSttBatchState();
+                await handleSttFile(batchFiles[0]);
+                return;
+            }
+
+            cancelJob('STT');
+            els.sttError.classList.remove('active');
+            const batchId = 'stt_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+            const jobs = batchFiles.map((file, index) => ({
+                job_id: null,
+                job_type: 'stt',
+                state: 'queued',
+                filename: file.name,
+                batch_id: batchId,
+                batch_index: index + 1,
+                batch_total: batchFiles.length,
+                progress_current: 0,
+                progress_total: 0,
+                updated_at: Date.now() / 1000,
+            }));
+            setSttBatchState(batchId, jobs);
+            localStorage.setItem(STT_ACTIVE_BATCH_KEY, batchId);
+
+            await Promise.all(batchFiles.map(async (file, index) => {
+                try {
+                    const jobId = await startSttServerJob(file, {
+                        batch_id: batchId,
+                        batch_index: index + 1,
+                        batch_total: batchFiles.length,
+                    });
+                    jobs[index].job_id = jobId;
+                    jobs[index].updated_at = Date.now() / 1000;
+                } catch (err) {
+                    jobs[index].state = 'failed';
+                    jobs[index].error = err.message || t('errUploadFailed');
+                }
+                setSttBatchState(batchId, jobs);
+            }));
+
+            const firstStarted = jobs.find((job) => job.job_id);
+            if (firstStarted) {
+                state.sttBatch.selectedJobId = firstStarted.job_id;
+                restoreJob(firstStarted.job_id, 'stt');
+            }
+            await refreshSttBatchJobs();
+            if (hasActiveJobs(state.sttBatch.jobs)) {
+                startSttBatchPolling();
+            }
+        }
+
         async function handleSttFile(file) {
             if (!file) return;
 
+            clearSttBatchState();
             cancelJob('STT');
 
             els.sttResult.classList.remove('active');
@@ -3089,18 +3744,7 @@
             };
 
             try {
-                const formData = new FormData();
-                formData.append('file', file);
-
-                const startRes = await fetch(API_URL + '/jobs/stt', {
-                    method: 'POST',
-                    body: formData,
-                });
-
-                if (!startRes.ok) throw new Error(t('errUploadFailed'));
-                const startData = await startRes.json();
-                if (!startData.job_id) throw new Error(t('errNoResponseBody'));
-                myJobId = startData.job_id;
+                myJobId = await startSttServerJob(file, null);
                 setActiveJobId('STT', myJobId);
                 refreshJobsListIfOpen();
 
@@ -3133,12 +3777,18 @@
             e.preventDefault();
             els.sttDropzone.classList.remove('dragover');
             const files = e.dataTransfer.files;
-            if (files.length > 0) handleSttFile(files[0]);
+            if (files.length > 0) handleSttFiles(files);
         });
 
         els.sttFileInput.addEventListener('change', (e) => {
-            if (e.target.files.length > 0) handleSttFile(e.target.files[0]);
+            if (e.target.files.length > 0) handleSttFiles(e.target.files);
+            e.target.value = '';
         });
+
+        els.sttBatchNext.addEventListener('click', openNextReadySttBatchJob);
+        els.sttBatchDownloadAll.addEventListener('click', downloadAllSttBatchTranscriptions);
+        els.sttBatchCancelCurrent.addEventListener('click', cancelCurrentSttBatchJob);
+        els.sttBatchCancel.addEventListener('click', cancelActiveSttBatch);
 
         els.sttHide.addEventListener('click', (e) => {
             e.stopPropagation();

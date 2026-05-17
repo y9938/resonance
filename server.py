@@ -426,19 +426,21 @@ class JobRegistry:
                             max_end = end
                     if max_end > 0:
                         duration_out = max_end
-                out.append(
-                    {
-                        "job_id": rec.job_id,
-                        "job_type": rec.job_type,
-                        "state": rec.state,
-                        "progress_current": rec.progress_current,
-                        "progress_total": rec.progress_total,
-                        "error": rec.error,
-                        "duration": duration_out,
-                        "created_at": rec.created_at,
-                        "updated_at": rec.updated_at,
-                    }
-                )
+                item = {
+                    "job_id": rec.job_id,
+                    "job_type": rec.job_type,
+                    "state": rec.state,
+                    "progress_current": rec.progress_current,
+                    "progress_total": rec.progress_total,
+                    "error": rec.error,
+                    "duration": duration_out,
+                    "created_at": rec.created_at,
+                    "updated_at": rec.updated_at,
+                }
+                for key in ("filename", "batch_id", "batch_index", "batch_total"):
+                    if key in rec.result:
+                        item[key] = copy.deepcopy(rec.result[key])
+                out.append(item)
             next_offset = start + len(out)
             has_more = next_offset < total
             return {
@@ -558,6 +560,9 @@ async def start_stt_job(
     request: Request,
     response: Response,
     file: UploadFile = File(...),
+    batch_id: str | None = Query(default=None),
+    batch_index: int | None = Query(default=None, ge=1),
+    batch_total: int | None = Query(default=None, ge=1),
 ) -> dict[str, Any]:
     tmp_dir = tempfile.mkdtemp()
     audio_path = os.path.join(tmp_dir, "input")
@@ -579,7 +584,14 @@ async def start_stt_job(
     log.info(f"STT started: {file.filename or 'unknown'} ({size_str})")
 
     session_id = get_or_set_session_id(request, response)
-    rec = jobs.create("stt", session_id, {"filename": file.filename or None})
+    initial_result: dict[str, Any] = {"filename": file.filename or None}
+    if batch_id:
+        initial_result["batch_id"] = batch_id
+        if batch_index is not None:
+            initial_result["batch_index"] = batch_index
+        if batch_total is not None:
+            initial_result["batch_total"] = batch_total
+    rec = jobs.create("stt", session_id, initial_result)
 
     asyncio.create_task(
         asyncio.to_thread(
