@@ -123,6 +123,7 @@ class ModelManager:
     def __init__(self) -> None:
         self._stt_gigaam: Any | None = None
         self._stt_whisper: Any | None = None
+        self._stt_granite: Any | None = None
         self._tts: Any | None = None
         self._lock = threading.Lock()
 
@@ -133,6 +134,10 @@ class ModelManager:
     @property
     def stt_whisper_loaded(self) -> bool:
         return self._stt_whisper is not None
+
+    @property
+    def stt_granite_loaded(self) -> bool:
+        return self._stt_granite is not None
 
     @property
     def tts_loaded(self) -> bool:
@@ -149,6 +154,12 @@ class ModelManager:
             if self._stt_whisper is None:
                 self._stt_whisper = _load_whisper()
             return self._stt_whisper
+
+    def stt_granite(self) -> Any:
+        with self._lock:
+            if self._stt_granite is None:
+                self._stt_granite = _load_granite()
+            return self._stt_granite
 
     def tts(self) -> Any:
         with self._lock:
@@ -177,7 +188,7 @@ class WhisperAdapter:
 
     def transcribe(self, path: str) -> str:
         segments, _ = self._model.transcribe(path, beam_size=self._beam_size)
-        return " ".join(seg.text for seg in segments).strip()
+        return " ".join(seg.text.strip() for seg in segments).strip()
 
 
 def _load_whisper() -> WhisperAdapter:
@@ -185,20 +196,122 @@ def _load_whisper() -> WhisperAdapter:
     from faster_whisper import WhisperModel
 
     device = os.getenv("DEVICE", "cpu")
-    if device == "cuda":
+    if device.startswith("cuda"):
         ct2_device = "cuda"
+        device_index = 0
+        if ":" in device:
+            try:
+                device_index = int(device.split(":")[1])
+            except ValueError:
+                pass
         compute_type = "float16"
     else:
         ct2_device = "cpu"
+        device_index = 0
         compute_type = "int8"
+
+    kwargs = {
+        "device": ct2_device,
+        "compute_type": compute_type,
+    }
+    if device_index > 0:
+        kwargs["device_index"] = device_index
 
     model = WhisperModel(
         "Systran/faster-distil-whisper-large-v3",
-        device=ct2_device,
-        compute_type=compute_type,
+        **kwargs
     )
-    log.info(f"Whisper model loaded: device={ct2_device}, compute_type={compute_type}")
+    log.info(f"Whisper model loaded: device={ct2_device}, device_index={device_index}, compute_type={compute_type}")
     return WhisperAdapter(model)
+
+
+class GraniteAdapter:
+    """Wraps ibm-granite/granite-speech-4.1-2b-plus model for inference."""
+
+    def __init__(self, model: Any, processor: Any, device: str) -> None:
+        self._model = model
+        self._processor = processor
+        self._device = device
+
+    def transcribe(self, path: str, diarization: bool = False) -> str:
+        import soundfile as sf
+        import torchaudio
+        import torch
+
+        data, sr = sf.read(path, dtype="float32")
+        waveform = torch.from_numpy(data)
+        if waveform.ndim == 1:
+            waveform = waveform.unsqueeze(0)
+        else:
+            waveform = waveform.t()
+
+        if sr != 16000:
+            resampler = torchaudio.transforms.Resample(orig_freq=sr, new_freq=16000)
+            waveform = resampler(waveform)
+
+        if waveform.shape[0] > 1:
+            waveform = torch.mean(waveform, dim=0, keepdim=True)
+
+        audio_input = waveform.squeeze().numpy()
+
+        if diarization:
+            prompt = "<|audio|> Speaker attribution: Transcribe and denote who is speaking by adding [Speaker 1]: and [Speaker 2]: tags before speaker turns."
+        else:
+            prompt = "<|audio|> can you transcribe the speech into a written format?"
+
+        chat = [{"role": "user", "content": prompt}]
+        prompt_text = self._processor.tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
+
+        inputs = self._processor(
+            text=prompt_text,
+            audio=audio_input,
+            sampling_rate=16000,
+            return_tensors="pt"
+        )
+        inputs = {k: v.to(self._device) if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
+
+        if "input_features" in inputs:
+            inputs["input_features"] = inputs["input_features"].to(self._model.dtype)
+
+        with torch.no_grad():
+            generated_ids = self._model.generate(
+                **inputs,
+                max_new_tokens=2000
+            )
+
+        if "input_ids" in inputs:
+            input_len = inputs["input_ids"].shape[1]
+            new_tokens = generated_ids[0][input_len:]
+        else:
+            new_tokens = generated_ids[0]
+
+        transcription = self._processor.tokenizer.decode(new_tokens, skip_special_tokens=True)
+        return transcription.strip()
+
+
+def _load_granite() -> GraniteAdapter:
+    log.info("Loading STT model (IBM Granite Speech 4.1 Plus)...")
+    from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
+    import torch
+
+    device = os.getenv("DEVICE", "cpu")
+    model_id = "ibm-granite/granite-speech-4.1-2b-plus"
+
+    processor = AutoProcessor.from_pretrained(model_id)
+
+    if device.startswith("cuda"):
+        torch_dtype = torch.bfloat16
+    else:
+        torch_dtype = torch.float32
+
+    model = AutoModelForSpeechSeq2Seq.from_pretrained(
+        model_id,
+        dtype=torch_dtype,
+    ).to(device)
+
+    log.info(f"Granite model loaded: device={device}, dtype={torch_dtype}")
+    return GraniteAdapter(model, processor, device)
+
 
 def _load_tts() -> Any:
     log.info("Loading TTS model (Silero v5_cis_base)...")
@@ -599,6 +712,7 @@ async def list_models() -> dict[str, Any]:
         "stt": {
             "gigaam": {"name": "GigaAM-v3", "loaded": models.stt_gigaam_loaded},
             "whisper": {"name": "Distil-Whisper-v3", "loaded": models.stt_whisper_loaded},
+            "granite": {"name": "IBM Granite Speech 4.1 Plus", "loaded": models.stt_granite_loaded},
             "languages": {"ru": "gigaam", "en": "whisper"},
         },
         "tts": {"name": primary_backend.name, "loaded": primary_backend.loaded},
@@ -620,6 +734,8 @@ async def start_stt_job(
     response: Response,
     file: UploadFile = File(...),
     language: str | None = Query(default=None),
+    model: str | None = Query(default=None),
+    diarization: bool = Query(default=False),
     batch_id: str | None = Query(default=None),
     batch_index: int | None = Query(default=None, ge=1),
     batch_total: int | None = Query(default=None, ge=1),
@@ -628,11 +744,28 @@ async def start_stt_job(
     if resolved_language not in {"ru", "en"}:
         raise HTTPException(status_code=400, detail=f"Unsupported language: {resolved_language}")
 
-    if resolved_language == "en":
-        model_name = "whisper"
+    if model:
+        if model not in {"gigaam", "whisper", "granite"}:
+            raise HTTPException(status_code=400, detail=f"Unsupported model: {model}")
+        if resolved_language == "ru" and model != "gigaam":
+            raise HTTPException(status_code=400, detail="Russian language only supports gigaam model")
+        if resolved_language == "en" and model not in {"whisper", "granite"}:
+            raise HTTPException(status_code=400, detail=f"English language does not support {model} model")
+        model_name = model
+    else:
+        if resolved_language == "ru":
+            model_name = "gigaam"
+        else:
+            model_name = "whisper"
+
+    if diarization and model_name != "granite":
+        raise HTTPException(status_code=400, detail="Diarization is only supported by the granite model")
+
+    if model_name == "granite":
+        resolved_model = models.stt_granite()
+    elif model_name == "whisper":
         resolved_model = models.stt_whisper()
     else:
-        model_name = "gigaam"
         resolved_model = models.stt_gigaam()
 
     tmp_dir = tempfile.mkdtemp()
@@ -656,6 +789,8 @@ async def start_stt_job(
 
     session_id = get_or_set_session_id(request, response)
     initial_result: dict[str, Any] = {"filename": file.filename or None}
+    if diarization:
+        initial_result["diarization"] = True
     if batch_id:
         initial_result["batch_id"] = batch_id
         if batch_index is not None:
@@ -684,6 +819,7 @@ async def start_stt_job(
             chunk_sec=Config.CHUNK_SEC,
             overlap_sec=Config.OVERLAP_SEC,
             max_duration_sec=Config.STT_MAX_DURATION_SEC,
+            diarization=diarization,
         )
     )
     return {"job_id": rec.job_id}

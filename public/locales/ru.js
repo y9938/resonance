@@ -93,7 +93,11 @@
             jobsBatchOpen: 'Открыть',
             sttLanguageLabel: 'Язык STT',
             sttLangRu: 'Русский',
-            sttLangEn: 'Английский'
+            sttLangEn: 'Английский',
+            sttModelLabel: 'Модель STT',
+            sttModelWhisper: 'Whisper (по умолчанию)',
+            sttModelGranite: 'IBM Granite',
+            sttDiarizationLabelText: 'Диаризация'
         },
         helpers: {
             formatCount: function (value) {

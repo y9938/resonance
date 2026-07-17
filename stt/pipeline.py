@@ -229,6 +229,7 @@ def run_stt_job(
     chunk_sec: int,
     overlap_sec: int,
     max_duration_sec: int = 0,
+    diarization: bool = False,
 ) -> None:
     """Sequential STT runner with one on-disk segment at a time."""
     start_time = time.time()
@@ -280,7 +281,13 @@ def run_stt_job(
                 if cancel_requested():
                     return
 
-                raw = model.transcribe(segment_path)
+                import inspect
+                sig = inspect.signature(model.transcribe)
+                if "diarization" in sig.parameters:
+                    raw = model.transcribe(segment_path, diarization=diarization)
+                else:
+                    raw = model.transcribe(segment_path)
+
                 if cancel_requested():
                     return
             finally:
@@ -328,8 +335,15 @@ def run_stt_worker(
     chunk_sec: int,
     overlap_sec: int,
     max_duration_sec: int = 0,
+    diarization: bool = False,
 ) -> None:
     with semaphore:
+        model_class = model.__class__.__name__
+        if model_class not in ("WhisperAdapter", "GraniteAdapter"):
+            effective_chunk_sec = min(chunk_sec, int(stt_transcribe_hard_limit_sec()))
+        else:
+            effective_chunk_sec = chunk_sec
+
         run_stt_job(
             job_id=job_id,
             input_path=audio_path,
@@ -338,7 +352,8 @@ def run_stt_worker(
             model=model,
             log=log,
             sample_rate=sample_rate,
-            chunk_sec=min(chunk_sec, int(stt_transcribe_hard_limit_sec())),
+            chunk_sec=effective_chunk_sec,
             overlap_sec=overlap_sec,
             max_duration_sec=max_duration_sec,
+            diarization=diarization,
         )

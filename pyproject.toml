@@ -32,6 +32,7 @@ dev = [
     "pytest-asyncio",
     "playwright",
     "pytest-playwright",
+    "httpx2",
 ]
 
 [tool.pytest.ini_options]

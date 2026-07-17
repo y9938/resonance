@@ -1,5 +1,4 @@
-"""Keep STT display helpers in sync with public/index.html."""
-
+import re
 
 def merge_two_stt_strings(a: str, b: str) -> str:
     a_trim = (a or "").strip()
@@ -8,17 +7,25 @@ def merge_two_stt_strings(a: str, b: str) -> str:
         return a_trim
     if not a_trim:
         return b_trim
-    max_k = min(len(a_trim), len(b_trim), 1200)
+
+    tag_match = re.match(r"^\[Speaker \d+\]:\s*", b_trim, re.IGNORECASE)
+    if tag_match:
+        b_clean = b_trim[len(tag_match.group(0)):]
+    else:
+        b_clean = b_trim
+
+    max_k = min(len(a_trim), len(b_clean), 1200)
     for k in range(max_k, 0, -1):
-        if a_trim[-k:] == b_trim[:k]:
-            return a_trim + b_trim[k:]
+        if a_trim[-k:] == b_clean[:k]:
+            return a_trim + b_clean[k:]
     wa = a_trim.split()
-    wb = b_trim.split()
-    max_w = min(len(wa), len(wb), 48)
+    wb_clean = b_clean.split()
+    max_w = min(len(wa), len(wb_clean), 48)
     for kw in range(max_w, 0, -1):
-        if wa[-kw:] == wb[:kw]:
-            return " ".join(wa + wb[kw:])
+        if wa[-kw:] == wb_clean[:kw]:
+            return " ".join(wa + wb_clean[kw:])
     return a_trim + " " + b_trim
+
 
 
 def merge_adjacent_stt_texts(segments: list[dict]) -> str:
@@ -218,3 +225,21 @@ def test_get_stt_download_text_matches_copy_text_for_active_mode() -> None:
         {"start": 18.0, "end": 26.0, "text": "middle end"},
     ]
     assert get_stt_download_text(segs, "blocks") == get_stt_copy_text(segs, "blocks")
+
+
+def test_merge_overlap_with_diarization_tags() -> None:
+    # Same speaker tag
+    a = "[Speaker 1]: hello world"
+    b = "[Speaker 1]: world foo"
+    assert merge_two_stt_strings(a, b) == "[Speaker 1]: hello world foo"
+
+    # Different speaker tag
+    a = "[Speaker 1]: hello world"
+    b = "[Speaker 2]: world foo"
+    assert merge_two_stt_strings(a, b) == "[Speaker 1]: hello world foo"
+
+    # Speaker change with no overlap
+    a = "[Speaker 1]: hello world"
+    b = "[Speaker 2]: foo bar"
+    assert merge_two_stt_strings(a, b) == "[Speaker 1]: hello world [Speaker 2]: foo bar"
+

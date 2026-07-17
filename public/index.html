@@ -1051,11 +1051,26 @@
             </div>
 
             <div class="input-footer">
-                <span data-i18n="sttLanguageLabel">STT Language</span>
-                <select class="speaker-select" id="sttLanguage">
-                    <option value="ru" data-i18n="sttLangRu">Russian</option>
-                    <option value="en" data-i18n="sttLangEn">English</option>
-                </select>
+                <div class="stt-controls-group" style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
+                    <span data-i18n="sttLanguageLabel">STT Language</span>
+                    <select class="speaker-select" id="sttLanguage">
+                        <option value="ru" data-i18n="sttLangRu">Russian</option>
+                        <option value="en" data-i18n="sttLangEn">English</option>
+                    </select>
+
+                    <div id="sttModelContainer" style="display: flex; align-items: center; gap: 0.5rem; transition: opacity 0.2s;">
+                        <span data-i18n="sttModelLabel">STT Model</span>
+                        <select class="speaker-select" id="sttModel">
+                            <option value="whisper" data-i18n="sttModelWhisper">Whisper (Default)</option>
+                            <option value="granite" data-i18n="sttModelGranite">IBM Granite</option>
+                        </select>
+                    </div>
+
+                    <div id="sttDiarizationContainer" style="display: flex; align-items: center; gap: 0.35rem; transition: opacity 0.2s;">
+                        <input type="checkbox" id="sttDiarization" style="cursor: pointer; width: 16px; height: 16px; accent-color: var(--accent);">
+                        <label for="sttDiarization" data-i18n="sttDiarizationLabelText" style="cursor: pointer; font-size: 0.875rem; color: var(--text-primary); user-select: none;">Diarization</label>
+                    </div>
+                </div>
             </div>
 
             <div class="error" id="sttError"></div>
@@ -1231,6 +1246,10 @@
             sttLanguageLabel: 'STT Language',
             sttLangRu: 'Russian',
             sttLangEn: 'English',
+            sttModelLabel: 'STT Model',
+            sttModelWhisper: 'Whisper (Default)',
+            sttModelGranite: 'IBM Granite',
+            sttDiarizationLabelText: 'Diarization',
         };
 
         const I18N_LOCALES = window.__resonanceLocales || {};
@@ -1562,25 +1581,29 @@
             const bTrim = (b || '').trim();
             if (!bTrim) return aTrim;
             if (!aTrim) return bTrim;
-            const maxK = Math.min(aTrim.length, bTrim.length, 1200);
+
+            const tagMatch = bTrim.match(/^\[Speaker \d+\]:\s*/i);
+            const bClean = tagMatch ? bTrim.slice(tagMatch[0].length) : bTrim;
+
+            const maxK = Math.min(aTrim.length, bClean.length, 1200);
             for (let k = maxK; k >= 1; k--) {
-                if (aTrim.slice(-k) === bTrim.slice(0, k)) {
-                    return aTrim + bTrim.slice(k);
+                if (aTrim.slice(-k) === bClean.slice(0, k)) {
+                    return aTrim + bClean.slice(k);
                 }
             }
             const wa = aTrim.split(/\s+/).filter(Boolean);
-            const wb = bTrim.split(/\s+/).filter(Boolean);
-            const maxW = Math.min(wa.length, wb.length, 48);
+            const wbClean = bClean.split(/\s+/).filter(Boolean);
+            const maxW = Math.min(wa.length, wbClean.length, 48);
             for (let kw = maxW; kw >= 1; kw--) {
                 let match = true;
                 for (let j = 0; j < kw; j++) {
-                    if (wa[wa.length - kw + j] !== wb[j]) {
+                    if (wa[wa.length - kw + j] !== wbClean[j]) {
                         match = false;
                         break;
                     }
                 }
                 if (match) {
-                    return wa.concat(wb.slice(kw)).join(' ');
+                    return wa.concat(wbClean.slice(kw)).join(' ');
                 }
             }
             return aTrim + ' ' + bTrim;
@@ -2080,6 +2103,10 @@
             sttHide: document.getElementById('sttHide'),
             sttCancel: document.getElementById('sttCancel'),
             sttLanguage: document.getElementById('sttLanguage'),
+            sttModel: document.getElementById('sttModel'),
+            sttDiarization: document.getElementById('sttDiarization'),
+            sttModelContainer: document.getElementById('sttModelContainer'),
+            sttDiarizationContainer: document.getElementById('sttDiarizationContainer'),
             sttError: document.getElementById('sttError'),
             sttResult: document.getElementById('sttResult'),
             sttResultText: document.getElementById('sttResultText'),
@@ -2859,6 +2886,22 @@
 
         setSttViewMode(localStorage.getItem('resonance_stt_view_mode') || 'blocks');
 
+        function updateSttOptionsVisibility() {
+            if (!els.sttLanguage) return;
+            const lang = els.sttLanguage.value;
+            if (lang === 'en') {
+                if (els.sttModelContainer) els.sttModelContainer.style.display = 'flex';
+                if (els.sttModel && els.sttModel.value === 'granite') {
+                    if (els.sttDiarizationContainer) els.sttDiarizationContainer.style.display = 'flex';
+                } else {
+                    if (els.sttDiarizationContainer) els.sttDiarizationContainer.style.display = 'none';
+                }
+            } else {
+                if (els.sttModelContainer) els.sttModelContainer.style.display = 'none';
+                if (els.sttDiarizationContainer) els.sttDiarizationContainer.style.display = 'none';
+            }
+        }
+
         if (els.sttLanguage) {
             const savedSttLanguage = localStorage.getItem('resonance_sttLanguage');
             if (savedSttLanguage) {
@@ -2867,8 +2910,33 @@
                 const defaultSttLang = (initialLocale === 'ru' || initialLocale === 'en') ? initialLocale : 'ru';
                 els.sttLanguage.value = defaultSttLang;
             }
+
+            if (els.sttModel) {
+                const savedSttModel = localStorage.getItem('resonance_sttModel');
+                if (savedSttModel) {
+                    els.sttModel.value = savedSttModel;
+                } else {
+                    els.sttModel.value = 'whisper';
+                }
+                els.sttModel.addEventListener('change', () => {
+                    localStorage.setItem('resonance_sttModel', els.sttModel.value);
+                    updateSttOptionsVisibility();
+                });
+            }
+
+            if (els.sttDiarization) {
+                const savedSttDiarization = localStorage.getItem('resonance_sttDiarization') === 'true';
+                els.sttDiarization.checked = savedSttDiarization;
+                els.sttDiarization.addEventListener('change', () => {
+                    localStorage.setItem('resonance_sttDiarization', els.sttDiarization.checked);
+                });
+            }
+
+            updateSttOptionsVisibility();
+
             els.sttLanguage.addEventListener('change', () => {
                 localStorage.setItem('resonance_sttLanguage', els.sttLanguage.value);
+                updateSttOptionsVisibility();
             });
         }
 
@@ -3681,6 +3749,14 @@
             }
             if (els.sttLanguage && els.sttLanguage.value) {
                 params.set('language', els.sttLanguage.value);
+                if (els.sttLanguage.value === 'en') {
+                    if (els.sttModel && els.sttModel.value) {
+                        params.set('model', els.sttModel.value);
+                        if (els.sttModel.value === 'granite' && els.sttDiarization && els.sttDiarization.checked) {
+                            params.set('diarization', 'true');
+                        }
+                    }
+                }
             }
             const url = API_URL + '/jobs/stt' + (params.toString() ? '?' + params.toString() : '');
             const startRes = await fetch(url, {

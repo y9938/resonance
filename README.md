@@ -4,7 +4,7 @@ Unified Speech-to-Text (STT) and Text-to-Speech (TTS) API Server.
 
 ## Features
 
-- **STT**: GigaAM-v3 model for Russian speech recognition
+- **STT**: GigaAM-v3 (RU), Distil-Whisper-v3 (EN), and IBM Granite (with speaker diarization) (EN)
 - **TTS**: Russian Silero v5 voices and English Kokoro voices
 - **i18n**: Interface available in English, Russian, Chinese
 

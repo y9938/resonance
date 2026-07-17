@@ -84,7 +84,11 @@
             jobsBatchOpen: '打开',
             sttLanguageLabel: 'STT 语言',
             sttLangRu: '俄语',
-            sttLangEn: '英语'
+            sttLangEn: '英语',
+            sttModelLabel: 'STT 模型',
+            sttModelWhisper: 'Whisper (默认)',
+            sttModelGranite: 'IBM Granite',
+            sttDiarizationLabelText: '角色分离'
         },
         helpers: {
             formatCount: function (value) {
