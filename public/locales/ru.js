@@ -90,7 +90,10 @@
             sttBatchEmpty: 'В этом пакете нет файлов.',
             jobsBatchTitle: 'Пакет STT',
             jobsBatchSummary: '{done} / {total}',
-            jobsBatchOpen: 'Открыть'
+            jobsBatchOpen: 'Открыть',
+            sttLanguageLabel: 'Язык STT',
+            sttLangRu: 'Русский',
+            sttLangEn: 'Английский'
         },
         helpers: {
             formatCount: function (value) {

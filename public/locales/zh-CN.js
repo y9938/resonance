@@ -81,7 +81,10 @@
             sttBatchEmpty: '此批次中没有文件。',
             jobsBatchTitle: 'STT 批次',
             jobsBatchSummary: '{done} / {total}',
-            jobsBatchOpen: '打开'
+            jobsBatchOpen: '打开',
+            sttLanguageLabel: 'STT 语言',
+            sttLangRu: '俄语',
+            sttLangEn: '英语'
         },
         helpers: {
             formatCount: function (value) {

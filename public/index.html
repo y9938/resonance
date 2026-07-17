@@ -1050,6 +1050,14 @@
                 </div>
             </div>
 
+            <div class="input-footer">
+                <span data-i18n="sttLanguageLabel">STT Language</span>
+                <select class="speaker-select" id="sttLanguage">
+                    <option value="ru" data-i18n="sttLangRu">Russian</option>
+                    <option value="en" data-i18n="sttLangEn">English</option>
+                </select>
+            </div>
+
             <div class="error" id="sttError"></div>
 
             <div class="result" id="sttResult">
@@ -1220,6 +1228,9 @@
             jobsBatchTitle: 'STT batch',
             jobsBatchSummary: '{done} / {total}',
             jobsBatchOpen: 'Open',
+            sttLanguageLabel: 'STT Language',
+            sttLangRu: 'Russian',
+            sttLangEn: 'English',
         };
 
         const I18N_LOCALES = window.__resonanceLocales || {};
@@ -2068,6 +2079,7 @@
             sttProgressText: document.getElementById('sttProgressText'),
             sttHide: document.getElementById('sttHide'),
             sttCancel: document.getElementById('sttCancel'),
+            sttLanguage: document.getElementById('sttLanguage'),
             sttError: document.getElementById('sttError'),
             sttResult: document.getElementById('sttResult'),
             sttResultText: document.getElementById('sttResultText'),
@@ -2846,6 +2858,19 @@
         }
 
         setSttViewMode(localStorage.getItem('resonance_stt_view_mode') || 'blocks');
+
+        if (els.sttLanguage) {
+            const savedSttLanguage = localStorage.getItem('resonance_sttLanguage');
+            if (savedSttLanguage) {
+                els.sttLanguage.value = savedSttLanguage;
+            } else {
+                const defaultSttLang = (initialLocale === 'ru' || initialLocale === 'en') ? initialLocale : 'ru';
+                els.sttLanguage.value = defaultSttLang;
+            }
+            els.sttLanguage.addEventListener('change', () => {
+                localStorage.setItem('resonance_sttLanguage', els.sttLanguage.value);
+            });
+        }
 
         (async function restoreActiveJobs() {
             const sttJobId = localStorage.getItem(STT_ACTIVE_JOB_KEY);
@@ -3653,6 +3678,9 @@
                 params.set('batch_id', batchMeta.batch_id);
                 params.set('batch_index', String(batchMeta.batch_index));
                 params.set('batch_total', String(batchMeta.batch_total));
+            }
+            if (els.sttLanguage && els.sttLanguage.value) {
+                params.set('language', els.sttLanguage.value);
             }
             const url = API_URL + '/jobs/stt' + (params.toString() ? '?' + params.toString() : '');
             const startRes = await fetch(url, {

@@ -121,23 +121,34 @@ class ModelManager:
     """Lazy model loader. Assumes: single-threaded init, thread-safe after."""
 
     def __init__(self) -> None:
-        self._stt: Any | None = None
+        self._stt_gigaam: Any | None = None
+        self._stt_whisper: Any | None = None
         self._tts: Any | None = None
         self._lock = threading.Lock()
 
     @property
-    def stt_loaded(self) -> bool:
-        return self._stt is not None
+    def stt_gigaam_loaded(self) -> bool:
+        return self._stt_gigaam is not None
+
+    @property
+    def stt_whisper_loaded(self) -> bool:
+        return self._stt_whisper is not None
 
     @property
     def tts_loaded(self) -> bool:
         return self._tts is not None
 
-    def stt(self) -> Any:
+    def stt_gigaam(self) -> Any:
         with self._lock:
-            if self._stt is None:
-                self._stt = _load_stt()
-            return self._stt
+            if self._stt_gigaam is None:
+                self._stt_gigaam = _load_stt()
+            return self._stt_gigaam
+
+    def stt_whisper(self) -> Any:
+        with self._lock:
+            if self._stt_whisper is None:
+                self._stt_whisper = _load_whisper()
+            return self._stt_whisper
 
     def tts(self) -> Any:
         with self._lock:
@@ -156,6 +167,38 @@ def _load_stt() -> Any:
     log.info(f"STT model loaded: {params:.1f}M parameters")
     return model
 
+
+class WhisperAdapter:
+    """Wraps WhisperModel to match GigaAM's transcribe(path) -> str interface."""
+
+    def __init__(self, model: Any, beam_size: int = 5) -> None:
+        self._model = model
+        self._beam_size = beam_size
+
+    def transcribe(self, path: str) -> str:
+        segments, _ = self._model.transcribe(path, beam_size=self._beam_size)
+        return " ".join(seg.text for seg in segments).strip()
+
+
+def _load_whisper() -> WhisperAdapter:
+    log.info("Loading STT model (Distil-Whisper-v3)...")
+    from faster_whisper import WhisperModel
+
+    device = os.getenv("DEVICE", "cpu")
+    if device == "cuda":
+        ct2_device = "cuda"
+        compute_type = "float16"
+    else:
+        ct2_device = "cpu"
+        compute_type = "int8"
+
+    model = WhisperModel(
+        "Systran/faster-distil-whisper-large-v3",
+        device=ct2_device,
+        compute_type=compute_type,
+    )
+    log.info(f"Whisper model loaded: device={ct2_device}, compute_type={compute_type}")
+    return WhisperAdapter(model)
 
 def _load_tts() -> Any:
     log.info("Loading TTS model (Silero v5_cis_base)...")
@@ -251,6 +294,8 @@ class JobRecord:
     cancelled: bool
     events: list[dict[str, Any]]
     next_seq: int
+    language: str | None = None
+    model: str | None = None
 
 
 class JobRegistry:
@@ -263,6 +308,8 @@ class JobRegistry:
         job_type: str,
         session_id: str,
         initial_result: dict[str, Any] | None = None,
+        language: str | None = None,
+        model: str | None = None,
     ) -> JobRecord:
         now = time.time()
         rec = JobRecord(
@@ -279,6 +326,8 @@ class JobRegistry:
             cancelled=False,
             events=[],
             next_seq=1,
+            language=language,
+            model=model,
         )
         with self._lock:
             self._jobs[rec.job_id] = rec
@@ -384,6 +433,8 @@ class JobRegistry:
                 "result": copy.deepcopy(rec.result),
                 "created_at": rec.created_at,
                 "updated_at": rec.updated_at,
+                "language": rec.language,
+                "model": rec.model,
             }
 
     def events_after(self, job_id: str, after_seq: int) -> list[dict[str, Any]]:
@@ -437,6 +488,10 @@ class JobRegistry:
                     "created_at": rec.created_at,
                     "updated_at": rec.updated_at,
                 }
+                if rec.language is not None:
+                    item["language"] = rec.language
+                if rec.model is not None:
+                    item["model"] = rec.model
                 for key in ("filename", "batch_id", "batch_index", "batch_total"):
                     if key in rec.result:
                         item[key] = copy.deepcopy(rec.result[key])
@@ -541,7 +596,11 @@ async def health() -> PlainTextResponse:
 async def list_models() -> dict[str, Any]:
     primary_backend = tts_service.backends["silero_ru"]
     return {
-        "stt": {"name": "GigaAM-v3", "loaded": models.stt_loaded},
+        "stt": {
+            "gigaam": {"name": "GigaAM-v3", "loaded": models.stt_gigaam_loaded},
+            "whisper": {"name": "Distil-Whisper-v3", "loaded": models.stt_whisper_loaded},
+            "languages": {"ru": "gigaam", "en": "whisper"},
+        },
         "tts": {"name": primary_backend.name, "loaded": primary_backend.loaded},
         "tts_catalog": tts_service.serialize_catalog(),
         "tts_backends": [
@@ -560,10 +619,22 @@ async def start_stt_job(
     request: Request,
     response: Response,
     file: UploadFile = File(...),
+    language: str | None = Query(default=None),
     batch_id: str | None = Query(default=None),
     batch_index: int | None = Query(default=None, ge=1),
     batch_total: int | None = Query(default=None, ge=1),
 ) -> dict[str, Any]:
+    resolved_language = language or "ru"
+    if resolved_language not in {"ru", "en"}:
+        raise HTTPException(status_code=400, detail=f"Unsupported language: {resolved_language}")
+
+    if resolved_language == "en":
+        model_name = "whisper"
+        resolved_model = models.stt_whisper()
+    else:
+        model_name = "gigaam"
+        resolved_model = models.stt_gigaam()
+
     tmp_dir = tempfile.mkdtemp()
     audio_path = os.path.join(tmp_dir, "input")
     try:
@@ -591,7 +662,13 @@ async def start_stt_job(
             initial_result["batch_index"] = batch_index
         if batch_total is not None:
             initial_result["batch_total"] = batch_total
-    rec = jobs.create("stt", session_id, initial_result)
+    rec = jobs.create(
+        "stt",
+        session_id,
+        initial_result,
+        language=resolved_language,
+        model=model_name,
+    )
 
     asyncio.create_task(
         asyncio.to_thread(
@@ -601,7 +678,7 @@ async def start_stt_job(
             upload_root=tmp_dir,
             semaphore=STT_WORKER_SEMAPHORE,
             jobs=jobs,
-            model=models.stt(),
+            model=resolved_model,
             log=log,
             sample_rate=Config.SR,
             chunk_sec=Config.CHUNK_SEC,

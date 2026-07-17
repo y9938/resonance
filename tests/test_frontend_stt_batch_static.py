@@ -2,6 +2,7 @@ from pathlib import Path
 
 
 INDEX_HTML = Path(__file__).resolve().parent.parent / "public" / "index.html"
+RU_LOCALE = Path(__file__).resolve().parent.parent / "public" / "locales" / "ru.js"
 ZH_LOCALE = Path(__file__).resolve().parent.parent / "public" / "locales" / "zh-CN.js"
 
 
@@ -50,3 +51,32 @@ def test_stt_batch_followup_ui_contracts() -> None:
     assert "els.sttBatchNext.hidden" in html
     assert "els.sttBatchDownloadAll.hidden" in html
     assert "clearSttBatchState();" in html
+
+
+def test_stt_language_dropdown_static() -> None:
+    html = INDEX_HTML.read_text()
+    ru = RU_LOCALE.read_text()
+    zh = ZH_LOCALE.read_text()
+
+    assert 'id="sttLanguage"' in html
+    assert 'sttLanguageLabel' in html
+    assert 'sttLangRu' in html
+    assert 'sttLangEn' in html
+
+    # Verify keys exist in ru.js
+    assert 'sttLanguageLabel' in ru
+    assert 'sttLangRu' in ru
+    assert 'sttLangEn' in ru
+
+    # Verify keys exist in zh-CN.js
+    assert 'sttLanguageLabel' in zh
+    assert 'sttLangRu' in zh
+    assert 'sttLangEn' in zh
+
+
+def test_stt_language_js_contracts() -> None:
+    html = INDEX_HTML.read_text()
+
+    assert 'resonance_sttLanguage' in html
+    assert 'els.sttLanguage' in html
+    assert 'language' in html
