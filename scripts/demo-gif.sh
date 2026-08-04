@@ -3,6 +3,10 @@ set -euo pipefail
 
 # Record demo video and convert to GIF
 
+SCRIPT_DIR="$(cd -P "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)"
+ROOT_DIR="$(dirname "$SCRIPT_DIR")"
+cd "$ROOT_DIR"
+
 echo "=== Recording demo video ==="
 .venv/bin/pytest tests/e2e/demo_recording.py --video=on
 

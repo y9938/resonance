@@ -58,3 +58,30 @@ run:
 save:
     docker save {{IMAGE}} | gzip > {{TAR_FILE}}
     @echo "Saved to {{TAR_FILE}}"
+
+# Generate favicon.ico and apple-touch-icon.png
+icons:
+    @command -v resvg >/dev/null 2>&1 || { echo "resvg not found."; exit 1; }
+    @command -v magick >/dev/null 2>&1 || { echo "magick (ImageMagick) not found."; exit 1; }
+    @mkdir -p build/favicons
+    resvg -w 16 -h 16 public/icon.svg build/favicons/16.png
+    resvg -w 32 -h 32 public/icon.svg build/favicons/32.png
+    resvg -w 48 -h 48 public/icon.svg build/favicons/48.png
+    magick -background none build/favicons/16.png build/favicons/32.png build/favicons/48.png public/favicon.ico
+    resvg -w 180 -h 180 public/icon.svg public/apple-touch-icon.png
+    @echo "Web icons generated with pixel-perfect resvg vector rendering."
+
+# Build macOS menu bar app
+build-macos:
+    bash scripts/build-icns.sh
+    rm -rf build/Resonance.app
+    mkdir -p build/Resonance.app/Contents/{MacOS,Resources}
+    cp build/AppIcon.icns build/Resonance.app/Contents/Resources/
+    cp build/StatusBarIcon*.png build/Resonance.app/Contents/Resources/
+    swiftc -O src/swift/main.swift -o build/Resonance.app/Contents/MacOS/Resonance
+    cp src/swift/Info.plist build/Resonance.app/Contents/Info.plist
+    @echo "Built: build/Resonance.app"
+    mkdir -p ~/Applications
+    ln -sfn "$PWD/build/Resonance.app" ~/Applications/Resonance.app
+    touch ~/Applications/Resonance.app # Force macOS Icon Cache refresh
+    @echo "Added to Launchpad"

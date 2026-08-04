@@ -43,11 +43,11 @@ Deps: `just`, `uv`, `ffmpeg`
 ### macOS
 
 ```bash
-./docs/macOS/dev-install.sh
-./docs/macOS/create-run-dev.sh
+./scripts/install-macos.sh
+just build-macos
 ```
 
-This creates `.env` if missing, configures the device, installs dev dependencies, and creates `~/Desktop/Resonance.command` for double-click startup.
+This creates `.env` if missing, configures the device, installs dev dependencies, and builds `Resonance.app` menu bar app.
 
 ### Linux
 

@@ -16,6 +16,12 @@
 !demo-gif.sh
 !justfile
 
+!scripts/
+!scripts/**
+
+!src/
+!src/**
+
 !public/
 !public/**
 

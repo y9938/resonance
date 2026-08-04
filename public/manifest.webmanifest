@@ -1,0 +1,13 @@
+{
+  "name": "Resonance",
+  "short_name": "Resonance",
+  "description": "Resonance — Speech-to-Text and Text-to-Speech",
+  "icons": [
+    { "src": "/icon.svg", "type": "image/svg+xml", "sizes": "any" },
+    { "src": "/apple-touch-icon.png", "type": "image/png", "sizes": "180x180" }
+  ],
+  "start_url": "/",
+  "display": "standalone",
+  "theme_color": "#0a0a0a",
+  "background_color": "#0a0a0a"
+}
