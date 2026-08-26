@@ -1,7 +1,7 @@
 #!/bin/zsh
 set -eu
 
-REPO_DIR="${0:A:h:h:h}"
+REPO_DIR="${${(%):-%x}:A:h:h}"
 cd "$REPO_DIR"
 
 brew install just uv ffmpeg resvg imagemagick

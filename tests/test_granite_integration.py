@@ -1,9 +1,8 @@
-import pytest
 from unittest.mock import patch, MagicMock
 import torch
 import numpy as np
 
-from server import GraniteAdapter, _load_granite
+from server import GraniteAdapter
 
 def test_granite_adapter_transcribe_standard():
     # Mock model and processor

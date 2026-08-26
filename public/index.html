@@ -1035,7 +1035,14 @@
 
             <div class="mic-box" id="sttMicBox">
                 <div class="mic-header">
-                    <span class="mic-title" data-i18n="sttMicTitle">Microphone</span>
+                    <div class="capture-source-tabs" style="display: flex; gap: 1rem; font-size: 0.875rem; font-weight: 500; align-items: center;">
+                        <span id="tabMic" class="capture-tab active" style="color: var(--accent); cursor: pointer;"><span data-i18n="sttMicTitle">Microphone</span></span>
+                        <span id="tabSys" class="capture-tab" style="color: var(--text-muted); cursor: pointer;"><span data-i18n="sttSysTitle">System Audio</span></span>
+                        <div id="sttSysIncludeMicContainer" style="display: none; align-items: center; gap: 0.35rem; margin-left: 0.5rem;">
+                            <input type="checkbox" id="sttSysIncludeMic" style="cursor: pointer; width: 14px; height: 14px; accent-color: var(--accent);">
+                            <label for="sttSysIncludeMic" data-i18n="sttSysIncludeMic" style="cursor: pointer; font-size: 0.8125rem; color: var(--text-secondary); user-select: none;">Include microphone</label>
+                        </div>
+                    </div>
                     <span class="mic-timer">
                         <span class="mic-timer-dot"></span>
                         <span id="sttMicTimer">0:00</span>
@@ -1187,6 +1194,8 @@
 
     <script src="/locales/index.js"></script>
     <script>
+        let currentCaptureSource = "mic";
+        let systemCaptureId = null;
         const API_URL = '/api';
         const JOBS_PAGE_SIZE = 60;
         const LOCALE_STORAGE_KEY = 'resonance_locale';
@@ -1224,6 +1233,11 @@
             sttMicHintIdle: 'Record speech from your microphone',
             sttMicHintRecording: 'Recording… press Stop when finished',
             sttMicHintReady: 'Recording is ready to send',
+            sttSysHintIdle: 'Capture internal system audio (meetings, videos, etc.)',
+            sttSysHintCapturing: 'Capturing system audio… press Stop when finished',
+            sttSysHintProcessing: 'Processing system audio…',
+            sttSysStart: 'Start capture',
+            sttSysIncludeMic: 'Include microphone',
             errMicUnsupported: 'Microphone recording is not supported in this browser',
             errMicPermission: 'Microphone access was denied',
             errMicEmpty: 'Recorded audio is empty',
@@ -2063,6 +2077,24 @@
             if (els.ttsInput) {
                 els.ttsInput.setAttribute('placeholder', formatTtsInputPlaceholder());
             }
+
+            if (CONFIG.system_audio_enabled === false) {
+                if (els.tabSys) {
+                    els.tabSys.remove();
+                    els.tabSys = null;
+                }
+                if (currentCaptureSource === 'sys') {
+                    currentCaptureSource = 'mic';
+                    if (els.tabMic) {
+                        els.tabMic.classList.add('active');
+                        els.tabMic.style.color = 'var(--accent)';
+                    }
+                    setSttMicHint('sttMicHintIdle');
+                    if (els.sttMicStart) {
+                        els.sttMicStart.textContent = t('sttMicStart');
+                    }
+                }
+            }
         }
 
         const els = {
@@ -2094,6 +2126,10 @@
             sttBatchCancel: document.getElementById('sttBatchCancel'),
             sttMicBox: document.getElementById('sttMicBox'),
             sttMicHint: document.getElementById('sttMicHint'),
+            tabMic: document.getElementById('tabMic'),
+            tabSys: document.getElementById('tabSys'),
+            sttSysIncludeMic: document.getElementById('sttSysIncludeMic'),
+            sttSysIncludeMicContainer: document.getElementById('sttSysIncludeMicContainer'),
             sttMicStart: document.getElementById('sttMicStart'),
             sttMicStop: document.getElementById('sttMicStop'),
             sttMicSend: document.getElementById('sttMicSend'),
@@ -2321,6 +2357,9 @@
             if (meta) meta.setAttribute('content', t('metaDescription'));
             if (els.sttMicHint && els.sttMicHint.dataset.micHintKey) {
                 els.sttMicHint.textContent = t(els.sttMicHint.dataset.micHintKey);
+            }
+            if (els.sttMicStart) {
+                els.sttMicStart.textContent = currentCaptureSource === 'sys' ? t('sttSysStart') : t('sttMicStart');
             }
 
             const locale = getLocaleConfig(currentLocale);
@@ -3205,6 +3244,83 @@
             els.sttError.classList.add('active');
         }
 
+
+        async function startSystemCapture() {
+            try {
+                els.sttMicStart.style.display = 'none';
+                els.sttMicStop.style.display = 'block';
+                setSttMicHint('sttSysHintCapturing');
+                els.sttMicHint.style.color = 'var(--accent)';
+                sttMicState.recordingStartTime = Date.now();
+                sttMicState.timerInterval = setInterval(updateSttMicTimer, 1000);
+
+                const lang = els.sttLanguage.value;
+                const params = new URLSearchParams({ language: lang });
+                // Model and diarization are only relevant for English (Russian auto-selects gigaam).
+                if (lang === 'en') {
+                    params.set('model', els.sttModel.value);
+                    if (els.sttDiarization.checked) params.set('diarization', 'true');
+                }
+                if (els.sttSysIncludeMic && els.sttSysIncludeMic.checked) {
+                    params.set('include_microphone', 'true');
+                }
+                const res = await fetch(`/api/system-audio/start?${params}`, { method: 'POST' });
+                if (!res.ok) throw new Error(await res.text());
+                const data = await res.json();
+                systemCaptureId = data.capture_id;
+            } catch (err) {
+                console.error(err);
+                stopSttMicTimer();
+                sttMicState.recordingStartTime = null;
+                els.sttMicStart.style.display = '';
+                els.sttMicStop.style.display = 'none';
+                setSttMicHint('sttSysHintIdle');
+                els.sttMicHint.style.color = 'var(--text-muted)';
+                alert('Failed to start system capture: ' + err.message);
+            }
+        }
+
+        async function stopSystemCapture() {
+            if (!systemCaptureId) return;
+            try {
+                els.sttMicStop.disabled = true;
+                stopSttMicTimer();
+                els.sttMicHint.style.color = 'var(--text-muted)';
+                setSttMicHint('sttSysHintProcessing');
+
+                const res = await fetch(`/api/system-audio/stop?capture_id=${systemCaptureId}`, { method: 'POST' });
+                if (!res.ok) throw new Error(await res.text());
+
+                const data = await res.json();
+                systemCaptureId = null;
+                sttMicState.recordingStartTime = null;
+                els.sttMicStop.style.display = 'none';
+                els.sttMicStart.style.display = '';
+                els.sttMicStop.disabled = false;
+                setSttMicHint('sttSysHintIdle');
+                els.sttMicHint.style.color = 'var(--text-muted)';
+
+                // Wire up the job exactly like a normal file upload
+                const jobId = data.job_id;
+                state.stt.segments = [];
+                setActiveJobId('STT', jobId);
+                els.sttResultText.dataset.filename = 'System Audio Capture.wav';
+                els.sttResult.classList.add('active');
+                els.sttCancel.classList.add('active');
+                els.sttHide.classList.add('active');
+                els.sttProgress.classList.add('active');
+                els.sttResultText.value = '';
+                refreshSttResultDisplay();
+                subscribeSttJobEvents(jobId, state.stt.segments, refreshSttResultDisplay);
+
+            } catch (err) {
+                console.error(err);
+                alert('Failed to stop system capture: ' + err.message);
+                els.sttMicStop.disabled = false;
+                systemCaptureId = null;
+            }
+        }
+
         async function startSttMicRecording() {
             const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
             if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !AudioContextCtor) {
@@ -3907,8 +4023,51 @@
             cancelJob('STT');
         });
 
-        els.sttMicStart.addEventListener('click', startSttMicRecording);
-        els.sttMicStop.addEventListener('click', stopSttMicRecording);
+
+        els.tabMic.addEventListener('click', () => {
+            if (sttMicState.recordingStartTime !== null || systemCaptureId) return;
+            currentCaptureSource = 'mic';
+            els.tabMic.classList.add('active');
+            els.tabMic.style.color = 'var(--accent)';
+            if (els.tabSys) {
+                els.tabSys.classList.remove('active');
+                els.tabSys.style.color = 'var(--text-muted)';
+            }
+            if (els.sttSysIncludeMicContainer) {
+                els.sttSysIncludeMicContainer.style.display = 'none';
+            }
+            setSttMicHint('sttMicHintIdle');
+            els.sttMicStart.textContent = t('sttMicStart');
+        });
+
+        if (els.tabSys) {
+            els.tabSys.addEventListener('click', () => {
+                if (sttMicState.recordingStartTime !== null || systemCaptureId) return;
+                currentCaptureSource = 'sys';
+                els.tabSys.classList.add('active');
+                els.tabSys.style.color = 'var(--accent)';
+                els.tabMic.classList.remove('active');
+                els.tabMic.style.color = 'var(--text-muted)';
+                if (els.sttSysIncludeMicContainer) {
+                    els.sttSysIncludeMicContainer.style.display = 'flex';
+                }
+                setSttMicHint('sttSysHintIdle');
+                els.sttMicStart.textContent = t('sttSysStart');
+            });
+        }
+
+        const savedSysIncludeMic = localStorage.getItem('resonance_sttSysIncludeMic');
+        if (els.sttSysIncludeMic && savedSysIncludeMic !== null) {
+            els.sttSysIncludeMic.checked = savedSysIncludeMic === 'true';
+        }
+        if (els.sttSysIncludeMic) {
+            els.sttSysIncludeMic.addEventListener('change', () => {
+                localStorage.setItem('resonance_sttSysIncludeMic', String(els.sttSysIncludeMic.checked));
+            });
+        }
+
+        els.sttMicStart.addEventListener('click', () => currentCaptureSource === 'sys' ? startSystemCapture() : startSttMicRecording());
+        els.sttMicStop.addEventListener('click', () => currentCaptureSource === 'sys' ? stopSystemCapture() : stopSttMicRecording());
         els.sttMicSend.addEventListener('click', sendSttMicRecording);
         els.sttMicDiscard.addEventListener('click', discardSttMicRecording);
         els.sttMicAudio.addEventListener('loadedmetadata', () => {

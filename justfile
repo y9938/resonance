@@ -32,7 +32,7 @@ dev-deps:
 # Run server locally
 dev:
     @command -v ffmpeg >/dev/null 2>&1 || { echo "ffmpeg not found."; exit 1; }
-    .venv/bin/uvicorn server:app --reload --port {{RESONANCE_PORT}}
+    exec .venv/bin/uvicorn server:app --reload --port {{RESONANCE_PORT}}
 
 # Run pytest
 test:
@@ -78,9 +78,15 @@ build-macos:
     mkdir -p build/Resonance.app/Contents/{MacOS,Resources}
     cp build/AppIcon.icns build/Resonance.app/Contents/Resources/
     cp build/StatusBarIcon*.png build/Resonance.app/Contents/Resources/
-    swiftc -O src/swift/main.swift -o build/Resonance.app/Contents/MacOS/Resonance
+    swiftc -O src/swift/main.swift src/swift/CaptureEngine.swift -o build/Resonance.app/Contents/MacOS/Resonance
     cp src/swift/Info.plist build/Resonance.app/Contents/Info.plist
-    @echo "Built: build/Resonance.app"
+    # Pin the Designated Requirement to the Bundle ID instead of the binary's cdhash.
+    # Without this, macOS TCC re-prompts for Screen Recording on every recompile because
+    # ad-hoc signing embeds a cdhash-based DR that changes with each build.
+    codesign --force --deep --sign "-" \
+        --requirements '=designated => identifier "com.resonance.app"' \
+        build/Resonance.app
+    @echo "Built and signed: build/Resonance.app"
     mkdir -p ~/Applications
     ln -sfn "$PWD/build/Resonance.app" ~/Applications/Resonance.app
     touch ~/Applications/Resonance.app # Force macOS Icon Cache refresh

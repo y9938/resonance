@@ -29,6 +29,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var backend: Process?
     var port = "8000"
     var isQuitting = false
+    var captureEngine: CaptureEngine?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Single instance guard
@@ -42,6 +43,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         setupStatusItem()
         startBackend()
+
+        // Initialize SCK and IPC
+        captureEngine = CaptureEngine()
     }
 
     private func createMenuItem(title: String, action: Selector, key: String, symbolName: String) -> NSMenuItem {
@@ -125,19 +129,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         try? task.run()
     }
 
+    private func terminateProcessGroup(_ process: Process) {
+        let pid = process.processIdentifier
+        guard pid > 0 else { return }
+
+        // Invariants: Foundation.Process places the child in an isolated process group (PGID == PID).
+        // Signaling the negative PGID ensures intermediate shells and spawned Python workers
+        // are torn down reliably without abandoning orphaned processes that hold network ports.
+        kill(-pid, SIGTERM)
+        kill(pid, SIGTERM)
+
+        for _ in 0..<15 {
+            if !process.isRunning { return }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+
+        if process.isRunning {
+            kill(-pid, SIGKILL)
+            kill(pid, SIGKILL)
+        }
+    }
+
     @objc func restartBackend() {
         DispatchQueue.global().async {
-            self.isQuitting = true // Prevents terminationHandler from showing an error alert
+            // Workaround: Mutate state before termination so terminationHandler ignores the exit code
+            self.isQuitting = true
 
             if let process = self.backend, process.isRunning {
-                process.terminate()
-                for _ in 0..<30 {
-                    if !process.isRunning { break }
-                    Thread.sleep(forTimeInterval: 0.1)
-                }
-                if process.isRunning {
-                    kill(process.processIdentifier, SIGKILL)
-                }
+                self.terminateProcessGroup(process)
             }
 
             DispatchQueue.main.async {
@@ -149,7 +168,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func quit() {
-        NSApp.terminate(nil) // Triggers applicationShouldTerminate
+        NSApp.terminate(nil)
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -158,19 +177,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         isQuitting = true
-        process.terminate() // Sends SIGTERM
 
         DispatchQueue.global().async {
-            // Wait up to 3 seconds for graceful shutdown on a background thread
-            for _ in 0..<30 {
-                if !process.isRunning { break }
-                Thread.sleep(forTimeInterval: 0.1)
-            }
-
-            // Force kill if process hangs
-            if process.isRunning {
-                kill(process.processIdentifier, SIGKILL)
-            }
+            self.terminateProcessGroup(process)
 
             DispatchQueue.main.async {
                 NSApp.reply(toApplicationShouldTerminate: true)

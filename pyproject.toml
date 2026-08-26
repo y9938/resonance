@@ -23,6 +23,9 @@ dependencies = [
     "kokoro>=0.9.4",
     "misaki[en]", # kokoro uses misaki
     "faster-whisper>=1.0.0",
+    "posix-ipc>=1.3.2 ; sys_platform == 'darwin'",
+    "sounddevice>=0.5.6",
+    "soundcard>=0.4.6",
 ]
 
 [dependency-groups]
@@ -40,3 +43,6 @@ pythonpath = ["."]
 base_url = "http://localhost:8000"
 asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff.lint.per-file-ignores]
+"server.py" = ["E402"]

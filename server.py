@@ -11,22 +11,23 @@ Architecture:
 
 from __future__ import annotations
 
-import os
-import sys
-import json
-import shutil
-import queue
+import asyncio
 import copy
+import json
 import logging
+import os
+import queue
 import secrets
+import shutil
+import sys
 import tempfile
 import threading
-import asyncio
 import time
+import uuid
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import AsyncIterator, Any
-from contextlib import asynccontextmanager, suppress
 
 from dotenv import load_dotenv
 
@@ -41,6 +42,7 @@ from stt.pipeline import (
     run_stt_worker,
     save_upload_to_path,
 )
+from stt.system_audio import get_system_audio_capture
 from tts.service import TtsService
 
 # -----------------------------------------------------------------------------
@@ -66,6 +68,9 @@ class Config:
     TTS_SWEEP_INTERVAL_SEC: int = int(
         os.getenv("RESONANCE_TTS_SWEEP_INTERVAL_SEC", "900")
     )
+    ENABLE_SYSTEM_AUDIO: bool = os.getenv(
+        "RESONANCE_ENABLE_SYSTEM_AUDIO", "true"
+    ).lower() in {"true", "1", "yes"}
 TTS_OUTPUT_DIR = Path(tempfile.gettempdir()) / "resonance-tts"
 STT_WORKER_SEMAPHORE = threading.BoundedSemaphore(
     max(1, Config.STT_MAX_CONCURRENT_JOBS)
@@ -728,6 +733,141 @@ async def list_models() -> dict[str, Any]:
     }
 
 
+
+active_system_captures = {}
+
+def _system_capture_write_loop(audio_engine, audio_path: str):
+    import soundfile as sf
+    with sf.SoundFile(audio_path, mode='w', samplerate=16000, channels=1, subtype='PCM_16') as f:
+        for chunk in audio_engine.get_audio_stream():
+            f.write(chunk)
+
+@app.post("/api/system-audio/start")
+async def start_system_audio(
+    request: Request,
+    response: Response,
+    language: str | None = Query(default=None),
+    model: str | None = Query(default=None),
+    diarization: bool = Query(default=False),
+    include_microphone: bool = Query(default=False),
+) -> dict[str, Any]:
+    if not Config.ENABLE_SYSTEM_AUDIO:
+        raise HTTPException(
+            status_code=403,
+            detail="System audio capture is disabled on this server environment.",
+        )
+
+    resolved_language = language or "ru"
+    if resolved_language not in {"ru", "en"}:
+        raise HTTPException(status_code=400, detail=f"Unsupported language: {resolved_language}")
+
+    if model:
+        if model not in {"gigaam", "whisper", "granite"}:
+            raise HTTPException(status_code=400, detail=f"Unsupported model: {model}")
+        if resolved_language == "ru" and model != "gigaam":
+            raise HTTPException(status_code=400, detail="Russian language only supports gigaam model")
+        if resolved_language == "en" and model not in {"whisper", "granite"}:
+            raise HTTPException(status_code=400, detail=f"English language does not support {model} model")
+        model_name = model
+    else:
+        model_name = "gigaam" if resolved_language == "ru" else "whisper"
+
+    if diarization and model_name != "granite":
+        raise HTTPException(status_code=400, detail="Diarization is only supported by the granite model")
+
+    capture_id = str(uuid.uuid4())
+    tmp_dir = tempfile.mkdtemp()
+    audio_path = os.path.join(tmp_dir, "system_capture.wav")
+
+    try:
+        audio_engine = get_system_audio_capture(include_microphone=include_microphone)
+        audio_engine.start_capture()
+    except Exception as e:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise HTTPException(status_code=500, detail=f"Capture failed: {e}")
+
+    task = asyncio.create_task(asyncio.to_thread(_system_capture_write_loop, audio_engine, audio_path))
+
+    active_system_captures[capture_id] = {
+        "engine": audio_engine,
+        "task": task,
+        "tmp_dir": tmp_dir,
+        "audio_path": audio_path,
+        "language": resolved_language,
+        "model_name": model_name,
+        "diarization": diarization,
+    }
+
+    log.info(f"System Audio Capture started: {capture_id}")
+    return {"capture_id": capture_id}
+
+@app.post("/api/system-audio/stop")
+async def stop_system_audio(
+    request: Request,
+    response: Response,
+    capture_id: str = Query(...),
+) -> dict[str, Any]:
+    if not Config.ENABLE_SYSTEM_AUDIO:
+        raise HTTPException(
+            status_code=403,
+            detail="System audio capture is disabled on this server environment.",
+        )
+
+    if capture_id not in active_system_captures:
+        raise HTTPException(status_code=404, detail="Capture ID not found")
+
+    capture = active_system_captures.pop(capture_id)
+    engine = capture["engine"]
+
+    engine.stop_capture()
+
+    try:
+        await asyncio.wait_for(capture["task"], timeout=5.0)
+    except Exception as e:
+        log.warning(f"Error while stopping capture task: {e}")
+
+    session_id = get_or_set_session_id(request, response)
+    initial_result: dict[str, Any] = {"filename": "System Audio Capture.wav"}
+    if capture["diarization"]:
+        initial_result["diarization"] = True
+
+    rec = jobs.create(
+        "stt",
+        session_id,
+        initial_result,
+        language=capture["language"],
+        model=capture["model_name"],
+    )
+
+    if capture["model_name"] == "granite":
+        resolved_model = models.stt_granite()
+    elif capture["model_name"] == "whisper":
+        resolved_model = models.stt_whisper()
+    else:
+        resolved_model = models.stt_gigaam()
+
+    asyncio.create_task(
+        asyncio.to_thread(
+            run_stt_worker,
+            job_id=rec.job_id,
+            audio_path=capture["audio_path"],
+            upload_root=capture["tmp_dir"],
+            semaphore=STT_WORKER_SEMAPHORE,
+            jobs=jobs,
+            model=resolved_model,
+            log=log,
+            sample_rate=Config.SR,
+            chunk_sec=Config.CHUNK_SEC,
+            overlap_sec=Config.OVERLAP_SEC,
+            max_duration_sec=0,
+            diarization=capture["diarization"],
+        )
+    )
+
+    log.info(f"System Audio Capture {capture_id} stopped. Spawned job {rec.job_id}.")
+    return {"job_id": rec.job_id}
+
+
 @app.post("/api/jobs/stt")
 async def start_stt_job(
     request: Request,
@@ -969,6 +1109,7 @@ async def get_config() -> dict[str, Any]:
         "upload_limit_mb": Config.UPLOAD_LIMIT_MB,
         "tts_max_chars": Config.TTS_MAX_CHARS,
         "tts_max_input_chars": Config.TTS_MAX_INPUT_CHARS,
+        "system_audio_enabled": Config.ENABLE_SYSTEM_AUDIO,
         "tts": tts_service.serialize_catalog(),
     }
 

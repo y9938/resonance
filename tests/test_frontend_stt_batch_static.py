@@ -80,3 +80,29 @@ def test_stt_language_js_contracts() -> None:
     assert 'resonance_sttLanguage' in html
     assert 'els.sttLanguage' in html
     assert 'language' in html
+
+
+def test_system_audio_locale_contracts() -> None:
+    html = INDEX_HTML.read_text()
+    ru = RU_LOCALE.read_text()
+    zh = ZH_LOCALE.read_text()
+
+    sys_keys = [
+        'sttSysTitle',
+        'sttSysHintIdle',
+        'sttSysHintCapturing',
+        'sttSysHintProcessing',
+        'sttSysStart',
+        'sttSysIncludeMic',
+    ]
+
+    for key in sys_keys:
+        assert key in html, f"Key {key} missing from index.html fallback dictionary"
+        assert key in ru, f"Key {key} missing from ru.js"
+        assert key in zh, f"Key {key} missing from zh-CN.js"
+
+    assert "Processing system audio..." not in html
+    assert "setSttMicHint('sttSysHintProcessing')" in html
+    assert 'id="sttSysIncludeMic"' in html
+    assert 'id="sttSysIncludeMicContainer"' in html
+    assert 'include_microphone' in html
