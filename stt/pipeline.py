@@ -150,72 +150,8 @@ def probe_media(input_path: str | Path) -> MediaInfo:
     )
 
 
-def plan_segments(
-    *,
-    duration_sec: float,
-    chunk_sec: int,
-    overlap_sec: int,
-) -> list[SegmentSpec]:
-    if duration_sec <= 0:
-        raise ValueError("Audio too short or empty after probing")
-    if chunk_sec <= 0:
-        raise ValueError("chunk_sec must be positive")
-    if overlap_sec < 0:
-        raise ValueError("overlap_sec must be non-negative")
-    if overlap_sec >= chunk_sec:
-        raise ValueError("overlap_sec must be smaller than chunk_sec")
-
-    step_sec = chunk_sec - overlap_sec
-    total_segments = max(1, math.ceil(max(duration_sec - chunk_sec, 0.0) / step_sec) + 1)
-    segments: list[SegmentSpec] = []
-    for index in range(total_segments):
-        start_sec = index * step_sec
-        if start_sec >= duration_sec:
-            break
-        end_sec = min(start_sec + chunk_sec, duration_sec)
-        segments.append(
-            SegmentSpec(
-                index=index + 1,
-                start_sec=round(start_sec, 6),
-                end_sec=round(end_sec, 6),
-            )
-        )
-    if not segments:
-        raise ValueError("Audio too short or empty after probing")
-    return segments
-
-
-def extract_segment_ffmpeg(
-    input_path: str | Path,
-    segment: SegmentSpec,
-    output_path: str | Path,
-    *,
-    sample_rate: int,
-) -> None:
-    cmd = [
-        "ffmpeg",
-        "-nostdin",
-        "-y",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-ss",
-        f"{segment.start_sec:.6f}",
-        "-i",
-        str(input_path),
-        "-t",
-        f"{segment.duration_sec:.6f}",
-        "-vn",
-        "-acodec",
-        "pcm_s16le",
-        "-ar",
-        str(sample_rate),
-        "-ac",
-        "1",
-        str(output_path),
-    ]
-    subprocess.run(cmd, check=True, capture_output=True, stdin=subprocess.DEVNULL)
-
+from .stream_vad import stream_audio_with_overlap
+import soundfile as sf
 
 def run_stt_job(
     *,
@@ -231,7 +167,7 @@ def run_stt_job(
     max_duration_sec: int = 0,
     diarization: bool = False,
 ) -> None:
-    """Sequential STT runner with one on-disk segment at a time."""
+    """Sequential STT runner using RAM Streaming to avoid disk thrashing and frame drift."""
     start_time = time.time()
     segment_root = tempfile.mkdtemp(dir=upload_root)
 
@@ -247,37 +183,36 @@ def run_stt_job(
         if cancel_requested():
             return
 
+        if not input_path:
+            raise ValueError("No audio recorded or empty audio path")
         info = probe_media(input_path)
         if max_duration_sec > 0 and info.duration_sec > max_duration_sec:
             raise ValueError(f"Audio too long (max {max_duration_sec}s)")
 
-        segments = plan_segments(
-            duration_sec=info.duration_sec,
-            chunk_sec=chunk_sec,
-            overlap_sec=overlap_sec,
-        )
-
-        if cancel_requested():
-            return
+        # Estimate total segments for the progress bar
+        step_sec = chunk_sec - overlap_sec
+        estimated_total = max(1, math.ceil(max(info.duration_sec - chunk_sec, 0.0) / step_sec) + 1)
 
         jobs.update_event(
             job_id,
             "start",
-            {"total": len(segments), "duration": info.duration_sec},
+            {"total": estimated_total, "duration": info.duration_sec},
         )
 
-        for segment in segments:
+        for chunk_index, chunk_array in stream_audio_with_overlap(
+            input_path=input_path,
+            chunk_sec=chunk_sec,
+            overlap_sec=overlap_sec,
+            sample_rate=sample_rate,
+        ):
             if cancel_requested():
                 return
 
-            segment_path = os.path.join(segment_root, f"segment_{segment.index:06d}.wav")
+            segment_path = os.path.join(segment_root, f"segment_{chunk_index:06d}.wav")
             try:
-                extract_segment_ffmpeg(
-                    input_path,
-                    segment,
-                    segment_path,
-                    sample_rate=sample_rate,
-                )
+                # Write the in-memory array to a tiny temp file for the STT model
+                sf.write(segment_path, chunk_array, sample_rate)
+
                 if cancel_requested():
                     return
 
@@ -294,15 +229,19 @@ def run_stt_job(
                 with contextlib.suppress(FileNotFoundError):
                     os.unlink(segment_path)
 
+            # Calculate exact timestamps for the current chunk
+            start_sec = chunk_index * step_sec
+            end_sec = start_sec + (len(chunk_array) / sample_rate)
+
             jobs.update_event(
                 job_id,
                 "progress",
                 {
-                    "current": segment.index,
-                    "total": len(segments),
+                    "current": chunk_index + 1,
+                    "total": estimated_total,
                     "segment": {
-                        "start": segment.start_sec,
-                        "end": segment.end_sec,
+                        "start": round(start_sec, 6),
+                        "end": round(end_sec, 6),
                         "text": _segment_text_from_transcribe(raw),
                     },
                 },

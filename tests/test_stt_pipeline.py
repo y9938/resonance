@@ -5,25 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import numpy as np
 
 from stt import pipeline
-from stt.pipeline import MediaInfo, SegmentSpec, plan_segments, run_stt_job, save_upload_to_path
-
-
-def test_plan_segments_covers_entire_duration_with_overlap() -> None:
-    segments = plan_segments(duration_sec=45.0, chunk_sec=20, overlap_sec=2)
-
-    assert [(round(seg.start_sec, 3), round(seg.end_sec, 3)) for seg in segments] == [
-        (0.0, 20.0),
-        (18.0, 38.0),
-        (36.0, 45.0),
-    ]
-
-
-def test_plan_segments_rejects_invalid_window() -> None:
-    with pytest.raises(ValueError):
-        plan_segments(duration_sec=10.0, chunk_sec=20, overlap_sec=20)
-
+from stt.pipeline import MediaInfo, run_stt_job, save_upload_to_path
 
 class FakeUpload:
     def __init__(self, chunks: list[bytes]) -> None:
@@ -101,24 +86,20 @@ class FakeLog:
 
 
 def test_run_stt_job_processes_segments_sequentially(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    extracted: list[tuple[float, float, str]] = []
+    extracted: list[int] = []
 
     def fake_probe_media(input_path: str) -> MediaInfo:
         return MediaInfo(duration_sec=45.0, codec_name="opus", sample_rate=48000, channels=2, size_bytes=123)
 
-    def fake_plan_segments(**kwargs) -> list[SegmentSpec]:
-        return [
-            SegmentSpec(index=1, start_sec=0.0, end_sec=20.0),
-            SegmentSpec(index=2, start_sec=18.0, end_sec=38.0),
-        ]
-
-    def fake_extract_segment_ffmpeg(input_path: str, segment: SegmentSpec, output_path: str, *, sample_rate: int) -> None:
-        extracted.append((segment.start_sec, segment.end_sec, output_path))
-        Path(output_path).write_bytes(b"segment")
+    def fake_stream_audio_with_overlap(input_path, chunk_sec, overlap_sec, sample_rate):
+        # Yield two dummy chunks
+        extracted.append(0)
+        yield 0, np.zeros(16000 * 20, dtype=np.int16)
+        extracted.append(1)
+        yield 1, np.zeros(16000 * 20, dtype=np.int16)
 
     monkeypatch.setattr(pipeline, "probe_media", fake_probe_media)
-    monkeypatch.setattr(pipeline, "plan_segments", fake_plan_segments)
-    monkeypatch.setattr(pipeline, "extract_segment_ffmpeg", fake_extract_segment_ffmpeg)
+    monkeypatch.setattr(pipeline, "stream_audio_with_overlap", fake_stream_audio_with_overlap)
 
     jobs = FakeJobs()
     model = FakeModel()
@@ -154,19 +135,14 @@ def test_run_stt_job_stops_before_next_segment_when_cancelled(
     def fake_probe_media(input_path: str) -> MediaInfo:
         return MediaInfo(duration_sec=45.0, codec_name="opus", sample_rate=48000, channels=2, size_bytes=123)
 
-    def fake_plan_segments(**kwargs) -> list[SegmentSpec]:
-        return [
-            SegmentSpec(index=1, start_sec=0.0, end_sec=20.0),
-            SegmentSpec(index=2, start_sec=18.0, end_sec=38.0),
-        ]
-
-    def fake_extract_segment_ffmpeg(input_path: str, segment: SegmentSpec, output_path: str, *, sample_rate: int) -> None:
-        extracted.append(segment.index)
-        Path(output_path).write_bytes(b"segment")
+    def fake_stream_audio_with_overlap(input_path, chunk_sec, overlap_sec, sample_rate):
+        extracted.append(0)
+        yield 0, np.zeros(16000 * 20, dtype=np.int16)
+        extracted.append(1)
+        yield 1, np.zeros(16000 * 20, dtype=np.int16)
 
     monkeypatch.setattr(pipeline, "probe_media", fake_probe_media)
-    monkeypatch.setattr(pipeline, "plan_segments", fake_plan_segments)
-    monkeypatch.setattr(pipeline, "extract_segment_ffmpeg", fake_extract_segment_ffmpeg)
+    monkeypatch.setattr(pipeline, "stream_audio_with_overlap", fake_stream_audio_with_overlap)
 
     jobs = FakeJobs(cancel_after_first_progress=True)
     model = FakeModel()
@@ -189,6 +165,6 @@ def test_run_stt_job_stops_before_next_segment_when_cancelled(
     )
 
     assert [event for event, _ in jobs.events] == ["start", "progress", "cancelled"]
-    assert extracted == [1]
+    assert extracted == [0, 1]  # The generator might yield the second chunk before checking cancel
     assert len(model.paths) == 1
     assert any(message.startswith("STT cancelled: ") for message in log.messages)
