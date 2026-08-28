@@ -2191,10 +2191,8 @@
                 if (state.stt.progressCurrent >= state.stt.progressTotal) {
                     els.sttProgressText.textContent = t('progressComplete');
                 } else if (state.stt.progressCurrent > 0) {
-                    els.sttProgressText.textContent = t('progressChunk', {
-                        current: state.stt.progressCurrent,
-                        total: state.stt.progressTotal
-                    });
+                    const pct = (state.stt.progressCurrent / state.stt.progressTotal) * 100;
+                    els.sttProgressText.textContent = Math.round(pct) + '%';
                 }
             }
             if (els.ttsProgress.classList.contains('active') && state.tts.progressTotal > 0) {
@@ -2203,7 +2201,7 @@
                 } else if (state.tts.progressCurrent > 0) {
                     els.ttsProgressText.textContent = t('progressChunk', {
                         current: state.tts.progressCurrent,
-                        total: state.tts.progressTotal
+                        total: state.tts.progressTotal || '~'
                     });
                 }
             }
@@ -2305,8 +2303,7 @@
             els.sttProgressFill.style.width = Math.max(0, Math.min(100, pct)) + '%';
             if (status.state === 'completed') {
                 els.sttProgressText.textContent = t('progressComplete');
-            } else {
-                els.sttProgressText.textContent = t('progressChunk', { current, total });
+                els.sttProgressText.textContent = Math.round(pct) + '%';
             }
             if (status.result && status.result.filename) {
                 els.sttResultText.dataset.filename = status.result.filename;
@@ -2828,7 +2825,7 @@
                     state.tts.progressTotal = total;
                     const pct = total > 0 ? (current / total) * 100 : 0;
                     els.ttsProgressFill.style.width = pct + '%';
-                    els.ttsProgressText.textContent = t('progressChunk', { current, total });
+                    els.ttsProgressText.textContent = t('progressChunk', { current, total: total || '~' });
                     subscribeTtsJobEvents(jobId, status.result && status.result.filename ? status.result.filename : 'tts_output');
                 }
             }
@@ -3019,7 +3016,7 @@
                     state.tts.progressTotal = total;
                     const pct = total > 0 ? (current / total) * 100 : 0;
                     els.ttsProgressFill.style.width = pct + '%';
-                    els.ttsProgressText.textContent = t('progressChunk', { current, total });
+                    els.ttsProgressText.textContent = t('progressChunk', { current, total: total || '~' });
                     subscribeTtsJobEvents(ttsJobId, status.result && status.result.filename ? status.result.filename : 'tts_output');
                 }
             }
@@ -3479,10 +3476,7 @@
                         state.stt.progressTotal = event.total || 0;
                         const pct = event.total > 0 ? (event.current / event.total) * 100 : 0;
                         els.sttProgressFill.style.width = pct + '%';
-                        els.sttProgressText.textContent = t('progressChunk', {
-                            current: event.current,
-                            total: event.total
-                        });
+                        els.sttProgressText.textContent = Math.round(pct) + '%';
                         if (event.segment) {
                             segments.push(event.segment);
                             updateDisplay();
@@ -3563,7 +3557,7 @@
                         els.ttsProgressFill.style.width = pct2 + '%';
                         els.ttsProgressText.textContent = t('progressChunk', {
                             current: event.current,
-                            total: event.total
+                            total: event.total || '~'
                         });
                         break;
                     case 'complete':
@@ -3701,11 +3695,16 @@
                 file.textContent = getJobFilename(job);
                 const detail = document.createElement('div');
                 detail.className = 'stt-batch-detail';
-                if (job.progress_total > 0 && job.state !== 'completed') {
-                    detail.textContent = t('progressChunk', {
-                        current: job.progress_current || 0,
-                        total: job.progress_total,
-                    });
+                if (job.state === 'running' || job.state === 'queued') {
+                    if (job.job_type === 'stt') {
+                        const pct = job.progress_total > 0 ? (job.progress_current / job.progress_total) * 100 : 0;
+                        detail.textContent = Math.round(pct) + '%';
+                    } else {
+                        detail.textContent = t('progressChunk', {
+                            current: job.progress_current || 0,
+                            total: job.progress_total || '~',
+                        });
+                    }
                 } else {
                     const durationSec = getJobDurationSec(job);
                     const durationText = Number.isFinite(durationSec) ? ' · ' + formatSttProcessedTextDuration(durationSec) : '';

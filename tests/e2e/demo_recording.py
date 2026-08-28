@@ -20,6 +20,12 @@ def test_demo_flow(page: Page, base_url: str):
     page.wait_for_selector("#sttDropzone")
     page.wait_for_timeout(800)
 
+    # Demonstrate System Audio tab
+    page.click("#tabSys")
+    page.wait_for_timeout(1200)
+    page.click("#tabMic")
+    page.wait_for_timeout(800)
+
     audio_bytes = AUDIO_FILE.read_bytes()
     text_content = TEXT_FILE.read_text()
 

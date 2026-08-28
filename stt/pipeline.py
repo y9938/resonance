@@ -94,6 +94,7 @@ def _decode_duration(input_path: str | Path) -> float:
         capture_output=True,
         text=True,
         stdin=subprocess.DEVNULL,
+        timeout=15.0,
     )
     matches = re.findall(r"time=(\d+:\d+:\d+\.\d+)", raw.stderr)
     if not matches:
@@ -115,7 +116,7 @@ def probe_media(input_path: str | Path) -> MediaInfo:
         "json",
         str(input_path),
     ]
-    raw = subprocess.run(cmd, check=True, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    raw = subprocess.run(cmd, check=True, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=15.0)
     payload = json.loads(raw.stdout or "{}")
     streams = payload.get("streams") or []
     audio_stream = next(
@@ -150,7 +151,7 @@ def probe_media(input_path: str | Path) -> MediaInfo:
     )
 
 
-from .stream_vad import stream_audio_with_overlap
+from .stream_vad import stream_vad_chunks
 import soundfile as sf
 
 def run_stt_job(
@@ -163,7 +164,6 @@ def run_stt_job(
     log: Any,
     sample_rate: int,
     chunk_sec: int,
-    overlap_sec: int,
     max_duration_sec: int = 0,
     diarization: bool = False,
 ) -> None:
@@ -189,56 +189,41 @@ def run_stt_job(
         if max_duration_sec > 0 and info.duration_sec > max_duration_sec:
             raise ValueError(f"Audio too long (max {max_duration_sec}s)")
 
-        # Estimate total segments for the progress bar
-        step_sec = chunk_sec - overlap_sec
-        estimated_total = max(1, math.ceil(max(info.duration_sec - chunk_sec, 0.0) / step_sec) + 1)
-
         jobs.update_event(
             job_id,
             "start",
-            {"total": estimated_total, "duration": info.duration_sec},
+            {
+                "duration": info.duration_sec,
+                "total": round(info.duration_sec, 2),
+            },
         )
 
-        for chunk_index, chunk_array in stream_audio_with_overlap(
+        for chunk_index, (start_sec, end_sec, chunk_array) in enumerate(stream_vad_chunks(
             input_path=input_path,
-            chunk_sec=chunk_sec,
-            overlap_sec=overlap_sec,
             sample_rate=sample_rate,
-        ):
+            target_sec=chunk_sec,
+            total_duration_sec=info.duration_sec,
+        )):
             if cancel_requested():
                 return
 
-            segment_path = os.path.join(segment_root, f"segment_{chunk_index:06d}.wav")
-            try:
-                # Write the in-memory array to a tiny temp file for the STT model
-                sf.write(segment_path, chunk_array, sample_rate)
+            import inspect
+            sig = inspect.signature(model.transcribe)
+            if "diarization" in sig.parameters:
+                raw = model.transcribe(chunk_array, diarization=diarization)
+            else:
+                raw = model.transcribe(chunk_array)
 
-                if cancel_requested():
-                    return
+            if cancel_requested():
+                return
 
-                import inspect
-                sig = inspect.signature(model.transcribe)
-                if "diarization" in sig.parameters:
-                    raw = model.transcribe(segment_path, diarization=diarization)
-                else:
-                    raw = model.transcribe(segment_path)
-
-                if cancel_requested():
-                    return
-            finally:
-                with contextlib.suppress(FileNotFoundError):
-                    os.unlink(segment_path)
-
-            # Calculate exact timestamps for the current chunk
-            start_sec = chunk_index * step_sec
-            end_sec = start_sec + (len(chunk_array) / sample_rate)
-
+            # Assumes: VAD yields exact absolute timestamps.
             jobs.update_event(
                 job_id,
                 "progress",
                 {
-                    "current": chunk_index + 1,
-                    "total": estimated_total,
+                    "current": round(end_sec, 2),
+                    "total": round(info.duration_sec, 2),
                     "segment": {
                         "start": round(start_sec, 6),
                         "end": round(end_sec, 6),
@@ -272,7 +257,6 @@ def run_stt_worker(
     log: Any,
     sample_rate: int,
     chunk_sec: int,
-    overlap_sec: int,
     max_duration_sec: int = 0,
     diarization: bool = False,
 ) -> None:
@@ -292,7 +276,6 @@ def run_stt_worker(
             log=log,
             sample_rate=sample_rate,
             chunk_sec=effective_chunk_sec,
-            overlap_sec=overlap_sec,
             max_duration_sec=max_duration_sec,
             diarization=diarization,
         )

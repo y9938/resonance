@@ -54,11 +54,7 @@ class FakeJobs:
 
     def update_event(self, job_id: str, event_type: str, data: dict) -> None:
         self.events.append((event_type, data))
-        if (
-            self.cancel_after_first_progress
-            and event_type == "progress"
-            and data.get("current") == 1
-        ):
+        if self.cancel_after_first_progress and event_type == "progress":
             self.cancelled = True
 
     def is_cancelled(self, job_id: str) -> bool:
@@ -69,9 +65,9 @@ class FakeModel:
     def __init__(self) -> None:
         self.paths: list[str] = []
 
-    def transcribe(self, path: str) -> str:
-        self.paths.append(path)
-        return f"text:{Path(path).name}"
+    def transcribe(self, array) -> str:
+        self.paths.append("array")
+        return "text:array"
 
 
 class FakeLog:
@@ -91,15 +87,15 @@ def test_run_stt_job_processes_segments_sequentially(tmp_path: Path, monkeypatch
     def fake_probe_media(input_path: str) -> MediaInfo:
         return MediaInfo(duration_sec=45.0, codec_name="opus", sample_rate=48000, channels=2, size_bytes=123)
 
-    def fake_stream_audio_with_overlap(input_path, chunk_sec, overlap_sec, sample_rate):
-        # Yield two dummy chunks
+    def fake_stream_vad_chunks(input_path, *args, **kwargs):
+        # Yield two dummy chunks with timestamps
         extracted.append(0)
-        yield 0, np.zeros(16000 * 20, dtype=np.int16)
+        yield 0.0, 20.0, np.zeros(16000 * 20, dtype=np.float32)
         extracted.append(1)
-        yield 1, np.zeros(16000 * 20, dtype=np.int16)
+        yield 18.0, 38.0, np.zeros(16000 * 20, dtype=np.float32)
 
     monkeypatch.setattr(pipeline, "probe_media", fake_probe_media)
-    monkeypatch.setattr(pipeline, "stream_audio_with_overlap", fake_stream_audio_with_overlap)
+    monkeypatch.setattr(pipeline, "stream_vad_chunks", fake_stream_vad_chunks)
 
     jobs = FakeJobs()
     model = FakeModel()
@@ -118,11 +114,10 @@ def test_run_stt_job_processes_segments_sequentially(tmp_path: Path, monkeypatch
         log=log,
         sample_rate=16000,
         chunk_sec=20,
-        overlap_sec=2,
     )
 
     assert [event for event, _ in jobs.events] == ["start", "progress", "progress", "complete"]
-    assert len(model.paths) == 2
+    assert len(model.paths) == 2  # The fake model will just track the arrays in paths now
     assert len(extracted) == 2
     assert not upload_root.exists()
 
@@ -135,14 +130,14 @@ def test_run_stt_job_stops_before_next_segment_when_cancelled(
     def fake_probe_media(input_path: str) -> MediaInfo:
         return MediaInfo(duration_sec=45.0, codec_name="opus", sample_rate=48000, channels=2, size_bytes=123)
 
-    def fake_stream_audio_with_overlap(input_path, chunk_sec, overlap_sec, sample_rate):
+    def fake_stream_vad_chunks(input_path, *args, **kwargs):
         extracted.append(0)
-        yield 0, np.zeros(16000 * 20, dtype=np.int16)
+        yield 0.0, 20.0, np.zeros(16000 * 20, dtype=np.float32)
         extracted.append(1)
-        yield 1, np.zeros(16000 * 20, dtype=np.int16)
+        yield 18.0, 38.0, np.zeros(16000 * 20, dtype=np.float32)
 
     monkeypatch.setattr(pipeline, "probe_media", fake_probe_media)
-    monkeypatch.setattr(pipeline, "stream_audio_with_overlap", fake_stream_audio_with_overlap)
+    monkeypatch.setattr(pipeline, "stream_vad_chunks", fake_stream_vad_chunks)
 
     jobs = FakeJobs(cancel_after_first_progress=True)
     model = FakeModel()
@@ -161,7 +156,6 @@ def test_run_stt_job_stops_before_next_segment_when_cancelled(
         log=log,
         sample_rate=16000,
         chunk_sec=20,
-        overlap_sec=2,
     )
 
     assert [event for event, _ in jobs.events] == ["start", "progress", "cancelled"]

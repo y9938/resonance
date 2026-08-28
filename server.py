@@ -173,7 +173,31 @@ class ModelManager:
             return self._tts
 
 
-def _load_stt() -> Any:
+class GigaAMAdapter:
+    """Wraps GigaAM to accept np.ndarray but write to temp file internally (model limitation)."""
+
+    def __init__(self, model: Any) -> None:
+        self._model = model
+
+    def transcribe(self, audio: np.ndarray) -> str:
+        import soundfile as sf
+        import tempfile
+        import os
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            temp_path = f.name
+
+        try:
+            # GigaAM strictly requires a file path (Zero-I/O violation forced by library)
+            sf.write(temp_path, audio, 16000)
+            return self._model.transcribe(temp_path)
+        finally:
+            import contextlib
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(temp_path)
+
+
+def _load_stt() -> GigaAMAdapter:
     log.info("Loading STT model (GigaAM-v3)...")
     import gigaam
 
@@ -181,7 +205,7 @@ def _load_stt() -> Any:
     model = gigaam.load_model("v3_e2e_ctc", device=device)
     params = sum(p.numel() for p in model.parameters()) / 1e6
     log.info(f"STT model loaded: {params:.1f}M parameters")
-    return model
+    return GigaAMAdapter(model)
 
 
 class WhisperAdapter:
@@ -191,8 +215,8 @@ class WhisperAdapter:
         self._model = model
         self._beam_size = beam_size
 
-    def transcribe(self, path: str) -> str:
-        segments, _ = self._model.transcribe(path, beam_size=self._beam_size)
+    def transcribe(self, audio: np.ndarray) -> str:
+        segments, _ = self._model.transcribe(audio, beam_size=self._beam_size)
         return " ".join(seg.text.strip() for seg in segments).strip()
 
 
@@ -238,23 +262,13 @@ class GraniteAdapter:
         self._processor = processor
         self._device = device
 
-    def transcribe(self, path: str, diarization: bool = False) -> str:
-        import soundfile as sf
-        import torchaudio
+    def transcribe(self, audio: np.ndarray, diarization: bool = False) -> str:
         import torch
 
-        data, sr = sf.read(path, dtype="float32")
-        waveform = torch.from_numpy(data)
+        waveform = torch.from_numpy(audio)
         if waveform.ndim == 1:
             waveform = waveform.unsqueeze(0)
-        else:
-            waveform = waveform.t()
-
-        if sr != 16000:
-            resampler = torchaudio.transforms.Resample(orig_freq=sr, new_freq=16000)
-            waveform = resampler(waveform)
-
-        if waveform.shape[0] > 1:
+        elif waveform.ndim == 2 and waveform.shape[0] > 1:
             waveform = torch.mean(waveform, dim=0, keepdim=True)
 
         audio_input = waveform.squeeze().numpy()
@@ -858,7 +872,7 @@ async def stop_system_audio(
             log=log,
             sample_rate=Config.SR,
             chunk_sec=Config.CHUNK_SEC,
-            overlap_sec=Config.OVERLAP_SEC,
+
             max_duration_sec=0,
             diarization=capture["diarization"],
         )
@@ -957,7 +971,7 @@ async def start_stt_job(
             log=log,
             sample_rate=Config.SR,
             chunk_sec=Config.CHUNK_SEC,
-            overlap_sec=Config.OVERLAP_SEC,
+
             max_duration_sec=Config.STT_MAX_DURATION_SEC,
             diarization=diarization,
         )
