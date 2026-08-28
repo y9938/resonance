@@ -2,12 +2,9 @@ from __future__ import annotations
 
 import contextlib
 import json
-import math
-import os
 import re
 import shutil
 import subprocess
-import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -152,7 +149,7 @@ def probe_media(input_path: str | Path) -> MediaInfo:
 
 
 from .stream_vad import stream_vad_chunks
-import soundfile as sf
+
 
 def run_stt_job(
     *,
@@ -169,13 +166,16 @@ def run_stt_job(
 ) -> None:
     """Sequential STT runner using RAM Streaming to avoid disk thrashing and frame drift."""
     start_time = time.time()
-    segment_root = tempfile.mkdtemp(dir=upload_root)
+    cancelled_logged = False
 
     def cancel_requested() -> bool:
+        nonlocal cancelled_logged
         if jobs.is_cancelled(job_id):
-            elapsed = time.time() - start_time
-            log.info(f"STT cancelled: {elapsed:.2f}s")
-            jobs.update_event(job_id, "cancelled", {})
+            if not cancelled_logged:
+                cancelled_logged = True
+                elapsed = time.time() - start_time
+                log.info(f"STT cancelled: {elapsed:.2f}s")
+                jobs.update_event(job_id, "cancelled", {})
             return True
         return False
 
@@ -189,14 +189,51 @@ def run_stt_job(
         if max_duration_sec > 0 and info.duration_sec > max_duration_sec:
             raise ValueError(f"Audio too long (max {max_duration_sec}s)")
 
+        model_class = model.__class__.__name__
+        is_diarizing = bool(diarization and model_class != "GraniteAdapter")
         jobs.update_event(
             job_id,
             "start",
             {
                 "duration": info.duration_sec,
                 "total": round(info.duration_sec, 2),
+                "stage": "diarization" if is_diarizing else "transcription",
             },
         )
+
+        speaker_intervals = []
+        if is_diarizing:
+            if cancel_requested():
+                return
+            try:
+                from .diarization import diarize_audio, match_speaker_tag
+                import numpy as np
+
+                full_raw = subprocess.check_output([
+                    "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+                    "-i", str(input_path), "-f", "s16le", "-ac", "1", "-ar", "16000", "-"
+                ], timeout=min(600.0, max(30.0, info.duration_sec * 2)))
+
+                if cancel_requested():
+                    return
+
+                full_audio = np.frombuffer(full_raw, dtype=np.int16).astype(np.float32) / 32768.0
+                speaker_intervals = diarize_audio(full_audio, cancel_check=cancel_requested)
+            except subprocess.CalledProcessError as exc:
+                if cancel_requested() or exc.returncode in (255, 130, -2):
+                    return
+                log.warning(f"Diarization decoding failed, continuing without speaker tags: {exc}")
+            except RuntimeError:
+                if cancel_requested():
+                    return
+                log.warning("Diarization failed, continuing without speaker tags.")
+            except Exception as e:
+                if cancel_requested():
+                    return
+                log.warning(f"Diarization failed, continuing without speaker tags: {e}")
+
+        if cancel_requested():
+            return
 
         for chunk_index, (start_sec, end_sec, chunk_array) in enumerate(stream_vad_chunks(
             input_path=input_path,
@@ -209,13 +246,19 @@ def run_stt_job(
 
             import inspect
             sig = inspect.signature(model.transcribe)
-            if "diarization" in sig.parameters:
+            if "diarization" in sig.parameters and model_class == "GraniteAdapter":
                 raw = model.transcribe(chunk_array, diarization=diarization)
             else:
                 raw = model.transcribe(chunk_array)
 
             if cancel_requested():
                 return
+
+            text = _segment_text_from_transcribe(raw)
+            if diarization and speaker_intervals and not text.startswith("[Speaker"):
+                from .diarization import match_speaker_tag
+                tag = match_speaker_tag(start_sec, end_sec, speaker_intervals)
+                text = f"{tag}{text}"
 
             # Assumes: VAD yields exact absolute timestamps.
             jobs.update_event(
@@ -227,7 +270,7 @@ def run_stt_job(
                     "segment": {
                         "start": round(start_sec, 6),
                         "end": round(end_sec, 6),
-                        "text": _segment_text_from_transcribe(raw),
+                        "text": text,
                     },
                 },
             )
@@ -239,6 +282,8 @@ def run_stt_job(
         elapsed = time.time() - start_time
         log.info(f"STT completed: {elapsed:.2f}s")
     except Exception as exc:
+        if cancel_requested():
+            return
         elapsed = time.time() - start_time
         log.error(f"STT failed: {exc} ({elapsed:.2f}s)")
         jobs.update_event(job_id, "error", {"message": str(exc)})

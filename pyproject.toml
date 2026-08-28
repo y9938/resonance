@@ -28,6 +28,7 @@ dependencies = [
     "soundcard>=0.4.6",
     "silero-vad>=6.2.1",
     "onnxruntime>=1.23.2",
+    "sherpa-onnx>=1.13.6",
 ]
 
 [dependency-groups]

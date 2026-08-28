@@ -28,6 +28,7 @@
             hintAnySize: '不限大小',
             progressUploading: '上传中…',
             progressProcessing: '处理中…',
+            progressDiarizing: '说话人分离中…',
             progressComplete: '已完成',
             progressChunk: '片段 {current} / {total}',
             progressStarting: '启动中…',

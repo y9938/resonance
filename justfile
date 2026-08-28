@@ -32,7 +32,7 @@ dev-deps:
 # Run server locally
 dev:
     @command -v ffmpeg >/dev/null 2>&1 || { echo "ffmpeg not found."; exit 1; }
-    exec .venv/bin/uvicorn server:app --reload --port {{RESONANCE_PORT}}
+    exec .venv/bin/uvicorn server:app --reload --reload-dir server.py --reload-dir stt --reload-dir tts --reload-dir public --port {{RESONANCE_PORT}}
 
 # Run pytest
 test:
@@ -50,9 +50,24 @@ build *ARGS:
         docker build -t {{IMAGE}} {{ARGS}} .; \
     fi
 
+HF_CACHE_DIR        := env("HF_HOME", env("HOME", "~") + "/.cache/huggingface")
+TORCH_CACHE_DIR     := env("TORCH_HOME", env("HOME", "~") + "/.cache/torch")
+GIGAAM_CACHE_DIR    := env("GIGAAM_CACHE_DIR", env("HOME", "~") + "/.cache/gigaam")
+RESONANCE_CACHE_DIR := env("RESONANCE_CACHE_DIR", env("HOME", "~") + "/.cache/resonance")
+
 # Run container
-run:
-    docker run -it --rm --name resonance {{GPU_FLAGS}} --env-file .env -e RESONANCE_PORT={{RESONANCE_PORT}} -p {{RESONANCE_PORT}}:{{RESONANCE_PORT}} {{IMAGE}}
+run *ARGS:
+    @mkdir -p "{{HF_CACHE_DIR}}" "{{TORCH_CACHE_DIR}}" "{{GIGAAM_CACHE_DIR}}" "{{RESONANCE_CACHE_DIR}}"
+    docker run -it --rm --name resonance {{GPU_FLAGS}} \
+        --env-file .env \
+        -v "{{HF_CACHE_DIR}}":/home/resonance/.cache/huggingface \
+        -v "{{TORCH_CACHE_DIR}}":/home/resonance/.cache/torch \
+        -v "{{GIGAAM_CACHE_DIR}}":/home/resonance/.cache/gigaam \
+        -v "{{RESONANCE_CACHE_DIR}}":/home/resonance/.cache/resonance \
+        -e RESONANCE_PORT={{RESONANCE_PORT}} \
+        -p {{RESONANCE_PORT}}:{{RESONANCE_PORT}} \
+        {{ARGS}} \
+        {{IMAGE}}
 
 # Save image to compressed archive
 save:

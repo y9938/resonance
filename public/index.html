@@ -1212,6 +1212,7 @@
             hintAnySize: 'any size',
             progressUploading: 'Uploading…',
             progressProcessing: 'Processing…',
+            progressDiarizing: 'Diarizing speakers…',
             progressComplete: 'Complete',
             progressChunk: 'Chunk {current} / {total}',
             progressStarting: 'Starting…',
@@ -2930,15 +2931,10 @@
             const lang = els.sttLanguage.value;
             if (lang === 'en') {
                 if (els.sttModelContainer) els.sttModelContainer.style.display = 'flex';
-                if (els.sttModel && els.sttModel.value === 'granite') {
-                    if (els.sttDiarizationContainer) els.sttDiarizationContainer.style.display = 'flex';
-                } else {
-                    if (els.sttDiarizationContainer) els.sttDiarizationContainer.style.display = 'none';
-                }
             } else {
                 if (els.sttModelContainer) els.sttModelContainer.style.display = 'none';
-                if (els.sttDiarizationContainer) els.sttDiarizationContainer.style.display = 'none';
             }
+            if (els.sttDiarizationContainer) els.sttDiarizationContainer.style.display = 'flex';
         }
 
         if (els.sttLanguage) {
@@ -3253,10 +3249,11 @@
 
                 const lang = els.sttLanguage.value;
                 const params = new URLSearchParams({ language: lang });
-                // Model and diarization are only relevant for English (Russian auto-selects gigaam).
                 if (lang === 'en') {
                     params.set('model', els.sttModel.value);
-                    if (els.sttDiarization.checked) params.set('diarization', 'true');
+                }
+                if (els.sttDiarization && els.sttDiarization.checked) {
+                    params.set('diarization', 'true');
                 }
                 if (els.sttSysIncludeMic && els.sttSysIncludeMic.checked) {
                     params.set('include_microphone', 'true');
@@ -3469,11 +3466,15 @@
                     case 'start':
                         state.stt.progressCurrent = 0;
                         state.stt.progressTotal = event.total || 0;
-                        els.sttProgressText.textContent = t('progressProcessing');
+                        els.sttProgressText.textContent = event.stage === 'diarization' ? t('progressDiarizing') : t('progressProcessing');
                         break;
                     case 'progress':
                         state.stt.progressCurrent = event.current || 0;
                         state.stt.progressTotal = event.total || 0;
+                        if (event.stage === 'diarization') {
+                            els.sttProgressText.textContent = t('progressDiarizing');
+                            break;
+                        }
                         const pct = event.total > 0 ? (event.current / event.total) * 100 : 0;
                         els.sttProgressFill.style.width = pct + '%';
                         els.sttProgressText.textContent = Math.round(pct) + '%';
@@ -3870,10 +3871,10 @@
                 if (els.sttLanguage.value === 'en') {
                     if (els.sttModel && els.sttModel.value) {
                         params.set('model', els.sttModel.value);
-                        if (els.sttModel.value === 'granite' && els.sttDiarization && els.sttDiarization.checked) {
-                            params.set('diarization', 'true');
-                        }
                     }
+                }
+                if (els.sttDiarization && els.sttDiarization.checked) {
+                    params.set('diarization', 'true');
                 }
             }
             const url = API_URL + '/jobs/stt' + (params.toString() ? '?' + params.toString() : '');

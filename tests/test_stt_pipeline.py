@@ -1,11 +1,9 @@
-"""Unit tests for long-form STT pipeline helpers."""
-
 from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 import numpy as np
+import pytest
 
 from stt import pipeline
 from stt.pipeline import MediaInfo, run_stt_job, save_upload_to_path
@@ -56,6 +54,10 @@ class FakeJobs:
         self.events.append((event_type, data))
         if self.cancel_after_first_progress and event_type == "progress":
             self.cancelled = True
+
+    def mark_cancelled(self, job_id: str) -> bool:
+        self.cancelled = True
+        return True
 
     def is_cancelled(self, job_id: str) -> bool:
         return self.cancelled
@@ -117,7 +119,7 @@ def test_run_stt_job_processes_segments_sequentially(tmp_path: Path, monkeypatch
     )
 
     assert [event for event, _ in jobs.events] == ["start", "progress", "progress", "complete"]
-    assert len(model.paths) == 2  # The fake model will just track the arrays in paths now
+    assert len(model.paths) == 2
     assert len(extracted) == 2
     assert not upload_root.exists()
 
@@ -159,6 +161,82 @@ def test_run_stt_job_stops_before_next_segment_when_cancelled(
     )
 
     assert [event for event, _ in jobs.events] == ["start", "progress", "cancelled"]
-    assert extracted == [0, 1]  # The generator might yield the second chunk before checking cancel
+    assert jobs.events[0][1].get("stage") == "transcription"
+    assert extracted == [0, 1]
     assert len(model.paths) == 1
     assert any(message.startswith("STT cancelled: ") for message in log.messages)
+
+
+def test_run_stt_job_diarization_stage_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_probe_media(input_path: str) -> MediaInfo:
+        return MediaInfo(duration_sec=10.0, codec_name="opus", sample_rate=16000, channels=1, size_bytes=100)
+
+    def fake_stream_vad_chunks(input_path, *args, **kwargs):
+        yield 0.0, 5.0, np.zeros(16000 * 5, dtype=np.float32)
+
+    monkeypatch.setattr(pipeline, "probe_media", fake_probe_media)
+    monkeypatch.setattr(pipeline, "stream_vad_chunks", fake_stream_vad_chunks)
+    monkeypatch.setattr("subprocess.check_output", lambda *args, **kwargs: np.zeros(16000 * 10, dtype=np.int16).tobytes())
+    monkeypatch.setattr("stt.diarization.diarize_audio", lambda audio: [])
+
+    jobs = FakeJobs()
+    model = FakeModel()
+    log = FakeLog()
+    upload_root = tmp_path / "upload"
+    upload_root.mkdir()
+    input_path = upload_root / "input.opus"
+    input_path.write_bytes(b"audio")
+
+    run_stt_job(
+        job_id="job-diarize",
+        input_path=str(input_path),
+        upload_root=str(upload_root),
+        jobs=jobs,
+        model=model,
+        log=log,
+        sample_rate=16000,
+        chunk_sec=20,
+        diarization=True,
+    )
+
+    assert jobs.events[0][0] == "start"
+    assert jobs.events[0][1].get("stage") == "diarization"
+
+
+def test_run_stt_job_diarization_cancelled_midway(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_probe_media(input_path: str) -> MediaInfo:
+        return MediaInfo(duration_sec=10.0, codec_name="opus", sample_rate=16000, channels=1, size_bytes=100)
+
+    jobs = FakeJobs()
+    model = FakeModel()
+    log = FakeLog()
+    upload_root = tmp_path / "upload"
+    upload_root.mkdir()
+    input_path = upload_root / "input.opus"
+    input_path.write_bytes(b"audio")
+
+    def fake_diarize(audio, cancel_check=None):
+        jobs.mark_cancelled("job-cancel-midway")
+        if cancel_check and cancel_check():
+            raise RuntimeError("STT job cancelled")
+        return []
+
+    monkeypatch.setattr(pipeline, "probe_media", fake_probe_media)
+    monkeypatch.setattr("subprocess.check_output", lambda *args, **kwargs: np.zeros(16000 * 10, dtype=np.int16).tobytes())
+    monkeypatch.setattr("stt.diarization.diarize_audio", fake_diarize)
+
+    run_stt_job(
+        job_id="job-cancel-midway",
+        input_path=str(input_path),
+        upload_root=str(upload_root),
+        jobs=jobs,
+        model=model,
+        log=log,
+        sample_rate=16000,
+        chunk_sec=20,
+        diarization=True,
+    )
+
+    cancelled_logs = [msg for msg in log.messages if "STT cancelled:" in msg]
+    assert len(cancelled_logs) == 1, f"Expected exactly 1 cancel log, got {len(cancelled_logs)}"
+    assert jobs.events[-1][0] == "cancelled"

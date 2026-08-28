@@ -174,27 +174,28 @@ class ModelManager:
 
 
 class GigaAMAdapter:
-    """Wraps GigaAM to accept np.ndarray but write to temp file internally (model limitation)."""
+    """Wraps GigaAM for True Zero-I/O in-RAM tensor inference without disk operations."""
 
     def __init__(self, model: Any) -> None:
         self._model = model
 
-    def transcribe(self, audio: np.ndarray) -> str:
-        import soundfile as sf
-        import tempfile
-        import os
+    def transcribe(self, audio: Any) -> str:
+        import torch
+        import numpy as np
 
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-            temp_path = f.name
+        # Domain Invariant: True Zero-I/O RAM pipeline bypassing file creation and wrapper threshold
+        if isinstance(audio, np.ndarray):
+            wav = torch.from_numpy(audio).to(self._model._device).to(self._model._dtype)
+            if wav.ndim == 1:
+                wav = wav.unsqueeze(0)
+            length = torch.tensor([wav.shape[-1]], device=self._model._device)
+        else:
+            wav, length = self._model.prepare_wav(str(audio))
 
-        try:
-            # GigaAM strictly requires a file path (Zero-I/O violation forced by library)
-            sf.write(temp_path, audio, 16000)
-            return self._model.transcribe(temp_path)
-        finally:
-            import contextlib
-            with contextlib.suppress(FileNotFoundError):
-                os.unlink(temp_path)
+        with torch.inference_mode():
+            encoded, encoded_len = self._model.forward(wav, length)
+            text, _ = self._model._decode(encoded, encoded_len, length, False)[0]
+        return text
 
 
 def _load_stt() -> GigaAMAdapter:
@@ -486,6 +487,15 @@ class JobRegistry:
                 self._append_event_locked(rec, "cancelled", {})
             return True
 
+    def cancel_all(self) -> None:
+        with self._lock:
+            for rec in self._jobs.values():
+                rec.cancelled = True
+                if rec.state in {"queued", "running"}:
+                    rec.state = "cancelled"
+                    rec.updated_at = time.time()
+                    self._append_event_locked(rec, "cancelled", {})
+
     def is_cancelled(self, job_id: str) -> bool:
         with self._lock:
             rec = self._jobs.get(job_id)
@@ -693,6 +703,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        jobs.cancel_all()
         sweep_task.cancel()
         with suppress(asyncio.CancelledError):
             await sweep_task
@@ -785,9 +796,6 @@ async def start_system_audio(
         model_name = model
     else:
         model_name = "gigaam" if resolved_language == "ru" else "whisper"
-
-    if diarization and model_name != "granite":
-        raise HTTPException(status_code=400, detail="Diarization is only supported by the granite model")
 
     capture_id = str(uuid.uuid4())
     tmp_dir = tempfile.mkdtemp()
@@ -911,9 +919,6 @@ async def start_stt_job(
             model_name = "gigaam"
         else:
             model_name = "whisper"
-
-    if diarization and model_name != "granite":
-        raise HTTPException(status_code=400, detail="Diarization is only supported by the granite model")
 
     if model_name == "granite":
         resolved_model = models.stt_granite()
@@ -1051,17 +1056,20 @@ async def stream_job_events(
 
     async def gen() -> AsyncIterator[str]:
         cursor = after
-        while True:
-            evs = jobs.events_after(job_id, cursor)
-            for ev in evs:
-                cursor = max(cursor, int(ev.get("seq", cursor)))
-                yield f"data: {json.dumps(ev)}\n\n"
-            status = jobs.get_status(job_id)
-            if not status:
-                break
-            if status["state"] in {"completed", "failed", "cancelled"}:
-                break
-            await asyncio.sleep(0.2)
+        try:
+            while True:
+                evs = jobs.events_after(job_id, cursor)
+                for ev in evs:
+                    cursor = max(cursor, int(ev.get("seq", cursor)))
+                    yield f"data: {json.dumps(ev)}\n\n"
+                status = jobs.get_status(job_id)
+                if not status:
+                    break
+                if status["state"] in {"completed", "failed", "cancelled"}:
+                    break
+                await asyncio.sleep(0.2)
+        except (asyncio.CancelledError, GeneratorExit):
+            return
 
     return StreamingResponse(
         gen(),

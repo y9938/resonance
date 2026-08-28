@@ -37,6 +37,7 @@
             hintAnySize: 'любого размера',
             progressUploading: 'Загрузка…',
             progressProcessing: 'Обработка…',
+            progressDiarizing: 'Анализ спикеров…',
             progressComplete: 'Готово',
             progressChunk: 'Фрагмент {current} / {total}',
             progressStarting: 'Запуск…',

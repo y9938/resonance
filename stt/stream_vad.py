@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import logging
 import subprocess
-from typing import Iterator, Tuple
+from collections.abc import Iterator
+from dataclasses import dataclass
+from typing import Tuple
 
 import numpy as np
 import torch
@@ -33,8 +35,6 @@ def _get_vad_model():
         _VAD_MODEL = load_silero_vad(onnx=True)
     return _VAD_MODEL
 
-
-from dataclasses import dataclass
 
 @dataclass
 class Utterance:
