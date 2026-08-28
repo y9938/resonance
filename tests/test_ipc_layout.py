@@ -7,9 +7,6 @@ These tests make that breakage loud and immediate.
 """
 import struct
 
-import pytest
-
-
 # Mirror of MacOSSharedMemoryStrategy class constants.
 _HEADER_FMT    = '<4sIIIIIQIIi20x'
 _HEADER_SIZE   = 64
@@ -41,8 +38,6 @@ def test_command_offset():
     """Invariant: command field at byte 32 — Swift writes header.command, Python reads at _CMD_OFFSET."""
     buf = bytearray(_HEADER_SIZE)
     struct.pack_into('<I', buf, _CMD_OFFSET, 0xDEAD)
-    *_, cmd_val, _, _ = struct.unpack(_HEADER_FMT, bytes(buf))
-    # cmd is field index 7 (0-based)
     fields = struct.unpack(_HEADER_FMT, bytes(buf))
     assert fields[7] == 0xDEAD, f"command field not at offset {_CMD_OFFSET}"
 
@@ -79,3 +74,36 @@ def test_audio_slot_base_offset():
     assert first_slot_offset == 64
     assert last_slot_offset  == 64 + 15 * 4096 * 4
     assert total_shm_size    == 64 + 16 * 4096 * 4  # 262208 bytes
+
+
+def test_dual_channel_interleaved_slot_layout():
+    """Invariant: When channels == 2, bytes_per_slot = frames_per_slot * 2 * 4.
+    Interleaving format: [sys_0, mic_0, sys_1, mic_1, ...]"""
+    import numpy as np
+
+    frames_per_slot = 4096
+    channels = 2
+    bytes_per_slot = frames_per_slot * channels * 4  # 32768 bytes
+    slot_count = 16
+    total_shm_size = _HEADER_SIZE + slot_count * bytes_per_slot  # 524352 bytes
+
+    shm_buf = bytearray(total_shm_size)
+    # Pack header with channels = 2
+    struct.pack_into(_HEADER_FMT, shm_buf, 0, b'RESO', 1, 16000, 2, frames_per_slot, slot_count, 0, 0, 2, 0)
+
+    # Fill slot 0 with synthetic interleaved data: sys = 0.5, mic = -0.5
+    slot0_offset = _HEADER_SIZE
+    interleaved_data = np.zeros(frames_per_slot * 2, dtype=np.float32)
+    interleaved_data[0::2] = 0.5   # sys
+    interleaved_data[1::2] = -0.5  # mic
+    shm_buf[slot0_offset:slot0_offset + bytes_per_slot] = interleaved_data.tobytes()
+
+    # Emulate Python unpacking
+    raw = np.ndarray((frames_per_slot * 2,), dtype=np.float32, buffer=shm_buf, offset=slot0_offset)
+    sys_chunk = raw[0::2]
+    mic_chunk = raw[1::2]
+
+    assert sys_chunk.shape == (4096,)
+    assert mic_chunk.shape == (4096,)
+    assert np.allclose(sys_chunk, 0.5)
+    assert np.allclose(mic_chunk, -0.5)

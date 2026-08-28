@@ -1,5 +1,6 @@
 import re
 
+
 def merge_two_stt_strings(a: str, b: str) -> str:
     a_trim = (a or "").strip()
     b_trim = (b or "").strip()
@@ -8,24 +9,35 @@ def merge_two_stt_strings(a: str, b: str) -> str:
     if not a_trim:
         return b_trim
 
-    tag_match = re.match(r"^\[Speaker \d+\]:\s*", b_trim, re.IGNORECASE)
-    if tag_match:
-        b_clean = b_trim[len(tag_match.group(0)):]
+    tag_pattern = r"^\[(Speaker \d+|SOURCE:[A-Z0-9_-]+)\]:\s*"
+
+    b_tag_match = re.match(tag_pattern, b_trim, re.IGNORECASE)
+    if b_tag_match:
+        b_tag = b_tag_match.group(1).upper()
+        b_clean = b_trim[len(b_tag_match.group(0)) :].strip()
     else:
+        b_tag = None
         b_clean = b_trim
 
-    max_k = min(len(a_trim), len(b_clean), 1200)
-    for k in range(max_k, 0, -1):
-        if a_trim[-k:] == b_clean[:k]:
-            return a_trim + b_clean[k:]
-    wa = a_trim.split()
-    wb_clean = b_clean.split()
-    max_w = min(len(wa), len(wb_clean), 48)
-    for kw in range(max_w, 0, -1):
-        if wa[-kw:] == wb_clean[:kw]:
-            return " ".join(wa + wb_clean[kw:])
-    return a_trim + " " + b_trim
+    a_tags = list(re.finditer(r"\[(Speaker \d+|SOURCE:[A-Z0-9_-]+)\]:\s*", a_trim, re.IGNORECASE))
+    a_last_tag = a_tags[-1].group(1).upper() if a_tags else None
 
+    # Overlap deduplication only applies within the same speaker/source turn
+    if b_tag == a_last_tag:
+        max_k = min(len(a_trim), len(b_clean), 1200)
+        for k in range(max_k, 0, -1):
+            if a_trim[-k:] == b_clean[:k]:
+                return a_trim + b_clean[k:]
+        wa = a_trim.split()
+        wb_clean = b_clean.split()
+        max_w = min(len(wa), len(wb_clean), 48)
+        for kw in range(max_w, 0, -1):
+            if wa[-kw:] == wb_clean[:kw]:
+                return " ".join(wa + wb_clean[kw:])
+        return a_trim + " " + b_clean
+
+    # Speaker/source change: retain distinct turn on a new line
+    return a_trim + "\n" + b_trim
 
 
 def merge_adjacent_stt_texts(segments: list[dict]) -> str:
@@ -82,6 +94,10 @@ def build_stt_blocks(segments: list[dict], block_sec: float = 30.0) -> list[dict
         segment_text = str(segment.get("text") or "").strip()
         if not segment_text:
             continue
+
+        a_tags = list(re.finditer(r"\[(Speaker \d+|SOURCE:[A-Z0-9_-]+)\]:\s*", transcript, re.IGNORECASE))
+        active_tag_header = a_tags[-1].group(0) if a_tags else ""
+
         merged = merge_two_stt_strings(transcript, segment_text)
         delta = merged[len(transcript) :].strip() if merged.startswith(transcript) else ""
         transcript = merged
@@ -97,7 +113,16 @@ def build_stt_blocks(segments: list[dict], block_sec: float = 30.0) -> list[dict
                 "text": "",
             },
         )
-        block["text"] = (block["text"] + " " + delta).strip()
+        if block["text"]:
+            if delta.startswith("["):
+                block["text"] = block["text"] + "\n" + delta
+            else:
+                block["text"] = (block["text"] + " " + delta).strip()
+        else:
+            if not delta.startswith("[") and active_tag_header:
+                block["text"] = active_tag_header + delta
+            else:
+                block["text"] = delta
 
     return [block for _, block in sorted(blocks.items()) if block["text"]]
 
@@ -228,18 +253,49 @@ def test_get_stt_download_text_matches_copy_text_for_active_mode() -> None:
 
 
 def test_merge_overlap_with_diarization_tags() -> None:
-    # Same speaker tag
+    # Same speaker tag merges overlapping speech
     a = "[Speaker 1]: hello world"
     b = "[Speaker 1]: world foo"
     assert merge_two_stt_strings(a, b) == "[Speaker 1]: hello world foo"
 
-    # Different speaker tag
+    # Different speaker tag preserves distinct speaker on new line
     a = "[Speaker 1]: hello world"
     b = "[Speaker 2]: world foo"
-    assert merge_two_stt_strings(a, b) == "[Speaker 1]: hello world foo"
+    assert merge_two_stt_strings(a, b) == "[Speaker 1]: hello world\n[Speaker 2]: world foo"
 
     # Speaker change with no overlap
     a = "[Speaker 1]: hello world"
     b = "[Speaker 2]: foo bar"
-    assert merge_two_stt_strings(a, b) == "[Speaker 1]: hello world [Speaker 2]: foo bar"
+    assert merge_two_stt_strings(a, b) == "[Speaker 1]: hello world\n[Speaker 2]: foo bar"
 
+
+def test_merge_dual_stream_source_tags() -> None:
+    # Alternating turns between mic and sys
+    a = "[SOURCE:MIC]: Hello there, loud and clear."
+    b = "[SOURCE:SYS]: Did you review the quarterly report?"
+    merged = merge_two_stt_strings(a, b)
+    assert merged == "[SOURCE:MIC]: Hello there, loud and clear.\n[SOURCE:SYS]: Did you review the quarterly report?"
+
+    # Continuation of same source
+    c = "[SOURCE:SYS]: Yes, everything looks solid."
+    merged2 = merge_two_stt_strings(merged, c)
+    assert merged2 == (
+        "[SOURCE:MIC]: Hello there, loud and clear.\n"
+        "[SOURCE:SYS]: Did you review the quarterly report? Yes, everything looks solid."
+    )
+
+
+def test_build_stt_blocks_persists_speaker_tag_across_boundaries() -> None:
+    segs = [
+        {"start": 0.0, "end": 10.0, "text": "[SOURCE:MIC]: Testing audio input."},
+        {"start": 10.0, "end": 28.0, "text": "[SOURCE:SYS]: Welcome everyone to the sprint review."},
+        {"start": 30.0, "end": 45.0, "text": "[SOURCE:SYS]: First item on our agenda today is the release plan."},
+        {"start": 45.0, "end": 58.0, "text": "[SOURCE:SYS]: We have made solid progress across all modules."},
+        {"start": 60.0, "end": 75.0, "text": "[SOURCE:SYS]: Let us move forward with the next milestone."},
+        {"start": 75.0, "end": 88.0, "text": "[SOURCE:MIC]: Can we discuss the timeline first?"},
+    ]
+    blocks = build_stt_blocks(segs, block_sec=30.0)
+    assert len(blocks) == 3
+    assert blocks[0]["text"].startswith("[SOURCE:MIC]: Testing audio input.\n[SOURCE:SYS]: ")
+    assert blocks[1]["text"].startswith("[SOURCE:SYS]: First item on our agenda today is the release plan.")
+    assert blocks[2]["text"].startswith("[SOURCE:SYS]: Let us move forward with the next milestone.\n[SOURCE:MIC]: ")

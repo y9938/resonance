@@ -12,6 +12,8 @@
 
     window.__registerResonanceLocale('ru', {
         messages: {
+            speakerMic: '🎤 Микрофон',
+            speakerSys: '🔊 Система',
             pageTitle: 'Resonance',
             metaDescription: 'Resonance — распознавание речи и синтез речи',
             ariaLangGroup: 'Язык интерфейса',

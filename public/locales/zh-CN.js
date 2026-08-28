@@ -3,6 +3,8 @@
 
     window.__registerResonanceLocale('zh-CN', {
         messages: {
+            speakerMic: '🎤 麦克风',
+            speakerSys: '🔊 系统声音',
             pageTitle: 'Resonance',
             metaDescription: 'Resonance — 语音识别与语音合成',
             ariaLangGroup: '界面语言',

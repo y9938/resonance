@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 INDEX_HTML = Path(__file__).resolve().parent.parent / "public" / "index.html"
 RU_LOCALE = Path(__file__).resolve().parent.parent / "public" / "locales" / "ru.js"
 ZH_LOCALE = Path(__file__).resolve().parent.parent / "public" / "locales" / "zh-CN.js"
@@ -94,6 +93,8 @@ def test_system_audio_locale_contracts() -> None:
         'sttSysHintProcessing',
         'sttSysStart',
         'sttSysIncludeMic',
+        'speakerMic',
+        'speakerSys',
     ]
 
     for key in sys_keys:

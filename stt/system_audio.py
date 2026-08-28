@@ -1,10 +1,14 @@
+from __future__ import annotations
+
 import abc
 import mmap
 import os
+import shutil
 import struct
 import sys
 import time
 from collections.abc import Generator
+from typing import Any
 
 import numpy as np
 
@@ -19,7 +23,7 @@ class SystemAudioStrategy(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def get_audio_stream(self) -> Generator[np.ndarray, None, None]:
+    def get_audio_stream(self) -> Generator[tuple[str, np.ndarray], None, None]:
         pass
 
 
@@ -45,8 +49,10 @@ class MacOSSharedMemoryStrategy(SystemAudioStrategy):
     _STATUS_CAPTURING = 2
     _STATUS_FAILED   = 3
 
-    def __init__(self):
+    def __init__(self, include_microphone: bool = False):
         import posix_ipc
+
+        self.include_microphone = include_microphone
 
         try:
             fd = os.open(self._SHM_PATH, os.O_RDWR)
@@ -61,14 +67,15 @@ class MacOSSharedMemoryStrategy(SystemAudioStrategy):
         except posix_ipc.ExistentialError:
             raise RuntimeError("System capture app is not running (semaphores not found).")
 
-        (_, _, self.rate, _, self.frames_per_slot, self.slot_count,
+        (_, _, self.rate, self.channels, self.frames_per_slot, self.slot_count,
          _, _, _, _) = struct.unpack(self._HEADER_FMT, bytes(self.shm[:self._HEADER_SIZE]))
-        self.bytes_per_slot = self.frames_per_slot * 4
+        self.bytes_per_slot = self.frames_per_slot * (self.channels or 1) * 4
         self.read_idx = 0
 
     def start_capture(self) -> None:
         # Caller obligation: Swift must update header.status within _START_TIMEOUT seconds.
-        struct.pack_into('<I', self.shm, self._CMD_OFFSET, 1)
+        cmd_val = 3 if self.include_microphone else 1
+        struct.pack_into('<I', self.shm, self._CMD_OFFSET, cmd_val)
         self.cmd_sem.release()
 
         deadline = time.monotonic() + self._START_TIMEOUT
@@ -94,160 +101,51 @@ class MacOSSharedMemoryStrategy(SystemAudioStrategy):
         # Unblock the reader thread blocked on data_sem.acquire().
         self.data_sem.release()
 
-    def get_audio_stream(self) -> Generator[np.ndarray, None, None]:
+    def get_audio_stream(self) -> Generator[tuple[str, np.ndarray], None, None]:
         while True:
             self.data_sem.acquire()
 
-            (_, _, _, _, _, _, current_write_idx,
+            (_, _, _, channels, frames_per_slot, slot_count, current_write_idx,
              current_cmd, _, _) = struct.unpack(self._HEADER_FMT, bytes(self.shm[:self._HEADER_SIZE]))
 
             if current_cmd == 2:
                 break
 
             # Tail-drop mitigation: STT inference is slower than real-time capture.
-            if current_write_idx > self.read_idx + self.slot_count:
+            if current_write_idx > self.read_idx + slot_count:
                 self.read_idx = current_write_idx - 1
 
-            slot_idx = self.read_idx % self.slot_count
-            offset   = self._HEADER_SIZE + (slot_idx * self.bytes_per_slot)
+            slot_idx = self.read_idx % slot_count
+            bytes_per_slot = frames_per_slot * (channels or 1) * 4
+            offset   = self._HEADER_SIZE + (slot_idx * bytes_per_slot)
 
-            # Zero-copy invariant: offset must map to a contiguous SHM block.
-            audio_chunk = np.ndarray(
-                (self.frames_per_slot,),
-                dtype=np.float32,
-                buffer=self.shm,
-                offset=offset,
-            )
-
-            self.read_idx += 1
-            yield audio_chunk
-
-
-class NativeLinuxWindowsStrategy(SystemAudioStrategy):
-    def __init__(self, include_microphone: bool = False):
-        import sounddevice as sd
-        from queue import Queue
-
-        self.sd = sd
-        self.include_microphone = include_microphone
-        self.queue = Queue()
-        self.mic_queue = Queue() if include_microphone else None
-        self.stream = None
-        self.mic_stream = None
-        self.is_active = False
-
-        self.samplerate = 16000
-        self.channels = 1
-        self.blocksize = 4096
-
-        self.device_id = None
-        self.extra_settings = None
-
-        if sys.platform.startswith("linux"):
-            import subprocess
-            try:
-                sink = subprocess.check_output(["pactl", "get-default-sink"], timeout=1.0).decode().strip()
-                if sink:
-                    os.environ["PULSE_SOURCE"] = f"{sink}.monitor"
-            except Exception:
-                os.environ.setdefault("PULSE_SOURCE", "@DEFAULT_MONITOR@")
-
-            devices = sd.query_devices()
-            # Domain Invariant: PortAudio routes to PULSE_SOURCE via pulse/pipewire ALSA bridge.
-            for name in ("pulse", "pipewire", "default"):
-                idx = next((i for i, d in enumerate(devices) if d["name"] == name and d["max_input_channels"] > 0), None)
-                if idx is not None:
-                    self.device_id = idx
-                    break
-
-    def _audio_callback(self, indata, frames, time, status):
-        if self.is_active:
-            self.queue.put(indata.copy().flatten())
-
-    def _mic_audio_callback(self, indata, frames, time, status):
-        if self.is_active and self.mic_queue is not None:
-            self.mic_queue.put(indata.copy().flatten())
-
-    def start_capture(self) -> None:
-        if self.stream is not None:
-            return
-
-        if sys.platform.startswith("linux"):
-            import subprocess
-            try:
-                sink = subprocess.check_output(["pactl", "get-default-sink"], timeout=1.0).decode().strip()
-                if sink:
-                    os.environ["PULSE_SOURCE"] = f"{sink}.monitor"
-            except Exception:
-                pass
-
-        self.is_active = True
-        while not self.queue.empty():
-            self.queue.get_nowait()
-        if self.mic_queue is not None:
-            while not self.mic_queue.empty():
-                self.mic_queue.get_nowait()
-
-        self.stream = self.sd.InputStream(
-            samplerate=self.samplerate,
-            blocksize=self.blocksize,
-            device=self.device_id,
-            channels=self.channels,
-            dtype=np.float32,
-            extra_settings=self.extra_settings,
-            callback=self._audio_callback
-        )
-        self.stream.start()
-
-        if self.include_microphone:
-            try:
-                # Assumes: device=None selects the system default hardware recording input
-                self.mic_stream = self.sd.InputStream(
-                    samplerate=self.samplerate,
-                    blocksize=self.blocksize,
-                    device=None,
-                    channels=self.channels,
+            if channels == 2:
+                # Invariant: Interleaved layout where even frames are system audio and odd frames are microphone.
+                interleaved = np.ndarray(
+                    (frames_per_slot * 2,),
                     dtype=np.float32,
-                    callback=self._mic_audio_callback
+                    buffer=self.shm,
+                    offset=offset,
                 )
-                self.mic_stream.start()
-            except Exception:
-                self.mic_stream = None
-
-    def stop_capture(self) -> None:
-        self.is_active = False
-        if self.stream:
-            self.stream.stop()
-            self.stream.close()
-            self.stream = None
-        if self.mic_stream:
-            self.mic_stream.stop()
-            self.mic_stream.close()
-            self.mic_stream = None
-
-    def get_audio_stream(self) -> Generator[np.ndarray, None, None]:
-        from queue import Empty
-        while self.is_active or not self.queue.empty():
-            try:
-                # Assumes: Callback produces chunks faster than timeout; timeout implies stream death
-                chunk_sys = self.queue.get(timeout=2.0)
-                if self.include_microphone and self.mic_stream and self.mic_queue is not None:
-                    try:
-                        chunk_mic = self.mic_queue.get(timeout=0.2)
-                        min_len = min(len(chunk_sys), len(chunk_mic))
-                        # Domain Invariant: Balanced downmix with clipping prevention
-                        yield np.clip(chunk_sys[:min_len] * 0.7 + chunk_mic[:min_len] * 0.7, -1.0, 1.0)
-                        continue
-                    except Empty:
-                        pass
-                yield chunk_sys
-            except Empty:
-                if not self.is_active:
-                    break
+                sys_chunk = interleaved[0::2].copy()
+                mic_chunk = interleaved[1::2].copy()
+                self.read_idx += 1
+                yield ("sys", sys_chunk)
+                yield ("mic", mic_chunk)
+            else:
+                # Zero-copy invariant: offset must map to a contiguous SHM block.
+                audio_chunk = np.ndarray(
+                    (frames_per_slot,),
+                    dtype=np.float32,
+                    buffer=self.shm,
+                    offset=offset,
+                )
+                self.read_idx += 1
+                yield ("sys", audio_chunk)
 
 
-class WindowsWasapiStrategy(SystemAudioStrategy):
-    """Captures Windows desktop audio via WASAPI Loopback Client and optional hardware microphone."""
+class SoundcardSystemAudioStrategy(SystemAudioStrategy):
+    """Captures desktop audio via Loopback Monitor and hardware microphone using soundcard."""
 
     def __init__(self, include_microphone: bool = False):
         from queue import Queue
@@ -265,26 +163,26 @@ class WindowsWasapiStrategy(SystemAudioStrategy):
         import logging
         log = logging.getLogger("resonance")
         hr = -1
-        try:
-            import soundcard as sc
-            import soundcard.mediafoundation as mf
-            hr = mf._ole32.CoInitializeEx(mf._ffi.NULL, 0)
-        except Exception as e:
-            log.debug(f"Windows system audio COM init note: {e}")
+        if sys.platform.startswith("win"):
+            try:
+                import soundcard.mediafoundation as mf
+                hr = mf._ole32.CoInitializeEx(mf._ffi.NULL, 0)
+            except Exception as e:
+                log.debug(f"Windows system audio COM init note: {e}")
 
         try:
+            import soundcard as sc
             speaker = sc.default_speaker()
-            loopback_mic = sc.get_microphone(id=str(speaker.id), include_loopback=True)
+            loopback_id = f"{speaker.id}.monitor" if (sys.platform.startswith("linux") and not str(speaker.id).endswith(".monitor")) else str(speaker.id)
+            loopback_mic = sc.get_microphone(id=loopback_id, include_loopback=True)
             with loopback_mic.recorder(samplerate=self.samplerate) as rec:
                 while self.is_active:
-                    # Windows WASAPI loopback streams native stereo float32.
                     data = rec.record(numframes=self.blocksize)
                     if data is not None and len(data) > 0:
-                        # Downmix stereo to mono float32 for STT pipeline.
                         mono = data.mean(axis=1).astype(np.float32) if data.ndim > 1 else data.astype(np.float32)
                         self.queue.put(mono)
         except Exception as e:
-            log.warning(f"Windows system audio capture worker failed: {e}")
+            log.warning(f"System audio capture worker failed: {e}")
         finally:
             if hr == 0:
                 try:
@@ -296,14 +194,15 @@ class WindowsWasapiStrategy(SystemAudioStrategy):
         import logging
         log = logging.getLogger("resonance")
         hr = -1
-        try:
-            import soundcard as sc
-            import soundcard.mediafoundation as mf
-            hr = mf._ole32.CoInitializeEx(mf._ffi.NULL, 0)
-        except Exception as e:
-            log.debug(f"Windows microphone COM init note: {e}")
+        if sys.platform.startswith("win"):
+            try:
+                import soundcard.mediafoundation as mf
+                hr = mf._ole32.CoInitializeEx(mf._ffi.NULL, 0)
+            except Exception as e:
+                log.debug(f"Windows microphone COM init note: {e}")
 
         try:
+            import soundcard as sc
             mic = sc.default_microphone()
             with mic.recorder(samplerate=self.samplerate) as rec:
                 while self.is_active:
@@ -312,7 +211,7 @@ class WindowsWasapiStrategy(SystemAudioStrategy):
                         mono = data.mean(axis=1).astype(np.float32) if data.ndim > 1 else data.astype(np.float32)
                         self.mic_queue.put(mono)
         except Exception as e:
-            log.warning(f"Windows microphone capture worker failed: {e}")
+            log.warning(f"Microphone capture worker failed: {e}")
         finally:
             if hr == 0:
                 try:
@@ -348,8 +247,8 @@ class WindowsWasapiStrategy(SystemAudioStrategy):
             self.mic_thread = None
 
     def get_audio_stream(self) -> Generator[tuple[str, np.ndarray], None, None]:
-        from queue import Empty
         import time
+        from queue import Empty
 
         while (
             self.is_active
@@ -385,10 +284,154 @@ class WindowsWasapiStrategy(SystemAudioStrategy):
                 time.sleep(0.01)
 
 
+class LinuxPulseParecStrategy(SystemAudioStrategy):
+    """Captures Linux desktop audio and microphone via PulseAudio/PipeWire parec streams."""
+
+    def __init__(self, include_microphone: bool = False):
+        from queue import Queue
+
+        self.include_microphone = include_microphone
+        self.queue = Queue()
+        self.mic_queue = Queue() if include_microphone else None
+        self.is_active = False
+        self.samplerate = 16000
+        self.blocksize = 4096
+        self.proc_sys = None
+        self.proc_mic = None
+        self.threads = []
+
+    def _reader_worker(self, proc: Any, queue: Any) -> None:
+        chunk_bytes = self.blocksize * 4  # float32 = 4 bytes
+        try:
+            while self.is_active and proc.stdout is not None:
+                raw = proc.stdout.read(chunk_bytes)
+                if not raw:
+                    break
+                samples = np.frombuffer(raw, dtype=np.float32)
+                if len(samples) > 0:
+                    queue.put(samples)
+        except Exception as e:
+            log.debug(f"Linux parec reader note: {e}")
+
+    def start_capture(self) -> None:
+        if self.is_active:
+            return
+
+        import subprocess
+        import threading
+
+        sink = subprocess.check_output(["pactl", "get-default-sink"], text=True, timeout=2.0).strip()
+        monitor = f"{sink}.monitor" if not sink.endswith(".monitor") else sink
+
+        self.is_active = True
+        while not self.queue.empty():
+            self.queue.get_nowait()
+        if self.mic_queue is not None:
+            while not self.mic_queue.empty():
+                self.mic_queue.get_nowait()
+
+        self.proc_sys = subprocess.Popen(
+            [
+                "parec",
+                f"--device={monitor}",
+                f"--rate={self.samplerate}",
+                "--channels=1",
+                "--format=float32le",
+                "--latency-msec=50",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        t_sys = threading.Thread(target=self._reader_worker, args=(self.proc_sys, self.queue), daemon=True)
+        t_sys.start()
+        self.threads.append(t_sys)
+
+        if self.include_microphone:
+            try:
+                source = subprocess.check_output(["pactl", "get-default-source"], text=True, timeout=2.0).strip()
+                self.proc_mic = subprocess.Popen(
+                    [
+                        "parec",
+                        f"--device={source}",
+                        f"--rate={self.samplerate}",
+                        "--channels=1",
+                        "--format=float32le",
+                        "--latency-msec=50",
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                )
+                t_mic = threading.Thread(target=self._reader_worker, args=(self.proc_mic, self.mic_queue), daemon=True)
+                t_mic.start()
+                self.threads.append(t_mic)
+            except Exception as e:
+                log.warning(f"Microphone capture start failed: {e}")
+                self.proc_mic = None
+
+    def stop_capture(self) -> None:
+        self.is_active = False
+        if self.proc_sys:
+            try:
+                self.proc_sys.terminate()
+                self.proc_sys.wait(timeout=1.0)
+            except Exception:
+                self.proc_sys.kill()
+            self.proc_sys = None
+
+        if self.proc_mic:
+            try:
+                self.proc_mic.terminate()
+                self.proc_mic.wait(timeout=1.0)
+            except Exception:
+                self.proc_mic.kill()
+            self.proc_mic = None
+
+        for t in self.threads:
+            t.join(timeout=1.0)
+        self.threads.clear()
+
+    def get_audio_stream(self) -> Generator[tuple[str, np.ndarray], None, None]:
+        import time
+        from queue import Empty
+
+        while (
+            self.is_active
+            or any(t.is_alive() for t in self.threads)
+            or not self.queue.empty()
+            or (self.mic_queue is not None and not self.mic_queue.empty())
+        ):
+            sys_drained = False
+            try:
+                while True:
+                    yield ("sys", self.queue.get_nowait())
+                    sys_drained = True
+            except Empty:
+                pass
+
+            mic_drained = False
+            if self.include_microphone and self.mic_queue is not None:
+                try:
+                    while True:
+                        yield ("mic", self.mic_queue.get_nowait())
+                        mic_drained = True
+                except Empty:
+                    pass
+
+            if not sys_drained and not mic_drained:
+                if not self.is_active and not any(t.is_alive() for t in self.threads):
+                    break
+                time.sleep(0.01)
+
+
+# Aliases for backward compatibility in tests and platform dispatch
+WindowsWasapiStrategy = SoundcardSystemAudioStrategy
+NativeLinuxWindowsStrategy = LinuxPulseParecStrategy
+
+
 def get_system_audio_capture(include_microphone: bool = False) -> SystemAudioStrategy:
+    import shutil
     if sys.platform == "darwin":
-        return MacOSSharedMemoryStrategy()
-    elif sys.platform == "win32":
-        return WindowsWasapiStrategy(include_microphone=include_microphone)
-    else:
-        return NativeLinuxWindowsStrategy(include_microphone=include_microphone)
+        return MacOSSharedMemoryStrategy(include_microphone=include_microphone)
+    elif sys.platform.startswith("linux") and shutil.which("parec"):
+        return LinuxPulseParecStrategy(include_microphone=include_microphone)
+    return SoundcardSystemAudioStrategy(include_microphone=include_microphone)

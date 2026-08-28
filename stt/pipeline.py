@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import contextlib
 import json
 import re
 import shutil
@@ -154,7 +153,7 @@ from .stream_vad import stream_vad_chunks
 def run_stt_job(
     *,
     job_id: str,
-    input_path: str,
+    input_paths: str | dict[str, str],
     upload_root: str,
     jobs: Any,
     model: Any,
@@ -183,9 +182,10 @@ def run_stt_job(
         if cancel_requested():
             return
 
-        if not input_path:
-            raise ValueError("No audio recorded or empty audio path")
-        info = probe_media(input_path)
+        paths = input_paths if isinstance(input_paths, dict) else {"default": input_paths}
+        if not paths or not any(paths.values()):
+            raise ValueError("No audio recorded or empty audio stream")
+        info = probe_media(list(paths.values())[0])  # Assumes: All synced streams have similar length
         if max_duration_sec > 0 and info.duration_sec > max_duration_sec:
             raise ValueError(f"Audio too long (max {max_duration_sec}s)")
 
@@ -201,48 +201,73 @@ def run_stt_job(
             },
         )
 
-        speaker_intervals = []
+        speaker_intervals_by_stream = {}
         if is_diarizing:
-            if cancel_requested():
-                return
-            try:
-                from .diarization import diarize_audio, match_speaker_tag
-                import numpy as np
-
-                full_raw = subprocess.check_output([
-                    "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
-                    "-i", str(input_path), "-f", "s16le", "-ac", "1", "-ar", "16000", "-"
-                ], timeout=min(600.0, max(30.0, info.duration_sec * 2)))
+            for stream_id, path in paths.items():
+                if stream_id == "mic":
+                    continue  # Domain Invariant: Microphone stream is always a single known speaker (Me).
 
                 if cancel_requested():
                     return
+                try:
+                    import numpy as np
 
-                full_audio = np.frombuffer(full_raw, dtype=np.int16).astype(np.float32) / 32768.0
-                speaker_intervals = diarize_audio(full_audio, cancel_check=cancel_requested)
-            except subprocess.CalledProcessError as exc:
-                if cancel_requested() or exc.returncode in (255, 130, -2):
-                    return
-                log.warning(f"Diarization decoding failed, continuing without speaker tags: {exc}")
-            except RuntimeError:
-                if cancel_requested():
-                    return
-                log.warning("Diarization failed, continuing without speaker tags.")
-            except Exception as e:
-                if cancel_requested():
-                    return
-                log.warning(f"Diarization failed, continuing without speaker tags: {e}")
+                    from .diarization import diarize_audio, match_speaker_tag
+
+                    full_raw = subprocess.check_output([
+                        "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+                        "-i", str(path), "-f", "s16le", "-ac", "1", "-ar", "16000", "-"
+                    ], timeout=min(600.0, max(30.0, info.duration_sec * 2)))
+
+                    if cancel_requested():
+                        return
+
+                    full_audio = np.frombuffer(full_raw, dtype=np.int16).astype(np.float32) / 32768.0
+                    speaker_intervals_by_stream[stream_id] = diarize_audio(full_audio, cancel_check=cancel_requested)
+                except subprocess.CalledProcessError as exc:
+                    if cancel_requested() or exc.returncode in (255, 130, -2):
+                        return
+                    log.warning(f"Diarization failed for stream {stream_id}: {exc}")
+                except Exception as e:
+                    if cancel_requested():
+                        return
+                    log.warning(f"Diarization failed for stream {stream_id}: {e}")
 
         if cancel_requested():
             return
 
-        for chunk_index, (start_sec, end_sec, chunk_array) in enumerate(stream_vad_chunks(
-            input_path=input_path,
-            sample_rate=sample_rate,
-            target_sec=chunk_sec,
-            total_duration_sec=info.duration_sec,
-        )):
+        import heapq
+
+        generators = {}
+        for sid, p in paths.items():
+            generators[sid] = stream_vad_chunks(
+                input_path=p,
+                sample_rate=sample_rate,
+                target_sec=chunk_sec,
+                total_duration_sec=info.duration_sec,
+            )
+
+        heap = []
+        for sid, gen in generators.items():
+            try:
+                item = next(gen)
+                heapq.heappush(heap, (item[0], item[1], sid, item, gen))
+            except StopIteration:
+                pass
+
+        chunk_index = 0
+        while heap:
             if cancel_requested():
                 return
+
+            start_sec, end_sec, stream_id, item, gen = heapq.heappop(heap)
+            _, _, chunk_array = item
+
+            try:
+                next_item = next(gen)
+                heapq.heappush(heap, (next_item[0], next_item[1], stream_id, next_item, gen))
+            except StopIteration:
+                pass
 
             import inspect
             sig = inspect.signature(model.transcribe)
@@ -255,10 +280,19 @@ def run_stt_job(
                 return
 
             text = _segment_text_from_transcribe(raw)
-            if diarization and speaker_intervals and not text.startswith("[Speaker"):
-                from .diarization import match_speaker_tag
-                tag = match_speaker_tag(start_sec, end_sec, speaker_intervals)
-                text = f"{tag}{text}"
+
+            if stream_id == "mic":
+                text = f"[SOURCE:MIC]: {text}"
+            elif diarization and not text.startswith("[Speaker"):
+                intervals = speaker_intervals_by_stream.get(stream_id, [])
+                if intervals:
+                    from .diarization import match_speaker_tag
+                    tag = match_speaker_tag(start_sec, end_sec, intervals)
+                    text = f"{tag}{text}"
+                elif "mic" in paths:
+                    text = f"[SOURCE:SYS]: {text}"
+            elif "mic" in paths or (len(paths) > 1 and stream_id == "sys"):
+                text = f"[SOURCE:SYS]: {text}"
 
             # Assumes: VAD yields exact absolute timestamps.
             jobs.update_event(
@@ -271,9 +305,11 @@ def run_stt_job(
                         "start": round(start_sec, 6),
                         "end": round(end_sec, 6),
                         "text": text,
+                        "source": stream_id,
                     },
                 },
             )
+            chunk_index += 1
 
         if cancel_requested():
             return
@@ -294,7 +330,7 @@ def run_stt_job(
 def run_stt_worker(
     *,
     job_id: str,
-    audio_path: str,
+    audio_path: str | dict[str, str],
     upload_root: str,
     semaphore: threading.BoundedSemaphore,
     jobs: Any,
@@ -314,7 +350,7 @@ def run_stt_worker(
 
         run_stt_job(
             job_id=job_id,
-            input_path=audio_path,
+            input_paths=audio_path,
             upload_root=upload_root,
             jobs=jobs,
             model=model,

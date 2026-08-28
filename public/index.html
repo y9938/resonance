@@ -1207,6 +1207,8 @@
 
         /** English DOM text stays in HTML for SEO/static fallback. JS-only English strings stay here. */
         const I18N_EN_SCRIPT = {
+            speakerMic: '🎤 Microphone',
+            speakerSys: '🔊 System',
             hintSttMedia: 'Any files — {limit}',
             hintLimitMb: 'up to {mb} MB',
             hintAnySize: 'any size',
@@ -1600,31 +1602,41 @@
             if (!bTrim) return aTrim;
             if (!aTrim) return bTrim;
 
-            const tagMatch = bTrim.match(/^\[Speaker \d+\]:\s*/i);
-            const bClean = tagMatch ? bTrim.slice(tagMatch[0].length) : bTrim;
+            const tagPattern = /^\[(Speaker \d+|SOURCE:[A-Z0-9_-]+)\]:\s*/i;
+            const bTagMatch = bTrim.match(tagPattern);
+            const bTag = bTagMatch ? bTagMatch[1].toUpperCase() : null;
+            const bClean = bTagMatch ? bTrim.slice(bTagMatch[0].length).trim() : bTrim;
 
-            const maxK = Math.min(aTrim.length, bClean.length, 1200);
-            for (let k = maxK; k >= 1; k--) {
-                if (aTrim.slice(-k) === bClean.slice(0, k)) {
-                    return aTrim + bClean.slice(k);
-                }
-            }
-            const wa = aTrim.split(/\s+/).filter(Boolean);
-            const wbClean = bClean.split(/\s+/).filter(Boolean);
-            const maxW = Math.min(wa.length, wbClean.length, 48);
-            for (let kw = maxW; kw >= 1; kw--) {
-                let match = true;
-                for (let j = 0; j < kw; j++) {
-                    if (wa[wa.length - kw + j] !== wbClean[j]) {
-                        match = false;
-                        break;
+            const globalTagPattern = /\[(Speaker \d+|SOURCE:[A-Z0-9_-]+)\]:\s*/gi;
+            const aMatches = Array.from(aTrim.matchAll(globalTagPattern));
+            const aLastTag = aMatches.length ? aMatches[aMatches.length - 1][1].toUpperCase() : null;
+
+            if (bTag === aLastTag) {
+                const maxK = Math.min(aTrim.length, bClean.length, 1200);
+                for (let k = maxK; k >= 1; k--) {
+                    if (aTrim.slice(-k) === bClean.slice(0, k)) {
+                        return aTrim + bClean.slice(k);
                     }
                 }
-                if (match) {
-                    return wa.concat(wbClean.slice(kw)).join(' ');
+                const wa = aTrim.split(/\s+/).filter(Boolean);
+                const wbClean = bClean.split(/\s+/).filter(Boolean);
+                const maxW = Math.min(wa.length, wbClean.length, 48);
+                for (let kw = maxW; kw >= 1; kw--) {
+                    let match = true;
+                    for (let j = 0; j < kw; j++) {
+                        if (wa[wa.length - kw + j] !== wbClean[j]) {
+                            match = false;
+                            break;
+                        }
+                    }
+                    if (match) {
+                        return wa.concat(wbClean.slice(kw)).join(' ');
+                    }
                 }
+                return aTrim + ' ' + bClean;
             }
-            return aTrim + ' ' + bTrim;
+
+            return aTrim + '\n' + bTrim;
         }
 
         function mergeAdjacentSttTexts(segments) {
@@ -1679,6 +1691,11 @@
             for (const segment of segments) {
                 const segmentText = String(segment && segment.text != null ? segment.text : '').trim();
                 if (!segmentText) continue;
+
+                const globalTagPattern = /\[(Speaker \d+|SOURCE:[A-Z0-9_-]+)\]:\s*/gi;
+                const aMatches = Array.from(transcript.matchAll(globalTagPattern));
+                const activeTagHeader = aMatches.length ? aMatches[aMatches.length - 1][0] : '';
+
                 const merged = mergeTwoSttStrings(transcript, segmentText);
                 const delta = merged.startsWith(transcript) ? merged.slice(transcript.length).trim() : '';
                 transcript = merged;
@@ -1694,7 +1711,19 @@
                     });
                 }
                 const block = blocks.get(index);
-                block.text = (block.text + ' ' + delta).trim();
+                if (block.text) {
+                    if (delta.startsWith('[')) {
+                        block.text = block.text + '\n' + delta;
+                    } else {
+                        block.text = (block.text + ' ' + delta).trim();
+                    }
+                } else {
+                    if (!delta.startsWith('[') && activeTagHeader) {
+                        block.text = activeTagHeader + delta;
+                    } else {
+                        block.text = delta;
+                    }
+                }
             }
 
             return Array.from(blocks.entries())
@@ -1707,6 +1736,13 @@
             return buildSttBlocks(segments)
                 .map((block) => '[' + formatSttBlockTime(block.start, block.end) + '] ' + block.text)
                 .join('\n\n');
+        }
+
+        function formatLocalizedSpeakerTags(text) {
+            if (!text) return '';
+            return text
+                .replace(/\[SOURCE:MIC\]:\s*/gi, '[' + t('speakerMic') + ']: ')
+                .replace(/\[SOURCE:SYS\]:\s*/gi, '[' + (t('speakerSys') || '🔊 System') + ']: ');
         }
 
         function processedSttTextDuration(segments) {
@@ -1729,14 +1765,16 @@
         }
 
         function getSttCopyText() {
-            return getActiveSttViewMode() === 'blocks' ? getSttBlocksText() : getSttContinuousText();
+            const raw = getActiveSttViewMode() === 'blocks' ? getSttBlocksText() : getSttContinuousText();
+            return formatLocalizedSpeakerTags(raw);
         }
 
         function getSttCopyTextForSegments(segments) {
             if (!segments || !segments.length) return '';
-            return getActiveSttViewMode() === 'blocks'
+            let text = getActiveSttViewMode() === 'blocks'
                 ? buildSttBlocksText(segments)
                 : mergeAdjacentSttTexts(segments);
+            return formatLocalizedSpeakerTags(text);
         }
 
         function setSttViewMode(mode) {
@@ -2181,9 +2219,10 @@
             if (!segs || !segs.length) return;
             const mergedText = getSttContinuousText();
             els.sttTimeRanges.textContent = buildSttTimeRangesText(segs);
-            els.sttResultText.value = getActiveSttViewMode() === 'continuous'
+            let text = getActiveSttViewMode() === 'continuous'
                 ? mergedText
                 : getSttBlocksText();
+            els.sttResultText.value = formatLocalizedSpeakerTags(text);
             els.sttMeta.textContent = formatSttMeta(segs.length);
         }
 

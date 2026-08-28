@@ -8,6 +8,7 @@ import pytest
 from stt import pipeline
 from stt.pipeline import MediaInfo, run_stt_job, save_upload_to_path
 
+
 class FakeUpload:
     def __init__(self, chunks: list[bytes]) -> None:
         self._buffer = b"".join(chunks)
@@ -109,7 +110,7 @@ def test_run_stt_job_processes_segments_sequentially(tmp_path: Path, monkeypatch
 
     run_stt_job(
         job_id="job-1",
-        input_path=str(input_path),
+        input_paths=str(input_path),
         upload_root=str(upload_root),
         jobs=jobs,
         model=model,
@@ -151,7 +152,7 @@ def test_run_stt_job_stops_before_next_segment_when_cancelled(
 
     run_stt_job(
         job_id="job-1",
-        input_path=str(input_path),
+        input_paths=str(input_path),
         upload_root=str(upload_root),
         jobs=jobs,
         model=model,
@@ -189,7 +190,7 @@ def test_run_stt_job_diarization_stage_flag(tmp_path: Path, monkeypatch: pytest.
 
     run_stt_job(
         job_id="job-diarize",
-        input_path=str(input_path),
+        input_paths=str(input_path),
         upload_root=str(upload_root),
         jobs=jobs,
         model=model,
@@ -227,7 +228,7 @@ def test_run_stt_job_diarization_cancelled_midway(tmp_path: Path, monkeypatch: p
 
     run_stt_job(
         job_id="job-cancel-midway",
-        input_path=str(input_path),
+        input_paths=str(input_path),
         upload_root=str(upload_root),
         jobs=jobs,
         model=model,
@@ -240,3 +241,50 @@ def test_run_stt_job_diarization_cancelled_midway(tmp_path: Path, monkeypatch: p
     cancelled_logs = [msg for msg in log.messages if "STT cancelled:" in msg]
     assert len(cancelled_logs) == 1, f"Expected exactly 1 cancel log, got {len(cancelled_logs)}"
     assert jobs.events[-1][0] == "cancelled"
+
+
+def test_run_stt_job_dual_stream_tagging(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_probe_media(input_path: str) -> MediaInfo:
+        return MediaInfo(duration_sec=10.0, codec_name="wav", sample_rate=16000, channels=1, size_bytes=100)
+
+    def fake_stream_vad_chunks(input_path, *args, **kwargs):
+        if "mic.wav" in input_path:
+            yield 0.0, 4.0, np.zeros(16000 * 4, dtype=np.float32)
+        else:
+            yield 4.0, 10.0, np.zeros(16000 * 6, dtype=np.float32)
+
+    class MockEchoModel:
+        def transcribe(self, chunk, **kwargs):
+            return "Sample transcribed text"
+
+    monkeypatch.setattr(pipeline, "probe_media", fake_probe_media)
+    monkeypatch.setattr(pipeline, "stream_vad_chunks", fake_stream_vad_chunks)
+
+    jobs = FakeJobs()
+    model = MockEchoModel()
+    log = FakeLog()
+    upload_root = tmp_path / "upload"
+    upload_root.mkdir()
+    sys_path = upload_root / "sys.wav"
+    mic_path = upload_root / "mic.wav"
+    sys_path.write_bytes(b"wav")
+    mic_path.write_bytes(b"wav")
+
+    run_stt_job(
+        job_id="job-dual",
+        input_paths={"sys": str(sys_path), "mic": str(mic_path)},
+        upload_root=str(upload_root),
+        jobs=jobs,
+        model=model,
+        log=log,
+        sample_rate=16000,
+        chunk_sec=20,
+        diarization=False,
+    )
+
+    progress_events = [data for event, data in jobs.events if event == "progress"]
+    assert len(progress_events) == 2
+    assert progress_events[0]["segment"]["text"] == "[SOURCE:MIC]: Sample transcribed text"
+    assert progress_events[0]["segment"]["source"] == "mic"
+    assert progress_events[1]["segment"]["text"] == "[SOURCE:SYS]: Sample transcribed text"
+    assert progress_events[1]["segment"]["source"] == "sys"
