@@ -51,21 +51,29 @@ def test_demo_flow(page: Page, base_url: str):
     expect(page.locator("#sttProgressText")).to_contain_text("Uploading")
     page.wait_for_timeout(600)
 
+    # Scroll early so both the progress bar at the top and the live text below are in viewport
+    page.wait_for_selector("#sttResult.active", timeout=20000)
+    page.evaluate(
+        "document.getElementById('sttProgress').scrollIntoView({block: 'start', behavior: 'smooth'})"
+    )
+    page.wait_for_timeout(800)
+
+    # Observe live streaming segments appearing in the textarea
+    page.wait_for_function(
+        "() => document.getElementById('sttResultText').value.length > 0",
+        timeout=30000,
+    )
+    page.wait_for_timeout(2000)
+
     # Wait for STT complete
     page.wait_for_function(
         """() => {
             const text = document.getElementById('sttProgressText').textContent;
-            return text.includes('Complete');
+            return text.includes('Complete') || text.includes('100%');
         }""",
         timeout=120000,
     )
-    page.wait_for_timeout(1600)
-
-    # Scroll to show transcribed text
-    page.evaluate(
-        "document.getElementById('sttResult').scrollIntoView({block: 'center', behavior: 'smooth'})"
-    )
-    page.wait_for_timeout(2200)
+    page.wait_for_timeout(1800)
 
     # Toggle transcription view
     page.click("#sttViewContinuous")

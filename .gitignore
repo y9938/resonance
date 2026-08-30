@@ -3,7 +3,6 @@
 !.gitignore
 !.dockerignore
 !.gitmodules
-!.env.example
 
 !Dockerfile
 !pyproject.toml
@@ -14,21 +13,17 @@
 !tts/**
 !core/
 !core/**
-
-!demo-gif.sh
-!justfile
-
-!scripts/
-!scripts/**
-
 !src/
 !src/**
-
 !public/
 !public/**
 
+!.env.example
 !tests/
 !tests/**
+!justfile
+!scripts/
+!scripts/**
 
 **/__pycache__/**
 

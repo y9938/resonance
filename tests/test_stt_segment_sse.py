@@ -2,7 +2,7 @@
 
 import json
 
-from server import StreamEvent
+from core.jobs import StreamEvent
 from stt.pipeline import _segment_text_from_transcribe
 
 

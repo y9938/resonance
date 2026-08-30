@@ -1,4 +1,4 @@
-from server import JobRegistry
+from core.jobs import JobRegistry
 
 
 def test_stt_job_list_summary_includes_batch_metadata() -> None:

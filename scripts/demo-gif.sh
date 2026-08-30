@@ -14,7 +14,7 @@ echo "=== Converting to GIF ==="
 VIDEO_FILE=$(find "test-results" -name "video.webm" -type f | head -1)
 
 ffmpeg -i "$VIDEO_FILE" \
-    -vf "fps=1,scale=1280:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse" \
+    -vf "fps=4,scale=1280:-1:flags=lanczos,split[s0][s1];[s0]palettegen=stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=3:diff_mode=rectangle" \
     -loop 0 demo.gif -y
 
 echo "Created: demo.gif"
