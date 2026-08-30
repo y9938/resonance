@@ -38,6 +38,7 @@ from fastapi import FastAPI, File, UploadFile, HTTPException, Query, Request, Re
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse, PlainTextResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from stt.models import ModelManager
 from stt.pipeline import (
     run_stt_worker,
     save_upload_to_path,
@@ -97,246 +98,8 @@ def cors_allow_origins() -> list[str]:
 
 from core.logging import setup_logging
 
-# -----------------------------------------------------------------------------
-# Logging
-# -----------------------------------------------------------------------------
-
 setup_logging()
 log = logging.getLogger("resonance.server")
-
-
-# -----------------------------------------------------------------------------
-# Model Manager
-# -----------------------------------------------------------------------------
-
-
-class ModelManager:
-    """Lazy model loader. Assumes: single-threaded init, thread-safe after."""
-
-    def __init__(self) -> None:
-        self._stt_gigaam: Any | None = None
-        self._stt_whisper: Any | None = None
-        self._stt_granite: Any | None = None
-        self._tts: Any | None = None
-        self._lock = threading.Lock()
-
-    @property
-    def stt_gigaam_loaded(self) -> bool:
-        return self._stt_gigaam is not None
-
-    @property
-    def stt_whisper_loaded(self) -> bool:
-        return self._stt_whisper is not None
-
-    @property
-    def stt_granite_loaded(self) -> bool:
-        return self._stt_granite is not None
-
-    @property
-    def tts_loaded(self) -> bool:
-        return self._tts is not None
-
-    def stt_gigaam(self) -> Any:
-        with self._lock:
-            if self._stt_gigaam is None:
-                self._stt_gigaam = _load_stt()
-            return self._stt_gigaam
-
-    def stt_whisper(self) -> Any:
-        with self._lock:
-            if self._stt_whisper is None:
-                self._stt_whisper = _load_whisper()
-            return self._stt_whisper
-
-    def stt_granite(self) -> Any:
-        with self._lock:
-            if self._stt_granite is None:
-                self._stt_granite = _load_granite()
-            return self._stt_granite
-
-    def tts(self) -> Any:
-        with self._lock:
-            if self._tts is None:
-                self._tts = _load_tts()
-            return self._tts
-
-
-class GigaAMAdapter:
-    """Wraps GigaAM for True Zero-I/O in-RAM tensor inference without disk operations."""
-
-    def __init__(self, model: Any) -> None:
-        self._model = model
-
-    def transcribe(self, audio: Any) -> str:
-        import torch
-        import numpy as np
-
-        # Domain Invariant: True Zero-I/O RAM pipeline bypassing file creation and wrapper threshold
-        if isinstance(audio, np.ndarray):
-            wav = torch.from_numpy(audio).to(self._model._device).to(self._model._dtype)
-            if wav.ndim == 1:
-                wav = wav.unsqueeze(0)
-            length = torch.tensor([wav.shape[-1]], device=self._model._device)
-        else:
-            wav, length = self._model.prepare_wav(str(audio))
-
-        with torch.inference_mode():
-            encoded, encoded_len = self._model.forward(wav, length)
-            text, _ = self._model._decode(encoded, encoded_len, length, False)[0]
-        return text
-
-
-def _load_stt() -> GigaAMAdapter:
-    log.info("Loading STT model (GigaAM-v3)...")
-    import gigaam
-
-    device = os.getenv("DEVICE", "cpu")
-    model = gigaam.load_model("v3_e2e_ctc", device=device)
-    params = sum(p.numel() for p in model.parameters()) / 1e6
-    log.info(f"STT model loaded: {params:.1f}M parameters")
-    return GigaAMAdapter(model)
-
-
-class WhisperAdapter:
-    """Wraps WhisperModel to match GigaAM's transcribe(path) -> str interface."""
-
-    def __init__(self, model: Any, beam_size: int = 5) -> None:
-        self._model = model
-        self._beam_size = beam_size
-
-    def transcribe(self, audio: np.ndarray) -> str:
-        segments, _ = self._model.transcribe(audio, beam_size=self._beam_size)
-        return " ".join(seg.text.strip() for seg in segments).strip()
-
-
-def _load_whisper() -> WhisperAdapter:
-    log.info("Loading STT model (Distil-Whisper-v3)...")
-    from faster_whisper import WhisperModel
-
-    device = os.getenv("DEVICE", "cpu")
-    if device.startswith("cuda"):
-        ct2_device = "cuda"
-        device_index = 0
-        if ":" in device:
-            try:
-                device_index = int(device.split(":")[1])
-            except ValueError:
-                pass
-        compute_type = "float16"
-    else:
-        ct2_device = "cpu"
-        device_index = 0
-        compute_type = "int8"
-
-    kwargs = {
-        "device": ct2_device,
-        "compute_type": compute_type,
-    }
-    if device_index > 0:
-        kwargs["device_index"] = device_index
-
-    model = WhisperModel(
-        "Systran/faster-distil-whisper-large-v3",
-        **kwargs
-    )
-    log.info(f"Whisper model loaded: device={ct2_device}, device_index={device_index}, compute_type={compute_type}")
-    return WhisperAdapter(model)
-
-
-class GraniteAdapter:
-    """Wraps ibm-granite/granite-speech-4.1-2b-plus model for inference."""
-
-    def __init__(self, model: Any, processor: Any, device: str) -> None:
-        self._model = model
-        self._processor = processor
-        self._device = device
-
-    def transcribe(self, audio: np.ndarray, diarization: bool = False) -> str:
-        import torch
-
-        waveform = torch.from_numpy(audio)
-        if waveform.ndim == 1:
-            waveform = waveform.unsqueeze(0)
-        elif waveform.ndim == 2 and waveform.shape[0] > 1:
-            waveform = torch.mean(waveform, dim=0, keepdim=True)
-
-        audio_input = waveform.squeeze().numpy()
-
-        if diarization:
-            prompt = "<|audio|> Speaker attribution: Transcribe and denote who is speaking by adding [Speaker 1]: and [Speaker 2]: tags before speaker turns."
-        else:
-            prompt = "<|audio|> can you transcribe the speech into a written format?"
-
-        chat = [{"role": "user", "content": prompt}]
-        prompt_text = self._processor.tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
-
-        inputs = self._processor(
-            text=prompt_text,
-            audio=audio_input,
-            sampling_rate=16000,
-            return_tensors="pt"
-        )
-        inputs = {k: v.to(self._device) if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
-
-        if "input_features" in inputs:
-            inputs["input_features"] = inputs["input_features"].to(self._model.dtype)
-
-        with torch.no_grad():
-            generated_ids = self._model.generate(
-                **inputs,
-                max_new_tokens=2000
-            )
-
-        if "input_ids" in inputs:
-            input_len = inputs["input_ids"].shape[1]
-            new_tokens = generated_ids[0][input_len:]
-        else:
-            new_tokens = generated_ids[0]
-
-        transcription = self._processor.tokenizer.decode(new_tokens, skip_special_tokens=True)
-        return transcription.strip()
-
-
-def _load_granite() -> GraniteAdapter:
-    log.info("Loading STT model (IBM Granite Speech 4.1 Plus)...")
-    from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
-    import torch
-
-    device = os.getenv("DEVICE", "cpu")
-    model_id = "ibm-granite/granite-speech-4.1-2b-plus"
-
-    processor = AutoProcessor.from_pretrained(model_id)
-
-    if device.startswith("cuda"):
-        torch_dtype = torch.bfloat16
-    else:
-        torch_dtype = torch.float32
-
-    model = AutoModelForSpeechSeq2Seq.from_pretrained(
-        model_id,
-        dtype=torch_dtype,
-    ).to(device)
-
-    log.info(f"Granite model loaded: device={device}, dtype={torch_dtype}")
-    return GraniteAdapter(model, processor, device)
-
-
-def _load_tts() -> Any:
-    log.info("Loading TTS model (Silero v5_cis_base)...")
-
-    device = os.getenv("DEVICE", "cpu")
-
-    model, _ = torch.hub.load(
-        "snakers4/silero-models",
-        model="silero_tts",
-        language="ru",
-        speaker="v5_cis_base",
-        trust_repo=True,
-    )
-    model.to(torch.device(device))
-    log.info("TTS model loaded")
-    return model
-
 
 models = ModelManager()
 tts_service = TtsService(
@@ -856,12 +619,7 @@ async def stop_system_audio(
         model=capture["model_name"],
     )
 
-    if capture["model_name"] == "granite":
-        resolved_model = models.stt_granite()
-    elif capture["model_name"] == "whisper":
-        resolved_model = models.stt_whisper()
-    else:
-        resolved_model = models.stt_gigaam()
+    resolved_model = models.get_stt_model(capture["model_name"])
 
     # Find all generated wav files in tmp_dir
     import glob
@@ -920,12 +678,7 @@ async def start_stt_job(
         else:
             model_name = "whisper"
 
-    if model_name == "granite":
-        resolved_model = models.stt_granite()
-    elif model_name == "whisper":
-        resolved_model = models.stt_whisper()
-    else:
-        resolved_model = models.stt_gigaam()
+    resolved_model = models.get_stt_model(model_name)
 
     tmp_dir = tempfile.mkdtemp()
     audio_path = os.path.join(tmp_dir, "input")

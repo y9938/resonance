@@ -1,13 +1,16 @@
 import os
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
+
 import pytest
-from server import _load_whisper, WhisperAdapter, ModelManager, list_models
+
+from server import list_models
+from stt.models import ModelManager, WhisperAdapter, load_whisper
 
 
 def test_load_whisper_cuda():
     with patch.dict(os.environ, {"DEVICE": "cuda"}):
         with patch("faster_whisper.WhisperModel") as MockModel:
-            _load_whisper()
+            load_whisper()
             MockModel.assert_called_once_with(
                 "Systran/faster-distil-whisper-large-v3",
                 device="cuda",
@@ -18,7 +21,7 @@ def test_load_whisper_cuda():
 def test_load_whisper_cpu():
     with patch.dict(os.environ, {"DEVICE": "cpu"}):
         with patch("faster_whisper.WhisperModel") as MockModel:
-            _load_whisper()
+            load_whisper()
             MockModel.assert_called_once_with(
                 "Systran/faster-distil-whisper-large-v3",
                 device="cpu",
@@ -30,7 +33,7 @@ def test_load_whisper_mps_falls_back_to_cpu():
     """MPS is not supported by CTranslate2; must be remapped to cpu+int8."""
     with patch.dict(os.environ, {"DEVICE": "mps"}):
         with patch("faster_whisper.WhisperModel") as MockModel:
-            _load_whisper()
+            load_whisper()
             MockModel.assert_called_once_with(
                 "Systran/faster-distil-whisper-large-v3",
                 device="cpu",
@@ -65,7 +68,7 @@ def test_whisper_adapter_empty_segments():
 
 def test_model_manager_stt_whisper_loads_once():
     """stt_whisper() should only call _load_whisper once (lazy singleton)."""
-    with patch("server._load_whisper") as mock_load:
+    with patch("stt.models.manager.load_whisper") as mock_load:
         mock_load.return_value = MagicMock()
         mgr = ModelManager()
         assert mgr.stt_whisper_loaded is False

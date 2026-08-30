@@ -1,8 +1,9 @@
 from unittest.mock import MagicMock
-import torch
-import numpy as np
 
-from server import GraniteAdapter
+import numpy as np
+import torch
+
+from stt.models import GraniteAdapter
 
 def test_granite_adapter_transcribe_standard():
     mock_model = MagicMock()
