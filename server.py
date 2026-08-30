@@ -71,6 +71,13 @@ class Config:
     ENABLE_SYSTEM_AUDIO: bool = os.getenv(
         "RESONANCE_ENABLE_SYSTEM_AUDIO", "true"
     ).lower() in {"true", "1", "yes"}
+    LOG_LEVEL: str = os.getenv(
+        "RESONANCE_LOG_LEVEL", os.getenv("LOG_LEVEL", "INFO")
+    ).upper()
+    LOG_TO_FILE: bool = os.getenv(
+        "RESONANCE_LOG_TO_FILE", "0"
+    ).lower() in {"1", "true", "yes"}
+    LOG_FILE: str | None = os.getenv("RESONANCE_LOG_FILE")
 TTS_OUTPUT_DIR = Path(tempfile.gettempdir()) / "resonance-tts"
 STT_WORKER_SEMAPHORE = threading.BoundedSemaphore(
     max(1, Config.STT_MAX_CONCURRENT_JOBS)
@@ -88,33 +95,14 @@ def cors_allow_origins() -> list[str]:
     return origins if origins else [default_origin]
 
 
+from core.logging import setup_logging
+
 # -----------------------------------------------------------------------------
 # Logging
 # -----------------------------------------------------------------------------
 
-
-def setup_logging() -> logging.Logger:
-    logger = logging.getLogger("resonance")
-    logger.setLevel(logging.INFO)
-
-    if not logger.handlers:
-        handler = logging.StreamHandler(sys.stdout)
-        handler.setFormatter(
-            logging.Formatter(
-                "%(asctime)s | %(levelname)-8s | %(message)s", datefmt="%H:%M:%S"
-            )
-        )
-        logger.addHandler(handler)
-
-    logger.propagate = False
-    return logger
-
-
-log = setup_logging()
-
-# Disable uvicorn access logs
-logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
-logging.getLogger("uvicorn.access").disabled = True
+setup_logging()
+log = logging.getLogger("resonance.server")
 
 
 # -----------------------------------------------------------------------------

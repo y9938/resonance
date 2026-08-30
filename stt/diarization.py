@@ -22,7 +22,7 @@ try:
 except Exception:
     _SSL_CONTEXT = None
 
-log = logging.getLogger("resonance")
+log = logging.getLogger("resonance.stt.diarization")
 
 # Domain Invariant: Both models are commercially permissible (MIT and Apache 2.0).
 SEGMENTATION_URL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2"

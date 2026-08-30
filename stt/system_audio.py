@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import abc
+import logging
 import mmap
 import os
 import shutil
@@ -11,6 +12,8 @@ from collections.abc import Generator
 from typing import Any
 
 import numpy as np
+
+log = logging.getLogger("resonance.stt.system_audio")
 
 
 class SystemAudioStrategy(abc.ABC):
@@ -160,8 +163,6 @@ class SoundcardSystemAudioStrategy(SystemAudioStrategy):
         self.mic_thread = None
 
     def _sys_worker(self) -> None:
-        import logging
-        log = logging.getLogger("resonance")
         hr = -1
         if sys.platform.startswith("win"):
             try:
@@ -191,8 +192,6 @@ class SoundcardSystemAudioStrategy(SystemAudioStrategy):
                     log.debug(f"Windows system audio COM uninit note: {e}")
 
     def _mic_worker(self) -> None:
-        import logging
-        log = logging.getLogger("resonance")
         hr = -1
         if sys.platform.startswith("win"):
             try:

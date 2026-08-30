@@ -80,6 +80,12 @@ On **macOS** you can build `Resonance.app` menu bar app via:
 just build-macos
 ```
 
+and if you want to run from terminal with live logs:
+
+```bash
+./build/Resonance.app/Contents/MacOS/Resonance
+```
+
 ## Note
 
 Open `http://localhost:${RESONANCE_PORT}` (default: http://localhost:8000)

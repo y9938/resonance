@@ -31,7 +31,7 @@ dev-deps:
 
 # Run server locally
 dev:
-    uv run uvicorn server:app --reload --reload-dir server.py --reload-dir stt --reload-dir tts --reload-dir public --port {{RESONANCE_PORT}}
+    uv run uvicorn server:app --reload --reload-dir server.py --reload-dir core --reload-dir stt --reload-dir tts --reload-dir public --port {{RESONANCE_PORT}}
 
 # Run pytest
 test *ARGS:
@@ -39,7 +39,7 @@ test *ARGS:
 
 # Run ruff
 check *ARGS:
-    uv run ruff check server.py tests/ {{ARGS}}
+    uv run ruff check server.py core/ stt/ tts/ tests/ {{ARGS}}
 
 # Build image
 build *ARGS:

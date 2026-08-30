@@ -2,5 +2,6 @@
 !public/
 !pyproject.toml
 !server.py
+!core/
 !stt/
 !tts/

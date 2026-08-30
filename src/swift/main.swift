@@ -71,6 +71,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem.separator())
 
         menu.addItem(createMenuItem(title: "Settings", action: #selector(openSettings), key: ",", symbolName: "gearshape"))
+        menu.addItem(createMenuItem(title: "Show Logs", action: #selector(showLogs), key: "l", symbolName: "doc.text"))
         menu.addItem(createMenuItem(title: "Restart Backend", action: #selector(restartBackend), key: "r", symbolName: "arrow.clockwise"))
 
         menu.addItem(NSMenuItem.separator())
@@ -127,6 +128,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         task.launchPath = "/usr/bin/open"
         task.arguments = ["-e", envPath] // -e forces opening in TextEdit
         try? task.run()
+    }
+
+    @objc func showLogs() {
+        let customLogFile = readEnvValue("RESONANCE_LOG_FILE", fallback: "")
+        if !customLogFile.isEmpty {
+            let expandedPath = (customLogFile as NSString).expandingTildeInPath
+            let logURL = URL(fileURLWithPath: expandedPath)
+            let logDir = logURL.deletingLastPathComponent()
+            try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
+            NSWorkspace.shared.open(logDir)
+        } else {
+            let logDir = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Logs/Resonance")
+            try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
+            NSWorkspace.shared.open(logDir)
+        }
     }
 
     private func terminateProcessGroup(_ process: Process) {

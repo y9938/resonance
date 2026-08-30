@@ -12,6 +12,8 @@
 !stt/**
 !tts/
 !tts/**
+!core/
+!core/**
 
 !demo-gif.sh
 !justfile

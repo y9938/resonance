@@ -18,7 +18,7 @@ torch.set_num_threads(_INITIAL_PYTORCH_THREADS)
 
 
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("resonance.stt.stream_vad")
 
 # Assumes: Silero VAD strictly requires 16000 Hz.
 _SAMPLE_RATE = 16000
