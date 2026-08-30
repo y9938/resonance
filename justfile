@@ -1,5 +1,8 @@
 set dotenv-load
 set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
+set windows-shell := ["powershell.exe", "-c"]
+
+export PYTHONUTF8 := "1"
 
 IMAGE_NAME := "resonance"
 IMAGE_TAG  := env("IMAGE_TAG", "latest")
@@ -9,10 +12,13 @@ IMAGE := if DEVICE == "cuda" { IMAGE_NAME + ":gpu-" + IMAGE_TAG } else { IMAGE_N
 TAR_FILE := if DEVICE == "cuda" { IMAGE_NAME + "_gpu_" + IMAGE_TAG + ".tar.gz" } else { IMAGE_NAME + "_" + IMAGE_TAG + ".tar.gz" }
 
 DEVICE := env("DEVICE", "cpu")
-PYTORCH_BACKEND := env("PYTORCH_BACKEND")
+PYTORCH_BACKEND := env("PYTORCH_BACKEND", "")
 GPU_FLAGS := if DEVICE == "cuda" { "--gpus all" } else { "" }
 
 RESONANCE_PORT := env("RESONANCE_PORT", "8000")
+
+TORCH_BACKEND_ARG := if PYTORCH_BACKEND != "" { "--torch-backend=" + PYTORCH_BACKEND } else { "" }
+BUILD_ARG := if PYTORCH_BACKEND != "" { "--build-arg PYTORCH_BACKEND=" + PYTORCH_BACKEND } else { "" }
 
 # Show available recipes
 default:
@@ -20,40 +26,29 @@ default:
 
 # Install dev dependencies
 dev-deps:
-    @command -v uv >/dev/null 2>&1 || { echo "uv not found. Install: https://docs.astral.sh/uv/getting-started/installation/"; exit 1; }
-    @[[ -d .venv ]] || uv venv
-    @if [[ -n "{{PYTORCH_BACKEND}}" ]]; then \
-        uv pip install -r pyproject.toml --group dev --torch-backend={{PYTORCH_BACKEND}}; \
-    else \
-        uv pip install -r pyproject.toml --group dev; \
-    fi
-    @echo "Dev env ready. Start server with: just dev"
+    {{ if path_exists(".venv") == "true" { "" } else { "uv venv" } }}
+    uv pip install -r pyproject.toml --group dev {{TORCH_BACKEND_ARG}}
 
 # Run server locally
 dev:
-    @command -v ffmpeg >/dev/null 2>&1 || { echo "ffmpeg not found."; exit 1; }
-    exec .venv/bin/uvicorn server:app --reload --reload-dir server.py --reload-dir stt --reload-dir tts --reload-dir public --port {{RESONANCE_PORT}}
+    uv run uvicorn server:app --reload --reload-dir server.py --reload-dir stt --reload-dir tts --reload-dir public --port {{RESONANCE_PORT}}
 
 # Run pytest
-test:
-    .venv/bin/pytest tests/ --base-url "http://localhost:{{RESONANCE_PORT}}"
+test *ARGS:
+    uv run pytest tests/ --base-url "http://localhost:{{RESONANCE_PORT}}" {{ARGS}}
 
 # Run ruff
-check:
-    .venv/bin/ruff check server.py tests/
+check *ARGS:
+    uv run ruff check server.py tests/ {{ARGS}}
 
 # Build image
 build *ARGS:
-    @if [[ -n "{{PYTORCH_BACKEND}}" ]]; then \
-        docker build --build-arg PYTORCH_BACKEND={{PYTORCH_BACKEND}} -t {{IMAGE}} {{ARGS}} .; \
-    else \
-        docker build -t {{IMAGE}} {{ARGS}} .; \
-    fi
+    docker build {{BUILD_ARG}} -t {{IMAGE}} {{ARGS}} .
 
-HF_CACHE_DIR        := env("HF_HOME", env("HOME", "~") + "/.cache/huggingface")
-TORCH_CACHE_DIR     := env("TORCH_HOME", env("HOME", "~") + "/.cache/torch")
-GIGAAM_CACHE_DIR    := env("GIGAAM_CACHE_DIR", env("HOME", "~") + "/.cache/gigaam")
-RESONANCE_CACHE_DIR := env("RESONANCE_CACHE_DIR", env("HOME", "~") + "/.cache/resonance")
+HF_CACHE_DIR        := env("HF_HOME", env("HOME", env("USERPROFILE", "~")) + "/.cache/huggingface")
+TORCH_CACHE_DIR     := env("TORCH_HOME", env("HOME", env("USERPROFILE", "~")) + "/.cache/torch")
+GIGAAM_CACHE_DIR    := env("GIGAAM_CACHE_DIR", env("HOME", env("USERPROFILE", "~")) + "/.cache/gigaam")
+RESONANCE_CACHE_DIR := env("RESONANCE_CACHE_DIR", env("HOME", env("USERPROFILE", "~")) + "/.cache/resonance")
 
 # Run container
 run *ARGS:

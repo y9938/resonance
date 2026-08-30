@@ -38,25 +38,46 @@ just run
 
 ## Local
 
-Deps: `just`, `uv`, `ffmpeg`
+### Deps
 
-### macOS
+- [**FFmpeg**](https://ffmpeg.org/download.html) — audio decoding and streaming backend
+- [**uv**](https://docs.astral.sh/uv/getting-started/installation/) — fast Python package and project manager
+- [**just**](https://github.com/casey/just#installation) — command runner
+
+install it on your platform
+
+#### macOS
 
 ```bash
 ./scripts/install-macos.sh
-just build-macos
 ```
 
-This creates `.env` if missing, configures the device, installs dev dependencies, and builds `Resonance.app` menu bar app.
+This creates `.env` if missing, configures the device, installs dev dependencies
 
-### Linux
+#### Linux
 
-1. Install deps
-2. Run:
+manually choose your method
+
+#### Windows
+
+```powershell
+winget install "FFmpeg (Essentials Build)"
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+uv tool install rust-just
+winget install Microsoft.VCRedist.2015+.x64 -e
+```
+
+### Run
 
 ```bash
 just dev-deps
 just dev
+```
+
+On **macOS** you can build `Resonance.app` menu bar app via:
+
+```bash
+just build-macos
 ```
 
 ## Note
@@ -79,6 +100,8 @@ Models are loaded lazily on first real STT/TTS use. Startup does not pre-downloa
 | `/api/jobs/{job_id}/events` | GET | Stream job events (SSE, session-scoped) |
 | `/api/jobs/{job_id}/cancel` | POST | Cancel active job (session-scoped) |
 | `/api/stream/download` | GET | Download TTS audio |
+| `/api/system-audio/start` | POST | Start internal system & microphone audio capture |
+| `/api/system-audio/stop` | POST | Stop capture and launch interleaved dual-stream STT job |
 
 ## F5 Recovery Model
 

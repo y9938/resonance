@@ -6,7 +6,7 @@ ZH_LOCALE = Path(__file__).resolve().parent.parent / "public" / "locales" / "zh-
 
 
 def test_stt_batch_frontend_contract_exists() -> None:
-    html = INDEX_HTML.read_text()
+    html = INDEX_HTML.read_text(encoding="utf-8")
 
     assert '<input type="file" id="sttFileInput" accept="audio/*,video/*" multiple>' in html
     assert 'id="sttBatchPanel"' in html
@@ -17,8 +17,8 @@ def test_stt_batch_frontend_contract_exists() -> None:
 
 
 def test_stt_batch_ui_copy_and_shape_regressions() -> None:
-    html = INDEX_HTML.read_text()
-    zh = ZH_LOCALE.read_text()
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    zh = ZH_LOCALE.read_text(encoding="utf-8")
 
     assert "jobsTypeStt: 'STT'" in html
     assert "jobsTypeTts: 'TTS'" in html
@@ -34,7 +34,7 @@ def test_stt_batch_ui_copy_and_shape_regressions() -> None:
 
 
 def test_stt_batch_followup_ui_contracts() -> None:
-    html = INDEX_HTML.read_text()
+    html = INDEX_HTML.read_text(encoding="utf-8")
 
     assert 'id="sttBatchCancelCurrent"' in html
     assert 'id="sttBatchDownloadAll"' in html
@@ -53,9 +53,9 @@ def test_stt_batch_followup_ui_contracts() -> None:
 
 
 def test_stt_language_dropdown_static() -> None:
-    html = INDEX_HTML.read_text()
-    ru = RU_LOCALE.read_text()
-    zh = ZH_LOCALE.read_text()
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    ru = RU_LOCALE.read_text(encoding="utf-8")
+    zh = ZH_LOCALE.read_text(encoding="utf-8")
 
     assert 'id="sttLanguage"' in html
     assert 'sttLanguageLabel' in html
@@ -74,7 +74,7 @@ def test_stt_language_dropdown_static() -> None:
 
 
 def test_stt_language_js_contracts() -> None:
-    html = INDEX_HTML.read_text()
+    html = INDEX_HTML.read_text(encoding="utf-8")
 
     assert 'resonance_sttLanguage' in html
     assert 'els.sttLanguage' in html
@@ -82,9 +82,9 @@ def test_stt_language_js_contracts() -> None:
 
 
 def test_system_audio_locale_contracts() -> None:
-    html = INDEX_HTML.read_text()
-    ru = RU_LOCALE.read_text()
-    zh = ZH_LOCALE.read_text()
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    ru = RU_LOCALE.read_text(encoding="utf-8")
+    zh = ZH_LOCALE.read_text(encoding="utf-8")
 
     sys_keys = [
         'sttSysTitle',

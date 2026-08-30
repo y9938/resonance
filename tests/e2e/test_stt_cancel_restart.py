@@ -18,7 +18,7 @@ def test_cancel_restart_shows_progress(page: Page, base_url: str):
     page.wait_for_selector("#sttDropzone")
 
     audio_bytes = AUDIO_FILE.read_bytes()
-    text_content = TEXT_FILE.read_text()
+    text_content = TEXT_FILE.read_text(encoding="utf-8")
 
     page.evaluate(
         f"""
