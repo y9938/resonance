@@ -1,32 +1,23 @@
-*
+/*
 
-!.gitignore
-!.dockerignore
-!.gitmodules
+!/.gitignore
+!/.dockerignore
 
-!Dockerfile
-!pyproject.toml
-!server.py
-!stt/
-!stt/**
-!tts/
-!tts/**
-!core/
-!core/**
-!src/
-!src/**
-!public/
-!public/**
+!/Dockerfile
+!/pyproject.toml
+!/server.py
+!/stt/
+!/tts/
+!/core/
+!/src/
+!/public/
 
-!.env.example
-!tests/
-!tests/**
-!justfile
-!scripts/
-!scripts/**
+!/.env.example
+!/tests/
+!/justfile
+!/scripts/
 
 **/__pycache__/**
 
-!README.md
-!LICENSE
-!media
+!/README.md
+!/LICENSE
