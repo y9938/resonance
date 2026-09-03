@@ -1,22 +1,22 @@
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Tuple
 
 import numpy as np
+import onnxruntime as ort
 import torch
 
 # Workaround: silero_vad package import mutates global PyTorch state via torch.set_num_threads(1).
 # We preserve PyTorch's self-calibrated thread count to maintain optimal multi-core performance for ASR.
 # Assumes: Silero VAD (ONNX) preserves single-threaded execution via internal SessionOptions.
 _INITIAL_PYTORCH_THREADS = torch.get_num_threads()
-from silero_vad import load_silero_vad
+import silero_vad
 torch.set_num_threads(_INITIAL_PYTORCH_THREADS)
-
-
 
 logger = logging.getLogger("resonance.stt.stream_vad")
 
@@ -24,16 +24,55 @@ logger = logging.getLogger("resonance.stt.stream_vad")
 _SAMPLE_RATE = 16000
 _VAD_WINDOW_SAMPLES = 512
 _WINDOW_BYTES = _VAD_WINDOW_SAMPLES * 2  # s16le: 2 bytes per sample
+_CONTEXT_SIZE = 64  # 4ms context prefix at 16kHz for Silero CNN boundary alignment
 
-_VAD_MODEL = None
+_SHARED_VAD_ENGINE: StatelessSileroVAD | None = None
 
 
-def _get_vad_model():
-    global _VAD_MODEL
-    if _VAD_MODEL is None:
-        logger.info("Initializing Silero VAD (ONNX)...")
-        _VAD_MODEL = load_silero_vad(onnx=True)
-    return _VAD_MODEL
+@dataclass
+class VADStreamState:
+    # Invariant: Recurrent tensor layout strictly matching Silero ONNX input: (2, batch_size=1, 128)
+    state: np.ndarray = field(default_factory=lambda: np.zeros((2, 1, 128), dtype=np.float32))
+    context: np.ndarray = field(default_factory=lambda: np.zeros((1, _CONTEXT_SIZE), dtype=np.float32))
+
+    def reset(self) -> None:
+        self.state.fill(0)
+        self.context.fill(0)
+
+
+class StatelessSileroVAD:
+    """Thread-safe, stateless Silero VAD wrapper sharing a single C++ ONNX Runtime session."""
+
+    def __init__(self, onnx_path: str) -> None:
+        # Assumes: SessionOptions single-threaded per session to prevent CPU thread contention under multi-stream load.
+        opts = ort.SessionOptions()
+        opts.inter_op_num_threads = 1
+        opts.intra_op_num_threads = 1
+        opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        self._session = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"], sess_options=opts)
+        self._sr = np.array(16000, dtype=np.int64)
+
+    def process_frame(self, stream_state: VADStreamState, frame_512: np.ndarray) -> float:
+        """
+        Caller obligation: frame_512 must be a 1D float32 array with strictly 512 samples.
+        Thread-safety: InferenceSession.run() is reentrant; all mutations are strictly confined to stream_state.
+        """
+        x = np.concatenate([stream_state.context, frame_512.reshape(1, _VAD_WINDOW_SAMPLES)], axis=1)
+        ort_inputs = {"input": x, "state": stream_state.state, "sr": self._sr}
+        out, new_state = self._session.run(None, ort_inputs)
+
+        stream_state.state = new_state
+        stream_state.context = x[:, -_CONTEXT_SIZE:]
+        return float(out[0, 0])
+
+
+def get_shared_vad_engine() -> StatelessSileroVAD:
+    global _SHARED_VAD_ENGINE
+    if _SHARED_VAD_ENGINE is None:
+        logger.info("Initializing Stateless Silero VAD (ONNX)...")
+        onnx_path = os.path.join(os.path.dirname(silero_vad.__file__), "data", "silero_vad.onnx")
+        _SHARED_VAD_ENGINE = StatelessSileroVAD(onnx_path)
+    return _SHARED_VAD_ENGINE
 
 
 @dataclass
@@ -49,9 +88,11 @@ def _stream_vad_utterances(
     silence_threshold: float = 0.5,
     min_silence_duration: float = 0.128,
     max_speech_duration: float = 24.0,
+    vad_engine: StatelessSileroVAD | None = None,
 ) -> Iterator[Utterance]:
-    model = _get_vad_model()
-    model.reset_states()
+    engine = vad_engine or get_shared_vad_engine()
+    # Invariant: Each stream owns an isolated recurrent state preventing cross-stream memory leakage.
+    stream_state = VADStreamState()
 
     cmd = [
         "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
@@ -87,7 +128,7 @@ def _stream_vad_utterances(
                 total_samples_read += _VAD_WINDOW_SAMPLES
 
                 window_f32 = window_s16.astype(np.float32) / 32768.0
-                prob = model(torch.from_numpy(window_f32).unsqueeze(0), sample_rate).item()
+                prob = engine.process_frame(stream_state, window_f32)
 
                 if prob >= silence_threshold:
                     if not is_speech:
