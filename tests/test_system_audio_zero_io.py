@@ -132,24 +132,31 @@ async def test_server_system_audio_lifecycle_pure_in_ram(monkeypatch) -> None:
     # Start capture
     resp = client.post("/api/system-audio/start?language=ru&model=gigaam")
     assert resp.status_code == 200
-    capture_id = resp.json()["capture_id"]
+    assert "capture_id" not in resp.json()  # Zero-legacy: capture_id completely removed
+    job_id = resp.json()["job_id"]
 
     # Idempotent re-attach test (e.g. page reload or second tab)
     resp_dupe = client.post("/api/system-audio/start?language=ru&model=gigaam")
     assert resp_dupe.status_code == 200
-    assert resp_dupe.json()["capture_id"] == capture_id
+    assert resp_dupe.json()["job_id"] == job_id
     assert resp_dupe.json().get("resumed") is True
 
     await asyncio.sleep(0.05)
 
     # Stop capture
-    stop_resp = client.post(f"/api/system-audio/stop?capture_id={capture_id}")
+    stop_resp = client.post(f"/api/system-audio/stop?job_id={job_id}")
     assert stop_resp.status_code == 200
-    assert "job_id" in stop_resp.json()
+    assert stop_resp.json()["job_id"] == job_id
 
     # Second stop should fail fast with 404 (already stopped)
-    stop_resp_again = client.post(f"/api/system-audio/stop?capture_id={capture_id}")
+    stop_resp_again = client.post(f"/api/system-audio/stop?job_id={job_id}")
     assert stop_resp_again.status_code == 404
+
+    # Verify context tail snapshot endpoint
+    tail_resp = client.get("/api/context/tail?lines=3")
+    assert tail_resp.status_code == 200
+    assert "lines" in tail_resp.json()
+    assert "combined" in tail_resp.json()
 
 def test_decode_media_bytes_to_audio_memory_buffer() -> None:
     import io

@@ -128,7 +128,7 @@ def diarize_audio(
 
     diarizer = get_diarizer()
 
-    def progress_callback(processed: int, total: int) -> int:
+    def progress_callback(_processed: int, _total: int) -> int:
         if cancel_check and cancel_check():
             raise RuntimeError("STT job cancelled")
         return 0

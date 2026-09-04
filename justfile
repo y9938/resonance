@@ -48,16 +48,18 @@ build *ARGS:
 HF_CACHE_DIR        := env("HF_HOME", env("HOME", env("USERPROFILE", "~")) + "/.cache/huggingface")
 TORCH_CACHE_DIR     := env("TORCH_HOME", env("HOME", env("USERPROFILE", "~")) + "/.cache/torch")
 GIGAAM_CACHE_DIR    := env("GIGAAM_CACHE_DIR", env("HOME", env("USERPROFILE", "~")) + "/.cache/gigaam")
+SHERPA_CACHE_DIR    := env("SHERPA_HOME", env("HOME", env("USERPROFILE", "~")) + "/.cache/sherpa")
 RESONANCE_CACHE_DIR := env("RESONANCE_CACHE_DIR", env("HOME", env("USERPROFILE", "~")) + "/.cache/resonance")
 
 # Run container
 run *ARGS:
-    @mkdir -p "{{HF_CACHE_DIR}}" "{{TORCH_CACHE_DIR}}" "{{GIGAAM_CACHE_DIR}}" "{{RESONANCE_CACHE_DIR}}"
+    @mkdir -p "{{HF_CACHE_DIR}}" "{{TORCH_CACHE_DIR}}" "{{GIGAAM_CACHE_DIR}}" "{{SHERPA_CACHE_DIR}}" "{{RESONANCE_CACHE_DIR}}"
     docker run -it --rm --name resonance {{GPU_FLAGS}} \
         --env-file .env \
         -v "{{HF_CACHE_DIR}}":/home/resonance/.cache/huggingface \
         -v "{{TORCH_CACHE_DIR}}":/home/resonance/.cache/torch \
         -v "{{GIGAAM_CACHE_DIR}}":/home/resonance/.cache/gigaam \
+        -v "{{SHERPA_CACHE_DIR}}":/home/resonance/.cache/sherpa \
         -v "{{RESONANCE_CACHE_DIR}}":/home/resonance/.cache/resonance \
         -e RESONANCE_PORT={{RESONANCE_PORT}} \
         -p {{RESONANCE_PORT}}:{{RESONANCE_PORT}} \

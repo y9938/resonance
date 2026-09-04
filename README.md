@@ -100,6 +100,7 @@ Models are loaded lazily on first real STT/TTS use. Startup does not pre-downloa
 | `/api/health` | GET | Health check |
 | `/api/config` | GET | Public configuration including TTS `language -> voice` catalog |
 | `/api/models` | GET | List backend/model status plus TTS catalog |
+| `/api/context/tail` | GET | Get recent recognized conversation context for active session |
 | `/api/jobs` | GET | List current session jobs (compact DTO); query `limit` (default 60), `offset`; JSON includes `has_more`, `next_offset` |
 | `/api/jobs/stt` | POST | Start STT job, returns `job_id` |
 | `/api/jobs/tts` | POST | Start TTS job with `text`, `language`, `voice_id`; returns `job_id` |
@@ -109,6 +110,13 @@ Models are loaded lazily on first real STT/TTS use. Startup does not pre-downloa
 | `/api/stream/download` | GET | Download TTS audio |
 | `/api/system-audio/start` | POST | Start internal system & microphone audio capture |
 | `/api/system-audio/stop` | POST | Stop capture and launch interleaved dual-stream STT job |
+
+## IPC
+
+Local socket for desktop integration:
+- POSIX: `$XDG_RUNTIME_DIR/resonance.sock` (fallback `~/.cache/resonance/ipc.sock`)
+- Windows: `\\.\pipe\resonance-ipc`
+- Custom path: `RESONANCE_IPC_PATH` in `.env`
 
 ## F5 Recovery Model
 

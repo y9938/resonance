@@ -17,7 +17,6 @@ import os
 import secrets
 import tempfile
 import threading
-import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
@@ -48,7 +47,6 @@ from tts.service import TtsService
 class Config:
     SR: int = int(os.getenv("RESONANCE_SR", "16000"))
     CHUNK_SEC: int = int(os.getenv("RESONANCE_CHUNK_SEC", "20"))
-    OVERLAP_SEC: int = int(os.getenv("RESONANCE_OVERLAP_SEC", "2"))
     TTS_SR: int = int(os.getenv("RESONANCE_TTS_SR", "48000"))
     TTS_VOICE_ID: str = os.getenv("RESONANCE_TTS_VOICE_ID", "ru_roman")
     TTS_MAX_CHARS: int = int(os.getenv("RESONANCE_TTS_MAX_CHARS", "600"))
@@ -147,10 +145,25 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
 
     await asyncio.to_thread(tts_service.sweep_stale_files, Config.TTS_FILE_TTL_SEC)
+
+    from core.ipc import create_local_ipc_server
+    ipc_server = create_local_ipc_server()
+    try:
+        await ipc_server.start()
+    except Exception as exc:
+        log.warning(f"Failed to start local IPC server: {exc}")
+        ipc_server = None
+
     log.info("Server ready.")
     try:
         yield
     finally:
+        if ipc_server is not None:
+            try:
+                await ipc_server.stop()
+            except Exception as exc:
+                log.debug(f"Error stopping IPC server: {exc}")
+
         with system_capture_lock:
             for cap in active_system_captures.values():
                 try:
@@ -233,7 +246,6 @@ async def start_system_audio(
     response: Response,
     language: str | None = Query(default=None),
     model: str | None = Query(default=None),
-    diarization: bool = Query(default=False),
     include_microphone: bool = Query(default=False),
 ) -> dict[str, Any]:
     if not Config.ENABLE_SYSTEM_AUDIO:
@@ -257,41 +269,53 @@ async def start_system_audio(
     else:
         model_name = "gigaam" if resolved_language == "ru" else "whisper"
 
+    session_id = get_or_set_session_id(request, response)
+
     with system_capture_lock:
         # Domain Invariant: Host system loopback is an exclusive hardware singleton.
         # If an active capture is already running (e.g. page reload or multi-tab), reuse existing session.
         if active_system_captures:
-            active_id = next(iter(active_system_captures))
-            log.info(f"System Audio Capture already active: returning existing capture_id={active_id}")
-            return {"capture_id": active_id, "resumed": True}
+            active_job_id = next(iter(active_system_captures))
+            log.info(f"System Audio Capture already active: returning existing job_id={active_job_id}")
+            return {"job_id": active_job_id, "resumed": True}
 
-        capture_id = str(uuid.uuid4())
+        rec = jobs.create(
+            "stt",
+            session_id,
+            {"filename": "System Audio Capture.wav", "source": "system_audio"},
+            language=resolved_language,
+            model=model_name,
+        )
+        job_id = rec.job_id
+        jobs.update_event(job_id, "start", {"stage": "capturing", "total": 0})
+
         try:
             audio_engine = get_system_audio_capture(include_microphone=include_microphone)
             audio_engine.start_capture()
         except Exception as e:
+            jobs.update_event(job_id, "error", {"message": f"Capture failed: {e}"})
             raise HTTPException(status_code=500, detail=f"Capture failed: {e}")
 
         buffers: dict[str, AudioMemoryBuffer] = {}
         task = asyncio.create_task(asyncio.to_thread(_system_capture_memory_loop, audio_engine, buffers))
 
-        active_system_captures[capture_id] = {
+        active_system_captures[job_id] = {
             "engine": audio_engine,
             "task": task,
             "buffers": buffers,
             "language": resolved_language,
             "model_name": model_name,
-            "diarization": diarization,
+            "session_id": session_id,
         }
 
-    log.info(f"System Audio Capture started: {capture_id}")
-    return {"capture_id": capture_id}
+    log.info(f"System Audio Capture started: job_id={job_id}")
+    return {"job_id": job_id}
 
 @app.post("/api/system-audio/stop")
 async def stop_system_audio(
     request: Request,
     response: Response,
-    capture_id: str = Query(...),
+    job_id: str = Query(...),
 ) -> dict[str, Any]:
     if not Config.ENABLE_SYSTEM_AUDIO:
         raise HTTPException(
@@ -300,9 +324,9 @@ async def stop_system_audio(
         )
 
     with system_capture_lock:
-        if capture_id not in active_system_captures:
-            raise HTTPException(status_code=404, detail="Capture ID not found")
-        capture = active_system_captures.pop(capture_id)
+        if job_id not in active_system_captures:
+            raise HTTPException(status_code=404, detail="Job ID not found or already stopped")
+        capture = active_system_captures.pop(job_id)
 
     engine = capture["engine"]
     engine.stop_capture()
@@ -312,26 +336,13 @@ async def stop_system_audio(
     except Exception as e:
         log.warning(f"Error while stopping capture task: {e}")
 
-    session_id = get_or_set_session_id(request, response)
-    initial_result: dict[str, Any] = {"filename": "System Audio Capture.wav"}
-    if capture["diarization"]:
-        initial_result["diarization"] = True
-
-    rec = jobs.create(
-        "stt",
-        session_id,
-        initial_result,
-        language=capture["language"],
-        model=capture["model_name"],
-    )
-
     resolved_model = models.get_stt_model(capture["model_name"])
     in_memory_buffers = capture["buffers"]
 
     asyncio.create_task(
         asyncio.to_thread(
             run_stt_worker,
-            job_id=rec.job_id,
+            job_id=job_id,
             audio_path=in_memory_buffers,
             semaphore=None,  # Domain Invariant: Interactive system audio capture bypasses batch throttling
             jobs=jobs,
@@ -340,12 +351,12 @@ async def stop_system_audio(
             sample_rate=Config.SR,
             chunk_sec=Config.CHUNK_SEC,
             max_duration_sec=0,
-            diarization=capture["diarization"],
+            diarization=False,
         )
     )
 
-    log.info(f"System Audio Capture {capture_id} stopped. Spawned job {rec.job_id}.")
-    return {"job_id": rec.job_id}
+    log.info(f"System Audio Capture stopped. Processing job_id={job_id}.")
+    return {"job_id": job_id}
 
 
 @app.post("/api/jobs/stt")
@@ -534,6 +545,16 @@ async def cancel_job(job_id: str, request: Request, response: Response) -> dict[
         raise HTTPException(404, "Job not found")
     job_type = str((status or {}).get("job_type", "job")).upper()
     log.info(f"{job_type} cancel requested: job_id={job_id}")
+
+    with system_capture_lock:
+        if job_id in active_system_captures:
+            capture = active_system_captures.pop(job_id)
+            try:
+                capture["engine"].stop_capture()
+                capture["task"].cancel()
+            except Exception as e:
+                log.debug(f"Error terminating cancelled capture engine: {e}")
+
     return {"ok": True}
 
 
@@ -563,6 +584,28 @@ async def stream_download(p: str, filename: str | None = None) -> FileResponse:
     return FileResponse(
         str(candidate), media_type="audio/wav", filename=download_name
     )
+
+
+# -----------------------------------------------------------------------------
+# Active Session Context Tail Endpoint
+# -----------------------------------------------------------------------------
+
+
+@app.get("/api/context/tail")
+async def get_context_tail(
+    request: Request,
+    response: Response,
+    lines: int = Query(default=5, ge=1, le=50),
+) -> dict[str, Any]:
+    session_id = get_or_set_session_id(request, response)
+    from core.context import session_context_manager
+
+    tail_lines = session_context_manager.get_tail(session_id=session_id, lines=lines)
+    return {
+        "lines": tail_lines,
+        "combined": " ".join(tail_lines),
+        "count": len(tail_lines),
+    }
 
 
 # -----------------------------------------------------------------------------

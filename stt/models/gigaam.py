@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 from stt.models.base import STTModelAdapter
@@ -38,7 +37,9 @@ def load_gigaam(device: str | None = None) -> GigaAMAdapter:
     log.info("Loading STT model (GigaAM-v3)...")
     import gigaam
 
-    target_device = device or os.getenv("DEVICE", "cpu")
+    from stt.models.base import safe_resolve_device
+
+    target_device = safe_resolve_device(device)
     model = gigaam.load_model("v3_e2e_ctc", device=target_device)
     params = sum(p.numel() for p in model.parameters()) / 1e6
     log.info(f"STT model loaded: {params:.1f}M parameters")

@@ -12,6 +12,8 @@ from typing import Any
 
 import numpy as np
 
+from core.context import session_context_manager
+
 
 @dataclass(frozen=True)
 class MediaInfo:
@@ -300,6 +302,16 @@ def run_stt_job(
                 text = f"[SOURCE:SYS]: {text}"
 
             # Assumes: VAD yields exact absolute timestamps.
+            if hasattr(jobs, "get_status"):
+                status = jobs.get_status(job_id)
+                if status and "session_id" in status:
+                    session_context_manager.append(
+                        session_id=status["session_id"],
+                        text=text,
+                        start_sec=start_sec,
+                        end_sec=end_sec,
+                    )
+
             jobs.update_event(
                 job_id,
                 "progress",
