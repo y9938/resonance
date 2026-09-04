@@ -151,6 +151,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        with system_capture_lock:
+            for cap in active_system_captures.values():
+                try:
+                    cap["engine"].stop_capture()
+                except Exception as e:
+                    log.debug(f"Error stopping capture on shutdown: {e}")
+            active_system_captures.clear()
+
         jobs.cancel_all()
         sweep_task.cancel()
         with suppress(asyncio.CancelledError):
@@ -207,7 +215,8 @@ async def list_models() -> dict[str, Any]:
 
 
 
-active_system_captures = {}
+active_system_captures: dict[str, Any] = {}
+system_capture_lock = threading.Lock()
 
 def _system_capture_memory_loop(audio_engine, buffers: dict[str, AudioMemoryBuffer]):
     try:
@@ -248,24 +257,32 @@ async def start_system_audio(
     else:
         model_name = "gigaam" if resolved_language == "ru" else "whisper"
 
-    capture_id = str(uuid.uuid4())
-    try:
-        audio_engine = get_system_audio_capture(include_microphone=include_microphone)
-        audio_engine.start_capture()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Capture failed: {e}")
+    with system_capture_lock:
+        # Domain Invariant: Host system loopback is an exclusive hardware singleton.
+        # If an active capture is already running (e.g. page reload or multi-tab), reuse existing session.
+        if active_system_captures:
+            active_id = next(iter(active_system_captures))
+            log.info(f"System Audio Capture already active: returning existing capture_id={active_id}")
+            return {"capture_id": active_id, "resumed": True}
 
-    buffers: dict[str, AudioMemoryBuffer] = {}
-    task = asyncio.create_task(asyncio.to_thread(_system_capture_memory_loop, audio_engine, buffers))
+        capture_id = str(uuid.uuid4())
+        try:
+            audio_engine = get_system_audio_capture(include_microphone=include_microphone)
+            audio_engine.start_capture()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Capture failed: {e}")
 
-    active_system_captures[capture_id] = {
-        "engine": audio_engine,
-        "task": task,
-        "buffers": buffers,
-        "language": resolved_language,
-        "model_name": model_name,
-        "diarization": diarization,
-    }
+        buffers: dict[str, AudioMemoryBuffer] = {}
+        task = asyncio.create_task(asyncio.to_thread(_system_capture_memory_loop, audio_engine, buffers))
+
+        active_system_captures[capture_id] = {
+            "engine": audio_engine,
+            "task": task,
+            "buffers": buffers,
+            "language": resolved_language,
+            "model_name": model_name,
+            "diarization": diarization,
+        }
 
     log.info(f"System Audio Capture started: {capture_id}")
     return {"capture_id": capture_id}
@@ -282,12 +299,12 @@ async def stop_system_audio(
             detail="System audio capture is disabled on this server environment.",
         )
 
-    if capture_id not in active_system_captures:
-        raise HTTPException(status_code=404, detail="Capture ID not found")
+    with system_capture_lock:
+        if capture_id not in active_system_captures:
+            raise HTTPException(status_code=404, detail="Capture ID not found")
+        capture = active_system_captures.pop(capture_id)
 
-    capture = active_system_captures.pop(capture_id)
     engine = capture["engine"]
-
     engine.stop_capture()
 
     try:
@@ -316,7 +333,7 @@ async def stop_system_audio(
             run_stt_worker,
             job_id=rec.job_id,
             audio_path=in_memory_buffers,
-            semaphore=STT_WORKER_SEMAPHORE,
+            semaphore=None,  # Domain Invariant: Interactive system audio capture bypasses batch throttling
             jobs=jobs,
             model=resolved_model,
             log=log,

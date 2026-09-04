@@ -5,6 +5,7 @@ import re
 import subprocess
 import threading
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -332,8 +333,8 @@ def run_stt_job(
 def run_stt_worker(
     *,
     job_id: str,
-    audio_path: str | dict[str, str],
-    semaphore: threading.BoundedSemaphore,
+    audio_path: str | dict[str, str] | dict[str, AudioMemoryBuffer],
+    semaphore: threading.BoundedSemaphore | None = None,
     jobs: Any,
     model: Any,
     log: Any,
@@ -342,7 +343,9 @@ def run_stt_worker(
     max_duration_sec: int = 0,
     diarization: bool = False,
 ) -> None:
-    with semaphore:
+    # Workaround: Optional semaphore allows interactive real-time jobs to bypass batch queue throttling.
+    sync_context = semaphore if semaphore is not None else nullcontext()
+    with sync_context:
         model_class = model.__class__.__name__
         if model_class not in ("WhisperAdapter", "GraniteAdapter"):
             effective_chunk_sec = min(chunk_sec, int(stt_transcribe_hard_limit_sec()))
