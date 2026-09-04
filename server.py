@@ -36,6 +36,7 @@ from fastapi.staticfiles import StaticFiles
 
 from core.jobs import JobRegistry, StreamEvent
 from core.logging import setup_logging
+from stt.buffer import AudioMemoryBuffer
 from stt.models import ModelManager
 from stt.pipeline import (
     run_stt_worker,
@@ -213,21 +214,14 @@ async def list_models() -> dict[str, Any]:
 
 active_system_captures = {}
 
-def _system_capture_write_loop(audio_engine, tmp_dir: str):
-    import os
-    import soundfile as sf
-    files = {}
+def _system_capture_memory_loop(audio_engine, buffers: dict[str, AudioMemoryBuffer]):
     try:
         for stream_id, chunk in audio_engine.get_audio_stream():
-            if stream_id not in files:
-                path = os.path.join(tmp_dir, f"{stream_id}.wav")
-                files[stream_id] = sf.SoundFile(path, mode='w', samplerate=16000, channels=1, subtype='PCM_16')
-            files[stream_id].write(chunk)
+            if stream_id not in buffers:
+                buffers[stream_id] = AudioMemoryBuffer(sample_rate=16000)
+            buffers[stream_id].append(chunk)
     except Exception as e:
-        pass
-    finally:
-        for f in files.values():
-            f.close()
+        log.debug(f"System capture loop finished: {e}")
 
 @app.post("/api/system-audio/start")
 async def start_system_audio(
@@ -260,20 +254,19 @@ async def start_system_audio(
         model_name = "gigaam" if resolved_language == "ru" else "whisper"
 
     capture_id = str(uuid.uuid4())
-    tmp_dir = tempfile.mkdtemp()
     try:
         audio_engine = get_system_audio_capture(include_microphone=include_microphone)
         audio_engine.start_capture()
     except Exception as e:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
         raise HTTPException(status_code=500, detail=f"Capture failed: {e}")
 
-    task = asyncio.create_task(asyncio.to_thread(_system_capture_write_loop, audio_engine, tmp_dir))
+    buffers: dict[str, AudioMemoryBuffer] = {}
+    task = asyncio.create_task(asyncio.to_thread(_system_capture_memory_loop, audio_engine, buffers))
 
     active_system_captures[capture_id] = {
         "engine": audio_engine,
         "task": task,
-        "tmp_dir": tmp_dir,
+        "buffers": buffers,
         "language": resolved_language,
         "model_name": model_name,
         "diarization": diarization,
@@ -321,25 +314,20 @@ async def stop_system_audio(
     )
 
     resolved_model = models.get_stt_model(capture["model_name"])
-
-    # Find all generated wav files in tmp_dir
-    import glob
-    wav_files = glob.glob(os.path.join(capture["tmp_dir"], "*.wav"))
-    input_paths = {os.path.splitext(os.path.basename(p))[0]: p for p in wav_files}
+    in_memory_buffers = capture["buffers"]
 
     asyncio.create_task(
         asyncio.to_thread(
             run_stt_worker,
             job_id=rec.job_id,
-            audio_path=input_paths,
-            upload_root=capture["tmp_dir"],
+            audio_path=in_memory_buffers,
+            upload_root="",
             semaphore=STT_WORKER_SEMAPHORE,
             jobs=jobs,
             model=resolved_model,
             log=log,
             sample_rate=Config.SR,
             chunk_sec=Config.CHUNK_SEC,
-
             max_duration_sec=0,
             diarization=capture["diarization"],
         )

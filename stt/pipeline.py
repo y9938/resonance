@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 
 @dataclass(frozen=True)
 class MediaInfo:
@@ -147,13 +149,14 @@ def probe_media(input_path: str | Path) -> MediaInfo:
     )
 
 
-from .stream_vad import stream_vad_chunks
+from .buffer import AudioMemoryBuffer
+from .stream_vad import pack_array_vad_chunks, stream_vad_chunks
 
 
 def run_stt_job(
     *,
     job_id: str,
-    input_paths: str | dict[str, str],
+    input_paths: str | dict[str, Any],
     upload_root: str,
     jobs: Any,
     model: Any,
@@ -182,11 +185,21 @@ def run_stt_job(
         if cancel_requested():
             return
 
-        paths = input_paths if isinstance(input_paths, dict) else {"default": input_paths}
-        if not paths or not any(paths.values()):
+        raw_inputs = input_paths if isinstance(input_paths, dict) else {"default": input_paths}
+        if not raw_inputs or not any(raw_inputs.values()):
             raise ValueError("No audio recorded or empty audio stream")
-        info = probe_media(list(paths.values())[0])  # Assumes: All synced streams have similar length
-        if max_duration_sec > 0 and info.duration_sec > max_duration_sec:
+
+        # Invariant: Support both on-disk file paths and in-memory AudioMemoryBuffer / np.ndarray
+        first_input = next(iter(raw_inputs.values()))
+        if isinstance(first_input, AudioMemoryBuffer):
+            total_duration_sec = first_input.duration_sec
+        elif isinstance(first_input, np.ndarray):
+            total_duration_sec = len(first_input) / sample_rate
+        else:
+            info = probe_media(first_input)
+            total_duration_sec = info.duration_sec
+
+        if max_duration_sec > 0 and total_duration_sec > max_duration_sec:
             raise ValueError(f"Audio too long (max {max_duration_sec}s)")
 
         model_class = model.__class__.__name__
@@ -195,34 +208,36 @@ def run_stt_job(
             job_id,
             "start",
             {
-                "duration": info.duration_sec,
-                "total": round(info.duration_sec, 2),
+                "duration": total_duration_sec,
+                "total": round(total_duration_sec, 2),
                 "stage": "diarization" if is_diarizing else "transcription",
             },
         )
 
         speaker_intervals_by_stream = {}
         if is_diarizing:
-            for stream_id, path in paths.items():
+            for stream_id, audio_source in raw_inputs.items():
                 if stream_id == "mic":
                     continue  # Domain Invariant: Microphone stream is always a single known speaker (Me).
 
                 if cancel_requested():
                     return
                 try:
-                    import numpy as np
-
                     from .diarization import diarize_audio, match_speaker_tag
 
-                    full_raw = subprocess.check_output([
-                        "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
-                        "-i", str(path), "-f", "s16le", "-ac", "1", "-ar", "16000", "-"
-                    ], timeout=min(600.0, max(30.0, info.duration_sec * 2)))
+                    if isinstance(audio_source, AudioMemoryBuffer):
+                        full_audio = audio_source.as_ndarray()
+                    elif isinstance(audio_source, np.ndarray):
+                        full_audio = audio_source
+                    else:
+                        full_raw = subprocess.check_output([
+                            "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+                            "-i", str(audio_source), "-f", "s16le", "-ac", "1", "-ar", "16000", "-"
+                        ], timeout=min(600.0, max(30.0, total_duration_sec * 2)))
+                        full_audio = np.frombuffer(full_raw, dtype=np.int16).astype(np.float32) / 32768.0
 
                     if cancel_requested():
                         return
-
-                    full_audio = np.frombuffer(full_raw, dtype=np.int16).astype(np.float32) / 32768.0
                     speaker_intervals_by_stream[stream_id] = diarize_audio(full_audio, cancel_check=cancel_requested)
                 except subprocess.CalledProcessError as exc:
                     if cancel_requested() or exc.returncode in (255, 130, -2):
@@ -239,13 +254,26 @@ def run_stt_job(
         import heapq
 
         generators = {}
-        for sid, p in paths.items():
-            generators[sid] = stream_vad_chunks(
-                input_path=p,
-                sample_rate=sample_rate,
-                target_sec=chunk_sec,
-                total_duration_sec=info.duration_sec,
-            )
+        for sid, audio_source in raw_inputs.items():
+            if isinstance(audio_source, AudioMemoryBuffer):
+                generators[sid] = pack_array_vad_chunks(
+                    audio_source.as_ndarray(),
+                    sample_rate=sample_rate,
+                    target_sec=chunk_sec,
+                )
+            elif isinstance(audio_source, np.ndarray):
+                generators[sid] = pack_array_vad_chunks(
+                    audio_source,
+                    sample_rate=sample_rate,
+                    target_sec=chunk_sec,
+                )
+            else:
+                generators[sid] = stream_vad_chunks(
+                    input_path=audio_source,
+                    sample_rate=sample_rate,
+                    target_sec=chunk_sec,
+                    total_duration_sec=total_duration_sec,
+                )
 
         heap = []
         for sid, gen in generators.items():
@@ -289,9 +317,9 @@ def run_stt_job(
                     from .diarization import match_speaker_tag
                     tag = match_speaker_tag(start_sec, end_sec, intervals)
                     text = f"{tag}{text}"
-                elif "mic" in paths:
+                elif "mic" in raw_inputs:
                     text = f"[SOURCE:SYS]: {text}"
-            elif "mic" in paths or (len(paths) > 1 and stream_id == "sys"):
+            elif "mic" in raw_inputs or (len(raw_inputs) > 1 and stream_id == "sys"):
                 text = f"[SOURCE:SYS]: {text}"
 
             # Assumes: VAD yields exact absolute timestamps.
@@ -300,7 +328,7 @@ def run_stt_job(
                 "progress",
                 {
                     "current": round(end_sec, 2),
-                    "total": round(info.duration_sec, 2),
+                    "total": round(total_duration_sec, 2),
                     "segment": {
                         "start": round(start_sec, 6),
                         "end": round(end_sec, 6),
@@ -314,7 +342,7 @@ def run_stt_job(
         if cancel_requested():
             return
 
-        jobs.update_event(job_id, "complete", {"duration": info.duration_sec})
+        jobs.update_event(job_id, "complete", {"duration": total_duration_sec})
         elapsed = time.time() - start_time
         log.info(f"STT completed: {elapsed:.2f}s")
     except Exception as exc:
@@ -324,7 +352,8 @@ def run_stt_job(
         log.error(f"STT failed: {exc} ({elapsed:.2f}s)")
         jobs.update_event(job_id, "error", {"message": str(exc)})
     finally:
-        shutil.rmtree(upload_root, ignore_errors=True)
+        if upload_root:
+            shutil.rmtree(upload_root, ignore_errors=True)
 
 
 def run_stt_worker(
