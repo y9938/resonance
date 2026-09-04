@@ -6,13 +6,14 @@ import re
 import secrets
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, ClassVar
 
 import torch
-from scipy.io import wavfile
 from fastapi import HTTPException
+from scipy.io import wavfile
 
 
 @dataclass(frozen=True)
@@ -58,8 +59,7 @@ class TtsBackend:
 
 
 def clean_tts_text(text: str) -> str:
-    if text.startswith("\ufeff"):
-        text = text[1:]
+    text = text.removeprefix("\ufeff")
 
     lines = [ln for ln in text.split("\n") if not re.search(r"https?://", ln)]
     text = "\n".join(lines)
@@ -223,7 +223,7 @@ class KokoroEnTtsBackend(TtsBackend):
     backend_id = "kokoro_en"
     name = "Kokoro English"
     sample_rate = 24000
-    _voice_specs = {
+    _voice_specs: ClassVar[dict[str, KokoroVoiceSpec]] = {
         "af_heart": KokoroVoiceSpec(voice_id="af_heart", lang_code="a"),
         "af_alloy": KokoroVoiceSpec(voice_id="af_alloy", lang_code="a"),
         "af_aoede": KokoroVoiceSpec(voice_id="af_aoede", lang_code="a"),

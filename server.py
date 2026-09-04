@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Resonance API Server - Unified STT/TTS Service
 
@@ -16,7 +15,6 @@ import json
 import logging
 import os
 import secrets
-import shutil
 import tempfile
 import threading
 import uuid
@@ -34,14 +32,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from core.jobs import JobRegistry, StreamEvent
+from core.jobs import JobRegistry
 from core.logging import setup_logging
-from stt.buffer import AudioMemoryBuffer
+from stt.buffer import AudioMemoryBuffer, decode_media_bytes
 from stt.models import ModelManager
-from stt.pipeline import (
-    run_stt_worker,
-    save_upload_to_path,
-)
+from stt.pipeline import run_stt_worker
 from stt.system_audio import get_system_audio_capture
 from tts.service import TtsService
 
@@ -321,7 +316,6 @@ async def stop_system_audio(
             run_stt_worker,
             job_id=rec.job_id,
             audio_path=in_memory_buffers,
-            upload_root="",
             semaphore=STT_WORKER_SEMAPHORE,
             jobs=jobs,
             model=resolved_model,
@@ -368,23 +362,17 @@ async def start_stt_job(
             model_name = "whisper"
 
     resolved_model = models.get_stt_model(model_name)
+    max_bytes = Config.UPLOAD_LIMIT_MB * 1024 * 1024
+    file_bytes = await file.read()
+    if max_bytes > 0 and len(file_bytes) > max_bytes:
+        raise HTTPException(413, f"File too large (max {Config.UPLOAD_LIMIT_MB}MB)")
 
-    tmp_dir = tempfile.mkdtemp()
-    audio_path = os.path.join(tmp_dir, "input")
     try:
-        size_bytes = await save_upload_to_path(
-            file,
-            audio_path,
-            max_bytes=Config.UPLOAD_LIMIT_MB * 1024 * 1024,
-        )
-    except ValueError as exc:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-        raise HTTPException(413, str(exc)) from exc
-    except Exception:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-        raise
+        audio_buffer = decode_media_bytes(file_bytes, target_sample_rate=Config.SR)
+    except Exception as exc:
+        raise HTTPException(400, f"Failed to decode audio file: {exc}") from exc
 
-    size_kb = size_bytes / 1024
+    size_kb = len(file_bytes) / 1024
     size_str = f"{size_kb:.1f} KB" if size_kb < 1024 else f"{size_kb / 1024:.1f} MB"
     log.info(f"STT started: {file.filename or 'unknown'} ({size_str})")
 
@@ -410,15 +398,13 @@ async def start_stt_job(
         asyncio.to_thread(
             run_stt_worker,
             job_id=rec.job_id,
-            audio_path=audio_path,
-            upload_root=tmp_dir,
+            audio_path=audio_buffer,
             semaphore=STT_WORKER_SEMAPHORE,
             jobs=jobs,
             model=resolved_model,
             log=log,
             sample_rate=Config.SR,
             chunk_sec=Config.CHUNK_SEC,
-
             max_duration_sec=Config.STT_MAX_DURATION_SEC,
             diarization=diarization,
         )

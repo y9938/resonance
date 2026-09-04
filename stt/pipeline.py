@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 import subprocess
 import threading
 import time
@@ -57,32 +56,9 @@ def stt_transcribe_hard_limit_sec() -> float:
 
         if SAMPLE_RATE > 0:
             return float(LONGFORM_THRESHOLD) / float(SAMPLE_RATE)
-    except Exception:
-        pass
+    except (ImportError, AttributeError, ValueError):
+        return _DEFAULT_STT_TRANSCRIBE_MAX_SEC
     return _DEFAULT_STT_TRANSCRIBE_MAX_SEC
-
-
-async def save_upload_to_path(
-    upload: Any,
-    destination: str | Path,
-    *,
-    chunk_size: int = 1024 * 1024,
-    max_bytes: int = 0,
-) -> int:
-    total = 0
-    path = Path(destination)
-
-    with path.open("wb") as handle:
-        while True:
-            chunk = await upload.read(chunk_size)
-            if not chunk:
-                break
-            total += len(chunk)
-            if max_bytes > 0 and total > max_bytes:
-                raise ValueError(f"File too large (max {max_bytes // (1024 * 1024)}MB)")
-            handle.write(chunk)
-
-    return total
 
 
 def _decode_duration(input_path: str | Path) -> float:
@@ -93,6 +69,7 @@ def _decode_duration(input_path: str | Path) -> float:
         text=True,
         stdin=subprocess.DEVNULL,
         timeout=15.0,
+        check=False,
     )
     matches = re.findall(r"time=(\d+:\d+:\d+\.\d+)", raw.stderr)
     if not matches:
@@ -157,7 +134,6 @@ def run_stt_job(
     *,
     job_id: str,
     input_paths: str | dict[str, Any],
-    upload_root: str,
     jobs: Any,
     model: Any,
     log: Any,
@@ -189,7 +165,7 @@ def run_stt_job(
         if not raw_inputs or not any(raw_inputs.values()):
             raise ValueError("No audio recorded or empty audio stream")
 
-        # Invariant: Support both on-disk file paths and in-memory AudioMemoryBuffer / np.ndarray
+        # Input can be an on-disk path, an in-memory AudioMemoryBuffer, or a raw np.ndarray
         first_input = next(iter(raw_inputs.values()))
         if isinstance(first_input, AudioMemoryBuffer):
             total_duration_sec = first_input.duration_sec
@@ -351,16 +327,12 @@ def run_stt_job(
         elapsed = time.time() - start_time
         log.error(f"STT failed: {exc} ({elapsed:.2f}s)")
         jobs.update_event(job_id, "error", {"message": str(exc)})
-    finally:
-        if upload_root:
-            shutil.rmtree(upload_root, ignore_errors=True)
 
 
 def run_stt_worker(
     *,
     job_id: str,
     audio_path: str | dict[str, str],
-    upload_root: str,
     semaphore: threading.BoundedSemaphore,
     jobs: Any,
     model: Any,
@@ -380,7 +352,6 @@ def run_stt_worker(
         run_stt_job(
             job_id=job_id,
             input_paths=audio_path,
-            upload_root=upload_root,
             jobs=jobs,
             model=model,
             log=log,

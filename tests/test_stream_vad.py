@@ -1,9 +1,8 @@
 import threading
+
 import numpy as np
-import pytest
 
 from stt.stream_vad import (
-    StatelessSileroVAD,
     VADStreamState,
     get_shared_vad_engine,
     stream_vad_chunks,
@@ -18,7 +17,7 @@ def test_stateless_silero_vad_isolation() -> None:
     silence_frame = np.zeros(512, dtype=np.float32)
     tone_frame = (0.5 * np.sin(np.linspace(0, 50, 512, dtype=np.float32))).astype(np.float32)
 
-    prob_a_initial = engine.process_frame(state_a, tone_frame)
+    engine.process_frame(state_a, tone_frame)
     prob_b_silence = engine.process_frame(state_b, silence_frame)
 
     assert prob_b_silence < 0.05
@@ -57,5 +56,5 @@ def test_concurrent_stream_vad_chunks_bit_exact() -> None:
 
 def test_pytorch_num_threads_preserved_after_import() -> None:
     import torch
-    import stt.stream_vad
+
     assert torch.get_num_threads() > 1, f"PyTorch thread pool was mutated to {torch.get_num_threads()}"

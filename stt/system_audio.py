@@ -428,7 +428,6 @@ NativeLinuxWindowsStrategy = LinuxPulseParecStrategy
 
 
 def get_system_audio_capture(include_microphone: bool = False) -> SystemAudioStrategy:
-    import shutil
     if sys.platform == "darwin":
         return MacOSSharedMemoryStrategy(include_microphone=include_microphone)
     elif sys.platform.startswith("linux") and shutil.which("parec"):

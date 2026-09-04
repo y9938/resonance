@@ -1,7 +1,12 @@
 import numpy as np
 import pytest
 
-from stt.diarization import SpeakerInterval, diarize_audio, get_sherpa_cache_dir, match_speaker_tag
+from stt.diarization import (
+    SpeakerInterval,
+    diarize_audio,
+    get_sherpa_cache_dir,
+    match_speaker_tag,
+)
 
 
 def test_match_speaker_tag_empty():

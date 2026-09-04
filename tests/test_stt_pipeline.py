@@ -6,43 +6,7 @@ import numpy as np
 import pytest
 
 from stt import pipeline
-from stt.pipeline import MediaInfo, run_stt_job, save_upload_to_path
-
-
-class FakeUpload:
-    def __init__(self, chunks: list[bytes]) -> None:
-        self._buffer = b"".join(chunks)
-
-    async def read(self, size: int = -1) -> bytes:
-        if not self._buffer:
-            return b""
-        if size <= 0:
-            chunk = self._buffer
-            self._buffer = b""
-            return chunk
-        chunk = self._buffer[:size]
-        self._buffer = self._buffer[size:]
-        return chunk
-
-
-@pytest.mark.asyncio
-async def test_save_upload_to_path_streams_to_disk(tmp_path: Path) -> None:
-    destination = tmp_path / "input.bin"
-    upload = FakeUpload([b"hello", b" ", b"world"])
-
-    size = await save_upload_to_path(upload, destination, chunk_size=2, max_bytes=0)
-
-    assert size == 11
-    assert destination.read_bytes() == b"hello world"
-
-
-@pytest.mark.asyncio
-async def test_save_upload_to_path_enforces_max_bytes(tmp_path: Path) -> None:
-    destination = tmp_path / "input.bin"
-    upload = FakeUpload([b"abc", b"def"])
-
-    with pytest.raises(ValueError, match="File too large"):
-        await save_upload_to_path(upload, destination, chunk_size=2, max_bytes=5)
+from stt.pipeline import MediaInfo, run_stt_job
 
 
 class FakeJobs:
@@ -111,7 +75,6 @@ def test_run_stt_job_processes_segments_sequentially(tmp_path: Path, monkeypatch
     run_stt_job(
         job_id="job-1",
         input_paths=str(input_path),
-        upload_root=str(upload_root),
         jobs=jobs,
         model=model,
         log=log,
@@ -122,7 +85,6 @@ def test_run_stt_job_processes_segments_sequentially(tmp_path: Path, monkeypatch
     assert [event for event, _ in jobs.events] == ["start", "progress", "progress", "complete"]
     assert len(model.paths) == 2
     assert len(extracted) == 2
-    assert not upload_root.exists()
 
 
 def test_run_stt_job_stops_before_next_segment_when_cancelled(
@@ -153,7 +115,6 @@ def test_run_stt_job_stops_before_next_segment_when_cancelled(
     run_stt_job(
         job_id="job-1",
         input_paths=str(input_path),
-        upload_root=str(upload_root),
         jobs=jobs,
         model=model,
         log=log,
@@ -191,7 +152,6 @@ def test_run_stt_job_diarization_stage_flag(tmp_path: Path, monkeypatch: pytest.
     run_stt_job(
         job_id="job-diarize",
         input_paths=str(input_path),
-        upload_root=str(upload_root),
         jobs=jobs,
         model=model,
         log=log,
@@ -229,7 +189,6 @@ def test_run_stt_job_diarization_cancelled_midway(tmp_path: Path, monkeypatch: p
     run_stt_job(
         job_id="job-cancel-midway",
         input_paths=str(input_path),
-        upload_root=str(upload_root),
         jobs=jobs,
         model=model,
         log=log,
@@ -273,7 +232,6 @@ def test_run_stt_job_dual_stream_tagging(tmp_path: Path, monkeypatch: pytest.Mon
     run_stt_job(
         job_id="job-dual",
         input_paths={"sys": str(sys_path), "mic": str(mic_path)},
-        upload_root=str(upload_root),
         jobs=jobs,
         model=model,
         log=log,

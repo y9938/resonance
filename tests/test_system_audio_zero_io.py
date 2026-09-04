@@ -92,7 +92,6 @@ def test_run_stt_job_in_memory_buffers_zero_disk() -> None:
     run_stt_job(
         job_id="job-zero-io-test",
         input_paths={"sys": buf_sys},
-        upload_root="",
         jobs=jobs,
         model=model,
         log=log,
@@ -141,3 +140,26 @@ async def test_server_system_audio_lifecycle_pure_in_ram(monkeypatch) -> None:
     stop_resp = client.post(f"/api/system-audio/stop?capture_id={capture_id}")
     assert stop_resp.status_code == 200
     assert "job_id" in stop_resp.json()
+
+def test_decode_media_bytes_to_audio_memory_buffer() -> None:
+    import io
+
+    import soundfile as sf
+
+    from stt.buffer import decode_media_bytes
+
+    # Generate a WAV in memory
+    sr = 48000
+    t = np.linspace(0, 1.0, sr, dtype=np.float32)
+    tone = (0.5 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+    wav_io = io.BytesIO()
+    sf.write(wav_io, tone, sr, format="WAV", subtype="FLOAT")
+    encoded_bytes = wav_io.getvalue()
+
+    buf = decode_media_bytes(encoded_bytes, target_sample_rate=16000)
+    assert isinstance(buf, AudioMemoryBuffer)
+    assert buf.sample_rate == 16000
+    # 1 second of 16kHz audio = 16000 samples (+- margin)
+    assert abs(len(buf) - 16000) <= 200
+    arr = buf.as_ndarray()
+    assert arr.dtype == np.float32

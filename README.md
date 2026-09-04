@@ -56,12 +56,13 @@ This creates `.env` if missing, configures the device, installs dev dependencies
 
 #### Linux
 
-manually choose your method
+manually choose your methods for all deps, but:
+System FFmpeg (v4–v7 shared libs) or run `./scripts/download_ffmpeg7.sh`
 
 #### Windows
 
 ```powershell
-winget install "FFmpeg (Essentials Build)"
+powershell -ExecutionPolicy ByPass -File scripts/download_ffmpeg7.ps1
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 uv tool install rust-just
 winget install Microsoft.VCRedist.2015+.x64 -e

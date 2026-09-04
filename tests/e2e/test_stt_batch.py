@@ -10,7 +10,6 @@ from urllib.parse import parse_qs, urlparse
 
 from playwright.sync_api import Page, expect
 
-
 AUDIO_FILE = Path(__file__).parent.parent / "fixtures" / "ru_audio.wav"
 
 

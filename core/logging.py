@@ -3,10 +3,9 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from typing import TextIO
-
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from typing import TextIO
 
 VALID_LOG_LEVELS: frozenset[str] = frozenset(
     {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}

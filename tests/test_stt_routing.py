@@ -1,9 +1,26 @@
-from unittest.mock import patch, MagicMock
+import io
+import wave
+from unittest.mock import MagicMock, patch
+
 from fastapi.testclient import TestClient
 
-from server import app, jobs, JobRegistry
+from server import JobRegistry, app, jobs
 
 client = TestClient(app)
+
+
+def _make_minimal_wav_bytes() -> bytes:
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(b"\x00" * 320)
+    return buf.getvalue()
+
+
+VALID_WAV_BYTES = _make_minimal_wav_bytes()
+
 
 def test_api_models_includes_languages_routing():
     response = client.get("/api/models")
@@ -17,7 +34,7 @@ def test_api_models_includes_languages_routing():
 
 
 def test_stt_routing_unsupported_language():
-    files = {"file": ("test.wav", b"dummy audio content", "audio/wav")}
+    files = {"file": ("test.wav", VALID_WAV_BYTES, "audio/wav")}
     response = client.post("/api/jobs/stt?language=fr", files=files)
     assert response.status_code == 400
     assert "Unsupported language" in response.json()["detail"]
@@ -27,7 +44,7 @@ def test_stt_routing_unsupported_language():
 @patch("server.models.stt_gigaam")
 def test_stt_routing_default_language(mock_stt_gigaam, mock_run_stt_worker):
     mock_stt_gigaam.return_value = MagicMock()
-    files = {"file": ("test.wav", b"dummy audio content", "audio/wav")}
+    files = {"file": ("test.wav", VALID_WAV_BYTES, "audio/wav")}
     response = client.post("/api/jobs/stt", files=files)
     assert response.status_code == 200
     job_id = response.json()["job_id"]
@@ -42,7 +59,7 @@ def test_stt_routing_default_language(mock_stt_gigaam, mock_run_stt_worker):
 @patch("server.models.stt_whisper")
 def test_stt_routing_english(mock_stt_whisper, mock_run_stt_worker):
     mock_stt_whisper.return_value = MagicMock()
-    files = {"file": ("test.wav", b"dummy audio content", "audio/wav")}
+    files = {"file": ("test.wav", VALID_WAV_BYTES, "audio/wav")}
     response = client.post("/api/jobs/stt?language=en", files=files)
     assert response.status_code == 200
     job_id = response.json()["job_id"]
@@ -86,7 +103,7 @@ def test_stt_job_registry_fields():
 @patch("server.models.stt_granite")
 def test_stt_routing_granite(mock_stt_granite, mock_run_stt_worker):
     mock_stt_granite.return_value = MagicMock()
-    files = {"file": ("test.wav", b"dummy audio content", "audio/wav")}
+    files = {"file": ("test.wav", VALID_WAV_BYTES, "audio/wav")}
 
     response = client.post("/api/jobs/stt?language=en&model=granite", files=files)
     assert response.status_code == 200
@@ -108,7 +125,7 @@ def test_stt_routing_granite(mock_stt_granite, mock_run_stt_worker):
 
 
 def test_stt_routing_invalid_combinations():
-    files = {"file": ("test.wav", b"dummy audio content", "audio/wav")}
+    files = {"file": ("test.wav", VALID_WAV_BYTES, "audio/wav")}
 
     response = client.post("/api/jobs/stt?language=en&model=invalid_model", files=files)
     assert response.status_code == 400

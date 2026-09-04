@@ -5,6 +5,7 @@ import torch
 
 from stt.models import GraniteAdapter
 
+
 def test_granite_adapter_transcribe_standard():
     mock_model = MagicMock()
     mock_model.dtype = torch.float32

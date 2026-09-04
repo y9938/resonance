@@ -47,5 +47,8 @@ base_url = "http://localhost:8000"
 asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "function"
 
+[tool.ruff.lint]
+ignore = ["BLE001", "B008"]
+
 [tool.ruff.lint.per-file-ignores]
 "server.py" = ["E402"]

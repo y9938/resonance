@@ -8,37 +8,34 @@ from stt.models import ModelManager, WhisperAdapter, load_whisper
 
 
 def test_load_whisper_cuda():
-    with patch.dict(os.environ, {"DEVICE": "cuda"}):
-        with patch("faster_whisper.WhisperModel") as MockModel:
-            load_whisper()
-            MockModel.assert_called_once_with(
-                "Systran/faster-distil-whisper-large-v3",
-                device="cuda",
-                compute_type="float16",
-            )
+    with patch.dict(os.environ, {"DEVICE": "cuda"}), patch("faster_whisper.WhisperModel") as MockModel:
+        load_whisper()
+        MockModel.assert_called_once_with(
+            "Systran/faster-distil-whisper-large-v3",
+            device="cuda",
+            compute_type="float16",
+        )
 
 
 def test_load_whisper_cpu():
-    with patch.dict(os.environ, {"DEVICE": "cpu"}):
-        with patch("faster_whisper.WhisperModel") as MockModel:
-            load_whisper()
-            MockModel.assert_called_once_with(
-                "Systran/faster-distil-whisper-large-v3",
-                device="cpu",
-                compute_type="int8",
-            )
+    with patch.dict(os.environ, {"DEVICE": "cpu"}), patch("faster_whisper.WhisperModel") as MockModel:
+        load_whisper()
+        MockModel.assert_called_once_with(
+            "Systran/faster-distil-whisper-large-v3",
+            device="cpu",
+            compute_type="int8",
+        )
 
 
 def test_load_whisper_mps_falls_back_to_cpu():
     """MPS is not supported by CTranslate2; must be remapped to cpu+int8."""
-    with patch.dict(os.environ, {"DEVICE": "mps"}):
-        with patch("faster_whisper.WhisperModel") as MockModel:
-            load_whisper()
-            MockModel.assert_called_once_with(
-                "Systran/faster-distil-whisper-large-v3",
-                device="cpu",
-                compute_type="int8",
-            )
+    with patch.dict(os.environ, {"DEVICE": "mps"}), patch("faster_whisper.WhisperModel") as MockModel:
+        load_whisper()
+        MockModel.assert_called_once_with(
+            "Systran/faster-distil-whisper-large-v3",
+            device="cpu",
+            compute_type="int8",
+        )
 
 
 def test_whisper_adapter_joins_segments():
