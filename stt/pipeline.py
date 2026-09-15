@@ -14,7 +14,7 @@ from typing import Any
 import numpy as np
 
 from core.context import session_context_manager
-from stt.inference import transcribe_serialized
+from stt.inference import transcribe_serialized, transcription_text
 
 
 @dataclass(frozen=True)
@@ -35,16 +35,6 @@ class SegmentSpec:
     @property
     def duration_sec(self) -> float:
         return max(0.0, self.end_sec - self.start_sec)
-
-
-def _segment_text_from_transcribe(result: Any) -> str:
-    """Normalize GigaAM transcribe() output to a plain string for JSON/SSE."""
-    if isinstance(result, str):
-        return result
-    text = getattr(result, "text", None)
-    if isinstance(text, str):
-        return text
-    return str(result)
 
 
 _DEFAULT_STT_TRANSCRIBE_MAX_SEC = 25.0
@@ -287,7 +277,7 @@ def run_stt_job(
             if cancel_requested():
                 return
 
-            text = _segment_text_from_transcribe(raw)
+            text = transcription_text(raw)
 
             if stream_id == "mic":
                 text = f"[SOURCE:MIC]: {text}"

@@ -7,6 +7,7 @@ import pytest
 
 import server
 from core.jobs import JobRegistry
+from stt.live_transport import LiveSessionHandle
 
 
 def _isolated_live_registry(monkeypatch) -> JobRegistry:
@@ -154,7 +155,7 @@ async def test_only_one_stop_owns_flush_and_completion(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_claim_context_releases_after_processing_exception() -> None:
     session = MagicMock()
-    handle = server.LiveSessionHandle(session, idle_timeout_sec=0)
+    handle = LiveSessionHandle(session, idle_timeout_sec=0)
 
     with pytest.raises(RuntimeError, match="processing failed"):
         async with handle.claim_chunk():

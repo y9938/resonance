@@ -3,7 +3,7 @@
 import json
 
 from core.jobs import StreamEvent
-from stt.pipeline import _segment_text_from_transcribe
+from stt.inference import transcription_text
 
 
 class FakeTranscriptionResult:
@@ -11,9 +11,9 @@ class FakeTranscriptionResult:
         self.text = text
 
 
-def test_segment_text_from_transcribe_extracts_text_attribute() -> None:
-    assert _segment_text_from_transcribe(FakeTranscriptionResult("hello")) == "hello"
-    assert _segment_text_from_transcribe("plain") == "plain"
+def test_transcription_text_extracts_text_attribute() -> None:
+    assert transcription_text(FakeTranscriptionResult("hello")) == "hello"
+    assert transcription_text("plain") == "plain"
 
 
 def test_progress_event_with_normalized_segment_serializes_to_json() -> None:
@@ -25,7 +25,7 @@ def test_progress_event_with_normalized_segment_serializes_to_json() -> None:
             "segment": {
                 "start": 0.0,
                 "end": 1.0,
-                "text": _segment_text_from_transcribe(
+                "text": transcription_text(
                     FakeTranscriptionResult("segment one")
                 ),
             },

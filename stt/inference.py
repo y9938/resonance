@@ -13,6 +13,16 @@ from typing import Any
 _INFERENCE_GATE = threading.Lock()
 
 
+def transcription_text(result: Any) -> str:
+    """Normalize a model adapter result to plain transcript text."""
+    if isinstance(result, str):
+        return result
+    text = getattr(result, "text", None)
+    if isinstance(text, str):
+        return text
+    return str(result)
+
+
 def transcribe_serialized(model: Any, audio: Any, **kwargs: Any) -> Any:
     with _INFERENCE_GATE:
         return model.transcribe(audio, **kwargs)

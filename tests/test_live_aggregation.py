@@ -3,7 +3,8 @@ from unittest.mock import MagicMock
 import numpy as np
 
 from core.jobs import JobRegistry
-from stt.live import ASRCommitPolicy, CommitDecision, LivePreviewBroker, LiveSTTSession
+from stt.live import ASRCommitPolicy, CommitDecision, LiveSTTSession
+from stt.live_preview import LivePreviewBroker
 from stt.stream_vad import _VAD_WINDOW_SAMPLES
 
 
