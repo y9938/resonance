@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import re
 import subprocess
@@ -13,6 +14,7 @@ from typing import Any
 import numpy as np
 
 from core.context import session_context_manager
+from stt.inference import transcribe_serialized
 
 
 @dataclass(frozen=True)
@@ -276,12 +278,11 @@ def run_stt_job(
             except StopIteration:
                 pass
 
-            import inspect
             sig = inspect.signature(model.transcribe)
             if "diarization" in sig.parameters and model_class == "GraniteAdapter":
-                raw = model.transcribe(chunk_array, diarization=diarization)
+                raw = transcribe_serialized(model, chunk_array, diarization=diarization)
             else:
-                raw = model.transcribe(chunk_array)
+                raw = transcribe_serialized(model, chunk_array)
 
             if cancel_requested():
                 return

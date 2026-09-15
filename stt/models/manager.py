@@ -106,3 +106,27 @@ class ModelManager:
         elif name == "gigaam":
             return self.stt_gigaam()
         raise ValueError(f"Unknown STT model: {model_name}")
+
+
+SUPPORTED_STT_LANGUAGES = {"ru", "en"}
+SUPPORTED_STT_MODELS = {"gigaam", "whisper", "granite"}
+DEFAULT_LANGUAGE_STT_MODELS = {"ru": "gigaam", "en": "whisper"}
+
+
+def resolve_stt_model(language: str | None = None, model: str | None = None) -> tuple[str, str]:
+    """Validate and resolve (language, model_name) for STT routing."""
+    resolved_lang = (language or "ru").strip().lower()
+    if resolved_lang not in SUPPORTED_STT_LANGUAGES:
+        raise ValueError(f"Unsupported language: {resolved_lang}")
+
+    if model:
+        norm_model = model.strip().lower()
+        if norm_model not in SUPPORTED_STT_MODELS:
+            raise ValueError(f"Unsupported model: {model}")
+        if resolved_lang == "ru" and norm_model != "gigaam":
+            raise ValueError("Russian language only supports gigaam model")
+        if resolved_lang == "en" and norm_model not in {"whisper", "granite"}:
+            raise ValueError(f"English language does not support {model} model")
+        return resolved_lang, norm_model
+
+    return resolved_lang, DEFAULT_LANGUAGE_STT_MODELS[resolved_lang]

@@ -1038,6 +1038,10 @@
                     <div class="capture-source-tabs" style="display: flex; gap: 1rem; font-size: 0.875rem; font-weight: 500; align-items: center;">
                         <span id="tabMic" class="capture-tab active" style="color: var(--accent); cursor: pointer;"><span data-i18n="sttMicTitle">Microphone</span></span>
                         <span id="tabSys" class="capture-tab" style="color: var(--text-muted); cursor: pointer;"><span data-i18n="sttSysTitle">System Audio</span></span>
+                        <div id="sttMicModeToggle" class="stt-view-toggle" style="margin-bottom: 0; margin-left: 0.25rem;">
+                            <button class="stt-view-btn active" id="sttMicModeDictation" type="button" data-i18n="sttModeDictation">Dictation</button>
+                            <button class="stt-view-btn" id="sttMicModeLive" type="button" data-i18n="sttModeLive">Live</button>
+                        </div>
                         <div id="sttSysIncludeMicContainer" style="display: none; align-items: center; gap: 0.35rem; margin-left: 0.5rem;">
                             <input type="checkbox" id="sttSysIncludeMic" style="cursor: pointer; width: 14px; height: 14px; accent-color: var(--accent);">
                             <label for="sttSysIncludeMic" data-i18n="sttSysIncludeMic" style="cursor: pointer; font-size: 0.8125rem; color: var(--text-secondary); user-select: none;">Include microphone</label>
@@ -1195,6 +1199,9 @@
     <script src="/locales/index.js"></script>
     <script>
         let currentCaptureSource = "mic";
+        let currentMicMode = localStorage.getItem('resonance_sttMicMode') || 'dictation';
+        let liveJobId = null;
+        let liveTransport = null;
         let systemCaptureId = null;
         const API_URL = '/api';
         const JOBS_PAGE_SIZE = 60;
@@ -1219,6 +1226,7 @@
             progressChunk: 'Chunk {current} / {total}',
             progressStarting: 'Starting…',
             errNetwork: 'Network error',
+            errLiveBackpressure: 'Live transcription cannot keep up',
             errPleaseEnterText: 'Please enter text',
             ttsPlaceholderLimited: 'Enter text to synthesize... (up to {limit} characters)',
             ttsPlaceholderUnlimited: 'Enter text to synthesize...',
@@ -1234,6 +1242,7 @@
             charUnit: 'chars',
             defaultTranscriptionFile: 'transcription',
             sttMicHintIdle: 'Record speech from your microphone',
+            sttMicHintLive: 'Speak into microphone — real-time transcription active',
             sttMicHintRecording: 'Recording… press Stop when finished',
             sttMicHintReady: 'Recording is ready to send',
             sttSysHintIdle: 'Capture internal system audio (meetings, videos, etc.)',
@@ -1925,6 +1934,10 @@
                 eventSource: null,
                 jobId: null,
                 segments: null,
+                // Durable JobRegistry segments and mutable previews intentionally never share an array.
+                provisionalTail: new Map(),
+                closedPreviewGenerations: new Map(),
+                lastEventSeq: 0,
                 progressCurrent: 0,
                 progressTotal: 0,
                 statusPollTimer: null,
@@ -2128,10 +2141,14 @@
                         els.tabMic.classList.add('active');
                         els.tabMic.style.color = 'var(--accent)';
                     }
-                    setSttMicHint('sttMicHintIdle');
+                    if (els.sttMicModeToggle) {
+                        els.sttMicModeToggle.style.display = 'inline-flex';
+                    }
+                    setSttMicHint(currentMicMode === 'live' ? 'sttMicHintLive' : 'sttMicHintIdle');
                     if (els.sttMicStart) {
                         els.sttMicStart.textContent = t('sttMicStart');
                     }
+                    updateSttOptionsVisibility();
                 }
             }
         }
@@ -2167,6 +2184,9 @@
             sttMicHint: document.getElementById('sttMicHint'),
             tabMic: document.getElementById('tabMic'),
             tabSys: document.getElementById('tabSys'),
+            sttMicModeToggle: document.getElementById('sttMicModeToggle'),
+            sttMicModeDictation: document.getElementById('sttMicModeDictation'),
+            sttMicModeLive: document.getElementById('sttMicModeLive'),
             sttSysIncludeMic: document.getElementById('sttSysIncludeMic'),
             sttSysIncludeMicContainer: document.getElementById('sttSysIncludeMicContainer'),
             sttMicStart: document.getElementById('sttMicStart'),
@@ -2216,14 +2236,17 @@
 
         function refreshSttResultDisplay() {
             const segs = state.stt.segments;
-            if (!segs || !segs.length) return;
-            const mergedText = getSttContinuousText();
-            els.sttTimeRanges.textContent = buildSttTimeRangesText(segs);
-            let text = getActiveSttViewMode() === 'continuous'
-                ? mergedText
-                : getSttBlocksText();
+            const provisional = [...state.stt.provisionalTail.values()]
+                .map((tail) => tail.text).filter(Boolean).join(' ');
+            if ((!segs || !segs.length) && !provisional) return;
+            const committedContinuous = segs && segs.length ? getSttContinuousText() : '';
+            const committedBlocks = segs && segs.length ? getSttBlocksText() : '';
+            els.sttTimeRanges.textContent = buildSttTimeRangesText(segs || []);
+            const text = getActiveSttViewMode() === 'continuous'
+                ? [committedContinuous, provisional].filter(Boolean).join(' ')
+                : [committedBlocks, provisional].filter(Boolean).join('\n\n');
             els.sttResultText.value = formatLocalizedSpeakerTags(text);
-            els.sttMeta.textContent = formatSttMeta(segs.length);
+            els.sttMeta.textContent = formatSttMeta((segs || []).length);
         }
 
         function refreshActiveProgressLabels() {
@@ -2325,7 +2348,26 @@
             }
         }
 
+        async function fetchJobStatusForRestore(type, jobId) {
+            // A page reload can race the API connection becoming available again.
+            // Keep this bounded: a missing job is still cleared shortly afterwards,
+            // while a transient failure does not orphan a live system capture in UI.
+            const retryDelaysMs = [0, 250, 750];
+            for (const delayMs of retryDelaysMs) {
+                if (delayMs) {
+                    await new Promise(resolve => setTimeout(resolve, delayMs));
+                }
+                const status = await fetchJobStatus(type, jobId);
+                if (status) return status;
+            }
+            return null;
+        }
+
         function applySttJobStatus(status) {
+            updateSttJobControls(isLiveSttJob(status));
+            if (Number.isInteger(status.last_event_seq)) {
+                state.stt.lastEventSeq = Math.max(state.stt.lastEventSeq, status.last_event_seq);
+            }
             const segs = Array.isArray(status.result && status.result.segments)
                 ? status.result.segments
                     .filter(s => s && Number.isFinite(s.start) && Number.isFinite(s.end) && typeof s.text === 'string')
@@ -2334,7 +2376,9 @@
             if (!segs.length) return;
             state.stt.segments = segs;
             els.sttResult.classList.add('active');
-            els.sttProgress.classList.add('active');
+            if (!isLiveSttJob(status)) {
+                els.sttProgress.classList.add('active');
+            }
             const total = status.progress_total || segs.length;
             const current = status.progress_current || segs.length;
             state.stt.progressCurrent = current;
@@ -2349,6 +2393,48 @@
                 els.sttResultText.dataset.filename = status.result.filename;
             }
             refreshSttResultDisplay();
+        }
+
+        function isLiveSttJob(status) {
+            const source = status && status.result && status.result.source;
+            return source === 'mic_live' || source === 'system_audio';
+        }
+
+        function isSystemLiveSttJob(status) {
+            return status && status.result && status.result.source === 'system_audio';
+        }
+
+        function updateSttJobControls(isLive) {
+            els.sttHide.classList.toggle('active', !isLive);
+            els.sttCancel.classList.toggle('active', !isLive);
+            if (isLive) {
+                els.sttProgress.classList.remove('active');
+            }
+        }
+
+        function reattachSystemAudioUi(jobId, startedAtSec, filename = 'System Audio Capture.wav') {
+            // A newly loaded page has no live-only UI state yet.  Establish that
+            // baseline before SSE begins delivering events; a system capture may
+            // legitimately have no durable segment at this point.
+            state.stt.segments = state.stt.segments || [];
+            els.sttResult.classList.add('active');
+            els.sttResultText.dataset.filename = filename;
+            updateSttJobControls(true);
+            currentCaptureSource = 'sys';
+            systemCaptureId = jobId;
+            els.tabSys.classList.add('active');
+            els.tabSys.style.color = 'var(--accent)';
+            els.tabMic.classList.remove('active');
+            els.tabMic.style.color = 'var(--text-muted)';
+            if (els.sttSysIncludeMicContainer) els.sttSysIncludeMicContainer.style.display = 'flex';
+            if (els.sttMicModeToggle) els.sttMicModeToggle.style.display = 'none';
+            const startedAtMs = Number.isFinite(Number(startedAtSec))
+                ? Number(startedAtSec) * 1000
+                : Date.now();
+            startSttMicTimer(startedAtMs);
+            setSttMicRecordingUi(true);
+            setSttMicHint('sttSysHintCapturing');
+            updateSttOptionsVisibility();
         }
 
         function applyTtsJobStatus(status) {
@@ -2837,14 +2923,17 @@
                 applySttJobStatus(status);
                 if (status.state === 'running' || status.state === 'queued') {
                     setActiveJobId('STT', jobId);
-                    els.sttCancel.classList.add('active');
-                    els.sttHide.classList.add('active');
-                    els.sttProgress.classList.add('active');
+                    const isLive = isLiveSttJob(status);
+                    updateSttJobControls(isLive);
+                    if (!isLive) els.sttProgress.classList.add('active');
                     els.sttResult.classList.add('active');
                     if (status.result && status.result.filename) {
                         els.sttResultText.dataset.filename = status.result.filename;
                     }
-                    subscribeSttJobEvents(jobId, state.stt.segments || [], refreshSttResultDisplay);
+                    if (isSystemLiveSttJob(status)) {
+                        reattachSystemAudioUi(jobId, status.started_at, status.result && status.result.filename);
+                    }
+                    subscribeSttJobEvents(jobId, state.stt.segments || [], refreshSttResultDisplay, status.last_event_seq || 0);
                 }
             } else {
                 if (status.state === 'failed' || status.state === 'cancelled') {
@@ -2973,7 +3062,10 @@
             } else {
                 if (els.sttModelContainer) els.sttModelContainer.style.display = 'none';
             }
-            if (els.sttDiarizationContainer) els.sttDiarizationContainer.style.display = 'flex';
+            if (els.sttDiarizationContainer) {
+                const hideDiarization = (currentCaptureSource === 'sys') || (currentCaptureSource === 'mic' && currentMicMode === 'live');
+                els.sttDiarizationContainer.style.display = hideDiarization ? 'none' : 'flex';
+            }
         }
 
         if (els.sttLanguage) {
@@ -3014,19 +3106,52 @@
             });
         }
 
+        function setMicMode(mode) {
+            currentMicMode = mode === 'live' ? 'live' : 'dictation';
+            localStorage.setItem('resonance_sttMicMode', currentMicMode);
+            if (els.sttMicModeDictation) {
+                els.sttMicModeDictation.classList.toggle('active', currentMicMode === 'dictation');
+            }
+            if (els.sttMicModeLive) {
+                els.sttMicModeLive.classList.toggle('active', currentMicMode === 'live');
+            }
+            if (currentCaptureSource === 'mic') {
+                setSttMicHint(currentMicMode === 'live' ? 'sttMicHintLive' : 'sttMicHintIdle');
+            }
+            updateSttOptionsVisibility();
+        }
+
+        if (els.sttMicModeDictation && els.sttMicModeLive) {
+            setMicMode(currentMicMode);
+            els.sttMicModeDictation.addEventListener('click', () => {
+                if (sttMicState.recordingStartTime !== null || liveJobId || systemCaptureId) return;
+                setMicMode('dictation');
+            });
+            els.sttMicModeLive.addEventListener('click', () => {
+                if (sttMicState.recordingStartTime !== null || liveJobId || systemCaptureId) return;
+                setMicMode('live');
+            });
+        }
+
         (async function restoreActiveJobs() {
             const sttJobId = localStorage.getItem(STT_ACTIVE_JOB_KEY);
             if (sttJobId) {
-                const status = await fetchJobStatus('STT', sttJobId);
+                const status = await fetchJobStatusForRestore('STT', sttJobId);
                 if (!status || status.state === 'failed' || status.state === 'cancelled') {
                     setActiveJobId('STT', null);
                 } else {
                     setActiveJobId('STT', sttJobId);
                     applySttJobStatus(status);
                     if (status.state !== 'completed') {
-                        els.sttCancel.classList.add('active');
-                        els.sttHide.classList.add('active');
-                        subscribeSttJobEvents(sttJobId, state.stt.segments || [], refreshSttResultDisplay);
+                        updateSttJobControls(isLiveSttJob(status));
+                        if (isSystemLiveSttJob(status)) {
+                            reattachSystemAudioUi(
+                                sttJobId,
+                                status.started_at,
+                                status.result && status.result.filename
+                            );
+                        }
+                        subscribeSttJobEvents(sttJobId, state.stt.segments || [], refreshSttResultDisplay, status.last_event_seq || 0);
                     } else {
                         setActiveJobId('STT', null);
                     }
@@ -3088,6 +3213,8 @@
                     els.sttMeta.textContent = '';
                     els.sttTimeRanges.textContent = '';
                     state.stt.segments = null;
+                    state.stt.provisionalTail.clear();
+                    state.stt.closedPreviewGenerations.clear();
                     delete els.sttResultText.dataset.filename;
                 }
             } else if (type === 'TTS') {
@@ -3147,9 +3274,9 @@
             }
         }
 
-        function startSttMicTimer() {
+        function startSttMicTimer(startedAtMs = Date.now()) {
             stopSttMicTimer();
-            sttMicState.recordingStartTime = Date.now();
+            sttMicState.recordingStartTime = startedAtMs;
             updateSttMicTimer();
             sttMicState.timerInterval = setInterval(updateSttMicTimer, 1000);
         }
@@ -3271,6 +3398,145 @@
             return new Blob([buffer], { type: 'audio/wav' });
         }
 
+        const LIVE_RETRY_DELAYS_MS = [0, 250, 750, 1500];
+        const LIVE_PENDING_DURATION_LIMIT_SEC = 10;
+
+        function createLiveTransport(jobId, sampleRate) {
+            return {
+                jobId,
+                sampleRate,
+                chunks: [],
+                sampleCount: 0,
+                pendingChunks: [],
+                pendingDurationSec: 0,
+                uploadQueue: null,
+                failed: false,
+                nextSequence: 1,
+                captureStoppedForBackpressure: false,
+                stopping: false,
+            };
+        }
+
+        function failLiveTransport(transport, error) {
+            if (!transport || transport.failed) return;
+            transport.failed = true;
+
+            if (liveTransport === transport) {
+                liveTransport = null;
+                liveJobId = null;
+                stopSttMicTracks();
+                stopSttMicTimer();
+                sttMicState.recordingStartTime = null;
+                setSttMicRecordingUi(false);
+                setSttMicHint('sttMicHintLive');
+            }
+
+            showSttError(error && error.backpressure ? t('errLiveBackpressure') : t('errNetwork'));
+            // Pending audio was not confirmed. Let the server lease report this as partial.
+        }
+
+        function stopLiveCaptureForBackpressure(transport) {
+            if (transport.captureStoppedForBackpressure) return;
+            transport.captureStoppedForBackpressure = true;
+            stopSttMicTracks();
+            stopSttMicTimer();
+            setSttMicRecordingUi(false);
+            setSttMicHint('sttMicHintLive');
+            showSttError(t('errLiveBackpressure'));
+        }
+
+        function retryDelayMs(attempts) {
+            return LIVE_RETRY_DELAYS_MS[Math.min(attempts, LIVE_RETRY_DELAYS_MS.length - 1)];
+        }
+
+        async function sendPendingLiveChunk(transport, pending) {
+            const formData = new FormData();
+            formData.append('file', pending.blob, 'chunk.wav');
+            let response;
+            try {
+                response = await fetch(`/api/jobs/live/${encodeURIComponent(transport.jobId)}/chunk?sequence=${pending.sequence}`, {
+                    method: 'POST',
+                    body: formData,
+                });
+            } catch (error) {
+                return { retryable: true, error };
+            }
+
+            if (response.ok) {
+                try {
+                    const payload = await response.json();
+                    if (payload.ack_sequence !== pending.sequence) {
+                        return { fatal: true, error: new Error('Live audio sequence acknowledgement mismatch') };
+                    }
+                    return { acknowledged: true };
+                } catch (error) {
+                    return { fatal: true, error };
+                }
+            }
+
+            const error = new Error(await response.text());
+            if (response.status >= 500) return { retryable: true, error };
+            return { fatal: true, error };
+        }
+
+        function pumpLiveTransport(transport) {
+            if (transport.uploadQueue) return transport.uploadQueue;
+
+            transport.uploadQueue = (async () => {
+                while (transport.pendingChunks.length && !transport.failed) {
+                    const pending = transport.pendingChunks[0];
+                    let outcome;
+                    do {
+                        const delay = retryDelayMs(pending.attempts);
+                        if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+                        pending.attempts += 1;
+                        outcome = await sendPendingLiveChunk(transport, pending);
+                    } while (
+                        outcome.retryable &&
+                        pending.attempts < LIVE_RETRY_DELAYS_MS.length &&
+                        !transport.failed
+                    );
+
+                    if (outcome.acknowledged) {
+                        transport.pendingChunks.shift();
+                        transport.pendingDurationSec = Math.max(0, transport.pendingDurationSec - pending.durationSec);
+                        continue;
+                    }
+
+                    failLiveTransport(transport, outcome.error);
+                    return;
+                }
+            })().finally(() => {
+                transport.uploadQueue = null;
+            });
+            return transport.uploadQueue;
+        }
+
+        function queueLiveChunk(transport) {
+            if (!transport || !transport.sampleCount || transport.failed) {
+                return transport && transport.uploadQueue ? transport.uploadQueue : Promise.resolve();
+            }
+
+            const samples = mergeMicPcmChunks(transport.chunks, transport.sampleCount);
+            transport.chunks = [];
+            transport.sampleCount = 0;
+
+            const pending = {
+                sequence: transport.nextSequence,
+                blob: encodeMicWav(samples, transport.sampleRate),
+                durationSec: samples.length / transport.sampleRate,
+                attempts: 0,
+            };
+            transport.nextSequence += 1;
+            transport.pendingChunks.push(pending);
+            transport.pendingDurationSec += pending.durationSec;
+
+            if (transport.pendingDurationSec > LIVE_PENDING_DURATION_LIMIT_SEC) {
+                stopLiveCaptureForBackpressure(transport);
+            }
+            return pumpLiveTransport(transport);
+        }
+
         function showSttError(message) {
             els.sttError.textContent = message;
             els.sttError.classList.add('active');
@@ -3283,16 +3549,12 @@
                 els.sttMicStop.style.display = 'block';
                 setSttMicHint('sttSysHintCapturing');
                 els.sttMicHint.style.color = 'var(--accent)';
-                sttMicState.recordingStartTime = Date.now();
-                sttMicState.timerInterval = setInterval(updateSttMicTimer, 1000);
+                startSttMicTimer();
 
                 const lang = els.sttLanguage.value;
                 const params = new URLSearchParams({ language: lang });
                 if (lang === 'en') {
                     params.set('model', els.sttModel.value);
-                }
-                if (els.sttDiarization && els.sttDiarization.checked) {
-                    params.set('diarization', 'true');
                 }
                 if (els.sttSysIncludeMic && els.sttSysIncludeMic.checked) {
                     params.set('include_microphone', 'true');
@@ -3300,7 +3562,21 @@
                 const res = await fetch(`/api/system-audio/start?${params}`, { method: 'POST' });
                 if (!res.ok) throw new Error(await res.text());
                 const data = await res.json();
-                systemCaptureId = data.capture_id;
+                systemCaptureId = data.job_id;
+                if (Number.isFinite(Number(data.started_at))) {
+                    startSttMicTimer(Number(data.started_at) * 1000);
+                }
+
+                // Live System Audio immediately opens sttResult and streams SSE
+                state.stt.segments = [];
+                state.stt.lastEventSeq = 0;
+                setActiveJobId('STT', systemCaptureId);
+                els.sttResultText.dataset.filename = 'System Audio Capture.wav';
+                els.sttResult.classList.add('active');
+                updateSttJobControls(true);
+                els.sttResultText.value = '';
+                refreshSttResultDisplay();
+                subscribeSttJobEvents(systemCaptureId, state.stt.segments, refreshSttResultDisplay);
             } catch (err) {
                 console.error(err);
                 stopSttMicTimer();
@@ -3315,16 +3591,16 @@
 
         async function stopSystemCapture() {
             if (!systemCaptureId) return;
+            const jobIdToStop = systemCaptureId;
             try {
                 els.sttMicStop.disabled = true;
                 stopSttMicTimer();
                 els.sttMicHint.style.color = 'var(--text-muted)';
                 setSttMicHint('sttSysHintProcessing');
 
-                const res = await fetch(`/api/system-audio/stop?capture_id=${systemCaptureId}`, { method: 'POST' });
+                const res = await fetch(`/api/system-audio/stop?job_id=${encodeURIComponent(jobIdToStop)}`, { method: 'POST' });
                 if (!res.ok) throw new Error(await res.text());
 
-                const data = await res.json();
                 systemCaptureId = null;
                 sttMicState.recordingStartTime = null;
                 els.sttMicStop.style.display = 'none';
@@ -3332,20 +3608,6 @@
                 els.sttMicStop.disabled = false;
                 setSttMicHint('sttSysHintIdle');
                 els.sttMicHint.style.color = 'var(--text-muted)';
-
-                // Wire up the job exactly like a normal file upload
-                const jobId = data.job_id;
-                state.stt.segments = [];
-                setActiveJobId('STT', jobId);
-                els.sttResultText.dataset.filename = 'System Audio Capture.wav';
-                els.sttResult.classList.add('active');
-                els.sttCancel.classList.add('active');
-                els.sttHide.classList.add('active');
-                els.sttProgress.classList.add('active');
-                els.sttResultText.value = '';
-                refreshSttResultDisplay();
-                subscribeSttJobEvents(jobId, state.stt.segments, refreshSttResultDisplay);
-
             } catch (err) {
                 console.error(err);
                 alert('Failed to stop system capture: ' + err.message);
@@ -3365,6 +3627,37 @@
             sttMicState.pcmChunks = [];
             sttMicState.pcmSampleRate = 0;
             sttMicState.pcmSampleCount = 0;
+
+            const isLive = (currentMicMode === 'live');
+
+            if (isLive) {
+                try {
+                    const lang = els.sttLanguage.value;
+                    const params = new URLSearchParams({ language: lang });
+                    if (lang === 'en') {
+                        params.set('model', els.sttModel.value);
+                    }
+                    const startRes = await fetch(`/api/jobs/live/start?${params}`, { method: 'POST' });
+                    if (!startRes.ok) throw new Error(await startRes.text());
+                    const startData = await startRes.json();
+                    liveJobId = startData.job_id;
+
+                    state.stt.segments = [];
+                    state.stt.lastEventSeq = 0;
+                    setActiveJobId('STT', liveJobId);
+                    els.sttResultText.dataset.filename = 'Live Recording.wav';
+                    els.sttResult.classList.add('active');
+                    updateSttJobControls(true);
+                    els.sttResultText.value = '';
+                    refreshSttResultDisplay();
+                    subscribeSttJobEvents(liveJobId, state.stt.segments, refreshSttResultDisplay);
+                } catch (err) {
+                    console.error(err);
+                    showSttError(t('errRequestFailed'));
+                    return;
+                }
+            }
+
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                 sttMicState.stream = stream;
@@ -3381,13 +3674,28 @@
                 sttMicState.monitorGainNode = monitorGainNode;
                 sttMicState.pcmSampleRate = audioContext.sampleRate;
 
+                if (isLive && liveJobId) {
+                    liveTransport = createLiveTransport(liveJobId, audioContext.sampleRate);
+                }
+
                 processorNode.onaudioprocess = (event) => {
                     const input = event.inputBuffer.getChannelData(0);
                     if (!input || input.length === 0) return;
                     const chunk = new Float32Array(input.length);
                     chunk.set(input);
-                    sttMicState.pcmChunks.push(chunk);
-                    sttMicState.pcmSampleCount += chunk.length;
+
+                    if (isLive) {
+                        if (!liveTransport || liveTransport.captureStoppedForBackpressure) return;
+                        liveTransport.chunks.push(chunk);
+                        liveTransport.sampleCount += chunk.length;
+
+                        if (liveTransport.sampleCount >= liveTransport.sampleRate) {
+                            queueLiveChunk(liveTransport);
+                        }
+                    } else {
+                        sttMicState.pcmChunks.push(chunk);
+                        sttMicState.pcmSampleCount += chunk.length;
+                    }
                 };
 
                 sourceNode.connect(processorNode);
@@ -3396,26 +3704,55 @@
 
                 startSttMicTimer();
                 setSttMicRecordingUi(true);
-                setSttMicHint('sttMicHintRecording');
+                setSttMicHint(isLive ? 'sttMicHintLive' : 'sttMicHintRecording');
             } catch (e) {
                 stopSttMicTracks();
                 stopSttMicTimer();
                 setSttMicRecordingUi(false);
                 showSttError(t('errMicPermission'));
-                setSttMicHint('sttMicHintIdle');
+                setSttMicHint(isLive ? 'sttMicHintLive' : 'sttMicHintIdle');
+                if (isLive && liveJobId) {
+                    const failedJobId = liveJobId;
+                    liveJobId = null;
+                    liveTransport = null;
+                    fetch(`/api/jobs/live/${encodeURIComponent(failedJobId)}/stop`, { method: 'POST' }).catch(() => {});
+                }
             }
         }
 
-        function stopSttMicRecording() {
+        async function stopSttMicRecording() {
             if (!sttMicState.audioContext) return;
             setSttMicRecordingUi(false);
             stopSttMicTimer();
 
+            const isLive = (currentMicMode === 'live');
             const sampleRate = sttMicState.pcmSampleRate;
             const sampleCount = sttMicState.pcmSampleCount;
             const samples = mergeMicPcmChunks(sttMicState.pcmChunks, sampleCount);
 
             stopSttMicTracks();
+
+            if (isLive) {
+                sttMicState.recordingStartTime = null;
+                const transport = liveTransport;
+                const stoppedJobId = liveJobId;
+                if (transport && stoppedJobId) {
+                    transport.stopping = true;
+                    await queueLiveChunk(transport);
+                    if (!transport.failed && !transport.captureStoppedForBackpressure) {
+                        try {
+                            const response = await fetch(`/api/jobs/live/${encodeURIComponent(stoppedJobId)}/stop`, { method: 'POST' });
+                            if (!response.ok) throw new Error(await response.text());
+                            liveTransport = null;
+                            liveJobId = null;
+                        } catch (error) {
+                            failLiveTransport(transport, error);
+                        }
+                    }
+                }
+                setSttMicHint('sttMicHintLive');
+                return;
+            }
 
             if (!samples.length || !sampleRate) {
                 showSttError(t('errMicEmpty'));
@@ -3443,13 +3780,13 @@
             if (!sttMicState.file) return;
             const file = sttMicState.file;
             clearSttMicPreview();
-            setSttMicHint('sttMicHintIdle');
+            setSttMicHint(currentMicMode === 'live' ? 'sttMicHintLive' : 'sttMicHintIdle');
             await handleSttFile(file);
         }
 
         function discardSttMicRecording() {
             clearSttMicPreview();
-            setSttMicHint('sttMicHintIdle');
+            setSttMicHint(currentMicMode === 'live' ? 'sttMicHintLive' : 'sttMicHintIdle');
         }
 
         function closeJobStreams(type) {
@@ -3476,6 +3813,13 @@
         }
 
         function cancelJob(type) {
+            if (type === 'STT' && liveTransport) {
+                liveTransport = null;
+                liveJobId = null;
+                stopSttMicTracks();
+                stopSttMicTimer();
+                sttMicState.recordingStartTime = null;
+            }
             closeJobStreams(type);
             cancelActiveServerJob(type);
             setActiveJobId(type, null);
@@ -3490,9 +3834,10 @@
             refreshJobsListIfOpen();
         }
 
-        function subscribeSttJobEvents(jobId, segments, updateDisplay) {
+        function subscribeSttJobEvents(jobId, segments, updateDisplay, after = 0) {
             closeJobStreams('STT');
-            const es = new EventSource(API_URL + '/jobs/' + encodeURIComponent(jobId) + '/events');
+            state.stt.lastEventSeq = Math.max(state.stt.lastEventSeq, Number(after) || 0);
+            const es = new EventSource(API_URL + '/jobs/' + encodeURIComponent(jobId) + '/events?after=' + encodeURIComponent(String(state.stt.lastEventSeq)));
             state.stt.eventSource = es;
             es.onmessage = (ev) => {
                 let event;
@@ -3501,7 +3846,19 @@
                 } catch {
                     return;
                 }
+                if (Number.isInteger(event.seq)) {
+                    state.stt.lastEventSeq = Math.max(state.stt.lastEventSeq, event.seq);
+                }
                 switch (event.type) {
+                    case 'transcript_preview': {
+                        const source = String(event.source || 'mic');
+                        const generation = Number(event.generation);
+                        const closed = state.stt.closedPreviewGenerations.get(source) || 0;
+                        if (!Number.isInteger(generation) || generation <= closed) break;
+                        state.stt.provisionalTail.set(source, { generation, text: String(event.text || '') });
+                        refreshSttResultDisplay();
+                        break;
+                    }
                     case 'start':
                         state.stt.progressCurrent = 0;
                         state.stt.progressTotal = event.total || 0;
@@ -3518,6 +3875,13 @@
                         els.sttProgressFill.style.width = pct + '%';
                         els.sttProgressText.textContent = Math.round(pct) + '%';
                         if (event.segment) {
+                            const source = String(event.segment.source || 'mic');
+                            const generation = Number(event.segment.generation);
+                            if (Number.isInteger(generation)) {
+                                state.stt.closedPreviewGenerations.set(source, generation);
+                                const tail = state.stt.provisionalTail.get(source);
+                                if (tail && tail.generation <= generation) state.stt.provisionalTail.delete(source);
+                            }
                             segments.push(event.segment);
                             updateDisplay();
                         }
@@ -3533,6 +3897,7 @@
                         setTimeout(() => resetUI('STT', true), 800);
                         break;
                     case 'error':
+                        state.stt.provisionalTail.clear();
                         els.sttError.textContent = event.message || t('errProcessingFailed');
                         els.sttError.classList.add('active');
                         setActiveJobId('STT', null);
@@ -3541,6 +3906,7 @@
                         resetUI('STT');
                         break;
                     case 'cancelled':
+                        state.stt.provisionalTail.clear();
                         setActiveJobId('STT', null);
                         closeJobStreams('STT');
                         refreshJobsListIfOpen();
@@ -3569,7 +3935,7 @@
                     resetUI('STT');
                     return;
                 }
-                subscribeSttJobEvents(jobId, segments, updateDisplay);
+                subscribeSttJobEvents(jobId, segments, updateDisplay, state.stt.lastEventSeq);
             };
         }
 
@@ -3999,6 +4365,7 @@
 
             const segments = [];
             state.stt.segments = segments;
+            state.stt.lastEventSeq = 0;
             let myJobId = null;
 
             const updateDisplay = () => {
@@ -4064,7 +4431,7 @@
 
 
         els.tabMic.addEventListener('click', () => {
-            if (sttMicState.recordingStartTime !== null || systemCaptureId) return;
+            if (sttMicState.recordingStartTime !== null || liveJobId || systemCaptureId) return;
             currentCaptureSource = 'mic';
             els.tabMic.classList.add('active');
             els.tabMic.style.color = 'var(--accent)';
@@ -4075,13 +4442,17 @@
             if (els.sttSysIncludeMicContainer) {
                 els.sttSysIncludeMicContainer.style.display = 'none';
             }
-            setSttMicHint('sttMicHintIdle');
+            if (els.sttMicModeToggle) {
+                els.sttMicModeToggle.style.display = 'inline-flex';
+            }
+            setSttMicHint(currentMicMode === 'live' ? 'sttMicHintLive' : 'sttMicHintIdle');
             els.sttMicStart.textContent = t('sttMicStart');
+            updateSttOptionsVisibility();
         });
 
         if (els.tabSys) {
             els.tabSys.addEventListener('click', () => {
-                if (sttMicState.recordingStartTime !== null || systemCaptureId) return;
+                if (sttMicState.recordingStartTime !== null || liveJobId || systemCaptureId) return;
                 currentCaptureSource = 'sys';
                 els.tabSys.classList.add('active');
                 els.tabSys.style.color = 'var(--accent)';
@@ -4090,8 +4461,12 @@
                 if (els.sttSysIncludeMicContainer) {
                     els.sttSysIncludeMicContainer.style.display = 'flex';
                 }
+                if (els.sttMicModeToggle) {
+                    els.sttMicModeToggle.style.display = 'none';
+                }
                 setSttMicHint('sttSysHintIdle');
                 els.sttMicStart.textContent = t('sttSysStart');
+                updateSttOptionsVisibility();
             });
         }
 

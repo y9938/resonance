@@ -1,11 +1,11 @@
 import asyncio
 import subprocess
 import tempfile
+import threading
 
 import numpy as np
 import pytest
 import soundfile as sf
-from fastapi.testclient import TestClient
 
 from server import app
 from stt.buffer import AudioMemoryBuffer
@@ -118,45 +118,50 @@ async def test_server_system_audio_lifecycle_pure_in_ram(monkeypatch) -> None:
     class DummyCaptureStrategy:
         def __init__(self, include_microphone=False):
             self.active = False
+            self.stopped = threading.Event()
         def start_capture(self):
             self.active = True
         def stop_capture(self):
             self.active = False
+            self.stopped.set()
         def get_audio_stream(self):
             # Yield 1 chunk of synthetic audio
             yield ("sys", np.zeros(16000, dtype=np.float32))
+            self.stopped.wait()
 
     monkeypatch.setattr("server.get_system_audio_capture", lambda **kw: DummyCaptureStrategy(**kw))
 
-    client = TestClient(app)
-    # Start capture
-    resp = client.post("/api/system-audio/start?language=ru&model=gigaam")
-    assert resp.status_code == 200
-    assert "capture_id" not in resp.json()  # Zero-legacy: capture_id completely removed
-    job_id = resp.json()["job_id"]
+    import httpx
 
-    # Idempotent re-attach test (e.g. page reload or second tab)
-    resp_dupe = client.post("/api/system-audio/start?language=ru&model=gigaam")
-    assert resp_dupe.status_code == 200
-    assert resp_dupe.json()["job_id"] == job_id
-    assert resp_dupe.json().get("resumed") is True
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        # Start capture
+        resp = await client.post("/api/system-audio/start?language=ru&model=gigaam")
+        assert resp.status_code == 200
+        assert "capture_id" not in resp.json()  # Zero-legacy: capture_id completely removed
+        job_id = resp.json()["job_id"]
 
-    await asyncio.sleep(0.05)
+        # Idempotent re-attach test (e.g. page reload or second tab)
+        resp_dupe = await client.post("/api/system-audio/start?language=ru&model=gigaam")
+        assert resp_dupe.status_code == 200
+        assert resp_dupe.json()["job_id"] == job_id
+        assert resp_dupe.json().get("resumed") is True
 
-    # Stop capture
-    stop_resp = client.post(f"/api/system-audio/stop?job_id={job_id}")
-    assert stop_resp.status_code == 200
-    assert stop_resp.json()["job_id"] == job_id
+        await asyncio.sleep(0.05)
 
-    # Second stop should fail fast with 404 (already stopped)
-    stop_resp_again = client.post(f"/api/system-audio/stop?job_id={job_id}")
-    assert stop_resp_again.status_code == 404
+        # Stop capture
+        stop_resp = await client.post(f"/api/system-audio/stop?job_id={job_id}")
+        assert stop_resp.status_code == 200
+        assert stop_resp.json()["job_id"] == job_id
 
-    # Verify context tail snapshot endpoint
-    tail_resp = client.get("/api/context/tail?lines=3")
-    assert tail_resp.status_code == 200
-    assert "lines" in tail_resp.json()
-    assert "combined" in tail_resp.json()
+        # Second stop should fail fast with 404 (already stopped)
+        stop_resp_again = await client.post(f"/api/system-audio/stop?job_id={job_id}")
+        assert stop_resp_again.status_code == 404
+
+        # Verify context tail snapshot endpoint
+        tail_resp = await client.get("/api/context/tail?lines=3")
+        assert tail_resp.status_code == 200
+        assert "lines" in tail_resp.json()
+        assert "combined" in tail_resp.json()
 
 def test_decode_media_bytes_to_audio_memory_buffer() -> None:
     import io

@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import secrets
 import threading
 import time
 from dataclasses import dataclass
 from typing import Any
+
+log = logging.getLogger("resonance.core.jobs")
+TERMINAL_STATES = frozenset({"completed", "failed", "cancelled"})
 
 
 @dataclass
@@ -36,6 +40,7 @@ class JobRecord:
     cancelled: bool
     events: list[dict[str, Any]]
     next_seq: int
+    started_at: float | None = None
     language: str | None = None
     model: str | None = None
 
@@ -70,6 +75,7 @@ class JobRegistry:
             cancelled=False,
             events=[],
             next_seq=1,
+            started_at=None,
             language=language,
             model=model,
         )
@@ -91,36 +97,44 @@ class JobRegistry:
             rec = self._jobs.get(job_id)
             if not rec:
                 return False
+            if self._is_terminal_locked(rec):
+                self._log_rejected_transition(job_id, "cancel", rec.state)
+                return False
             rec.cancelled = True
-            if rec.state in {"queued", "running"}:
-                rec.state = "cancelled"
-                rec.updated_at = time.time()
-                self._append_event_locked(rec, "cancelled", {})
+            rec.state = "cancelled"
+            rec.updated_at = time.time()
+            self._append_event_locked(rec, "cancelled", {})
             return True
 
     def cancel_all(self) -> None:
         with self._lock:
             for rec in self._jobs.values():
+                if self._is_terminal_locked(rec):
+                    continue
                 rec.cancelled = True
-                if rec.state in {"queued", "running"}:
-                    rec.state = "cancelled"
-                    rec.updated_at = time.time()
-                    self._append_event_locked(rec, "cancelled", {})
+                rec.state = "cancelled"
+                rec.updated_at = time.time()
+                self._append_event_locked(rec, "cancelled", {})
 
     def is_cancelled(self, job_id: str) -> bool:
         with self._lock:
             rec = self._jobs.get(job_id)
             return bool(rec and rec.cancelled)
 
-    def update_event(self, job_id: str, event_type: str, data: dict[str, Any]) -> None:
+    def update_event(self, job_id: str, event_type: str, data: dict[str, Any]) -> bool:
         with self._lock:
             rec = self._jobs.get(job_id)
             if not rec:
-                return
+                return False
+            if self._is_terminal_locked(rec):
+                self._log_rejected_transition(job_id, event_type, rec.state)
+                return False
             now = time.time()
             rec.updated_at = now
             if event_type == "start":
                 rec.state = "running"
+                if rec.started_at is None:
+                    rec.started_at = now
                 rec.progress_total = int(data.get("total", 0))
                 rec.progress_current = 0
                 if rec.job_type == "stt" and "duration" in data:
@@ -158,6 +172,9 @@ class JobRegistry:
                             max_end = max(max_end, end)
                         if max_end > 0:
                             rec.result["duration"] = max_end
+                    for key in ("completion_reason", "partial"):
+                        if key in data:
+                            rec.result[key] = data[key]
                 if rec.job_type == "tts":
                     for key in ("download_url", "duration", "chunks", "filename"):
                         if key in data:
@@ -167,7 +184,9 @@ class JobRegistry:
                 rec.error = str(data.get("message", "Job failed"))
             elif event_type == "cancelled":
                 rec.state = "cancelled"
+                rec.cancelled = True
             self._append_event_locked(rec, event_type, data)
+            return True
 
     def get_status(self, job_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -185,8 +204,10 @@ class JobRegistry:
                 "result": copy.deepcopy(rec.result),
                 "created_at": rec.created_at,
                 "updated_at": rec.updated_at,
+                "started_at": rec.started_at,
                 "language": rec.language,
                 "model": rec.model,
+                "last_event_seq": rec.next_seq - 1,
             }
 
     def events_after(self, job_id: str, after_seq: int) -> list[dict[str, Any]]:
@@ -261,3 +282,16 @@ class JobRegistry:
         rec.events.append(payload)
         if len(rec.events) > 5000:
             rec.events = rec.events[-5000:]
+
+    @staticmethod
+    def _is_terminal_locked(rec: JobRecord) -> bool:
+        return rec.state in TERMINAL_STATES
+
+    @staticmethod
+    def _log_rejected_transition(job_id: str, event_type: str, state: str) -> None:
+        log.warning(
+            "Rejected %s for terminal job: job_id=%s state=%s",
+            event_type,
+            job_id,
+            state,
+        )
