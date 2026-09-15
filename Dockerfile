@@ -8,12 +8,16 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 
 ENV UV_COMPILE_BYTECODE=1 \
-    UV_TORCH_BACKEND=${PYTORCH_BACKEND} \
     UV_LINK_MODE=copy
 
 COPY pyproject.toml .
 
-RUN uv pip install --system -r pyproject.toml
+# Empty backend uses the normal PyPI index.
+RUN if [ -n "$PYTORCH_BACKEND" ]; then \
+        uv pip install --system -r pyproject.toml --torch-backend="$PYTORCH_BACKEND"; \
+    else \
+        uv pip install --system -r pyproject.toml; \
+    fi
 
 # -----------------------------------------------------------------------------
 # Runtime stage

@@ -12,13 +12,20 @@ IMAGE := if DEVICE == "cuda" { IMAGE_NAME + ":gpu-" + IMAGE_TAG } else { IMAGE_N
 TAR_FILE := if DEVICE == "cuda" { IMAGE_NAME + "_gpu_" + IMAGE_TAG + ".tar.gz" } else { IMAGE_NAME + "_" + IMAGE_TAG + ".tar.gz" }
 
 DEVICE := env("DEVICE", "cpu")
-PYTORCH_BACKEND := env("PYTORCH_BACKEND", "")
+PYTORCH_BACKEND := env(
+    "PYTORCH_BACKEND",
+    if DEVICE == "cpu" { "cpu" } else { "" }
+)
 GPU_FLAGS := if DEVICE == "cuda" { "--gpus all" } else { "" }
 
 RESONANCE_PORT := env("RESONANCE_PORT", "8000")
 
 TORCH_BACKEND_ARG := if PYTORCH_BACKEND != "" { "--torch-backend=" + PYTORCH_BACKEND } else { "" }
-BUILD_ARG := if PYTORCH_BACKEND != "" { "--build-arg PYTORCH_BACKEND=" + PYTORCH_BACKEND } else { "" }
+BUILD_BACKEND := if DEVICE == "cuda" { PYTORCH_BACKEND } else { "cpu" }
+BUILD_ARG := "--build-arg PYTORCH_BACKEND=" + BUILD_BACKEND
+# Docker is Linux-only.
+CONTAINER_DEVICE := if DEVICE == "cuda" { "cuda" } else { "cpu" }
+ENV_FILE_ARG := if path_exists(".env") == "true" { "--env-file .env" } else { "" }
 
 # Show available recipes
 default:
@@ -54,13 +61,13 @@ RESONANCE_CACHE_DIR := env("RESONANCE_CACHE_DIR", env("HOME", env("USERPROFILE",
 # Run container
 run *ARGS:
     @mkdir -p "{{HF_CACHE_DIR}}" "{{TORCH_CACHE_DIR}}" "{{GIGAAM_CACHE_DIR}}" "{{SHERPA_CACHE_DIR}}" "{{RESONANCE_CACHE_DIR}}"
-    docker run -it --rm --name resonance {{GPU_FLAGS}} \
-        --env-file .env \
+    docker run -it --rm --name resonance {{GPU_FLAGS}} {{ENV_FILE_ARG}} \
         -v "{{HF_CACHE_DIR}}":/home/resonance/.cache/huggingface \
         -v "{{TORCH_CACHE_DIR}}":/home/resonance/.cache/torch \
         -v "{{GIGAAM_CACHE_DIR}}":/home/resonance/.cache/gigaam \
         -v "{{SHERPA_CACHE_DIR}}":/home/resonance/.cache/sherpa \
         -v "{{RESONANCE_CACHE_DIR}}":/home/resonance/.cache/resonance \
+        -e DEVICE={{CONTAINER_DEVICE}} \
         -e RESONANCE_PORT={{RESONANCE_PORT}} \
         -p {{RESONANCE_PORT}}:{{RESONANCE_PORT}} \
         {{ARGS}} \

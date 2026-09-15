@@ -14,20 +14,21 @@ Unified Speech-to-Text (STT) and Text-to-Speech (TTS) API Server.
 
 ## Configuration
 
-Create `.env` before running:
+`.env` is optional. Out of the box Resonance runs with CPU defaults.
+
+Create `.env` only if you want to override defaults:
 
 ```bash
-cp .env.example .env
+touch .env
 ```
 
-See `.env.example` for available options.
-
-Before installing dependencies, configure `.env`:
 - **CUDA**: set `DEVICE=cuda`, leave `PYTORCH_BACKEND=` for PyPI default or set a specific backend like `cu128`
-- **CPU**: set `DEVICE=cpu` and `PYTORCH_BACKEND=cpu`
+- **CPU**: by default lightweight CPU-only wheels
 - **macOS**: use the setup script below
 - **Port**: set `RESONANCE_PORT` (default `8000`)
 - **CORS**: set `RESONANCE_CORS_ORIGINS` only for custom origins; default follows `RESONANCE_PORT`
+
+See `.env.example` for all available overrides and reference values.
 
 ## Docker
 
