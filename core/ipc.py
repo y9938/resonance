@@ -8,11 +8,12 @@ import sys
 from contextlib import suppress
 from typing import Any
 
-from core.context import session_context_manager
+from core.context import SessionContextManager
 
 log = logging.getLogger("resonance.core.ipc")
 
-# Domain Invariant: Socket files must reside in runtime user directory with strict DAC (0600)
+
+# POSIX sockets use owner-only permissions (0600); RESONANCE_IPC_PATH may override the default location.
 def get_default_ipc_path() -> str:
     if custom := os.environ.get("RESONANCE_IPC_PATH"):
         return custom
@@ -24,7 +25,10 @@ def get_default_ipc_path() -> str:
     return os.path.expanduser("~/.cache/resonance/ipc.sock")
 
 
-def _dispatch_ipc_command(raw_cmd: str) -> dict[str, Any]:
+def _dispatch_ipc_command(
+    raw_cmd: str,
+    context_mgr: SessionContextManager,
+) -> dict[str, Any]:
     cmd = raw_cmd.strip()
     if not cmd:
         return {"error": "empty_command"}
@@ -32,28 +36,61 @@ def _dispatch_ipc_command(raw_cmd: str) -> dict[str, Any]:
     parts = cmd.split()
     action = parts[0].lower()
 
-    if action == "tail":
-        lines = 5
-        if len(parts) > 1 and parts[1].isdigit():
-            lines = max(1, min(50, int(parts[1])))
+    if action == "ping":
+        if len(parts) != 1:
+            return {
+                "error": "invalid_command_syntax",
+                "detail": f"ping does not accept arguments, got: {' '.join(parts[1:])}",
+            }
+        return {"pong": True}
 
-        recent = session_context_manager.get_latest_tail(lines=lines)
+    if action == "tail":
+        if len(parts) == 1:
+            lines = 5
+        elif len(parts) == 2:
+            if not parts[1].isascii() or not parts[1].removeprefix("-").isdecimal():
+                return {
+                    "error": "invalid_lines_argument",
+                    "detail": f"Expected integer line count, got: {parts[1]}",
+                }
+            try:
+                lines = int(parts[1])
+            except ValueError:
+                return {
+                    "error": "invalid_lines_argument",
+                    "detail": f"Expected integer line count, got: {parts[1]}",
+                }
+            if lines < 1:
+                return {
+                    "error": "lines_must_be_positive",
+                    "detail": "Requested line count must be >= 1",
+                }
+        else:
+            return {
+                "error": "invalid_command_syntax",
+                "detail": f"tail accepts at most 1 argument, got: {' '.join(parts[1:])}",
+            }
+
+        recent = context_mgr.get_ipc_tail(lines=lines)
         return {
             "lines": recent,
             "combined": " ".join(recent),
             "count": len(recent),
         }
-    elif action == "ping":
-        return {"pong": True}
-    else:
-        return {"error": f"unknown_command: {action}"}
+
+    return {"error": f"unknown_command: {action}"}
 
 
 class UnixSocketIPCServer:
     """POSIX local IPC server backed by AF_UNIX domain socket with chmod 0600."""
 
-    def __init__(self, socket_path: str) -> None:
+    def __init__(
+        self,
+        socket_path: str,
+        context_mgr: SessionContextManager,
+    ) -> None:
         self.socket_path = socket_path
+        self._context_mgr = context_mgr
         self._server: asyncio.Server | None = None
 
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -61,7 +98,10 @@ class UnixSocketIPCServer:
             line = await reader.readline()
             if not line:
                 return
-            response_payload = _dispatch_ipc_command(line.decode(errors="replace"))
+            response_payload = _dispatch_ipc_command(
+                line.decode(errors="replace"),
+                context_mgr=self._context_mgr,
+            )
             data = json.dumps(response_payload) + "\n"
             writer.write(data.encode())
             await writer.drain()
@@ -73,7 +113,6 @@ class UnixSocketIPCServer:
                 await writer.wait_closed()
 
     async def start(self) -> None:
-        # Assumes: Path must be cleanly unlinked before bind to prevent EADDRINUSE
         sock_dir = os.path.dirname(self.socket_path)
         if sock_dir:
             os.makedirs(sock_dir, mode=0o700, exist_ok=True)
@@ -113,8 +152,9 @@ class UnixSocketIPCServer:
 class WindowsNamedPipeIPCServer:
     """Windows local IPC server backed by Kernel Named Pipes (\\.\\pipe\\...)."""
 
-    def __init__(self, pipe_name: str) -> None:
+    def __init__(self, pipe_name: str, context_mgr: SessionContextManager) -> None:
         self.pipe_name = pipe_name
+        self._context_mgr = context_mgr
         self._servers: list[Any] = []
 
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -122,7 +162,10 @@ class WindowsNamedPipeIPCServer:
             line = await reader.readline()
             if not line:
                 return
-            response_payload = _dispatch_ipc_command(line.decode(errors="replace"))
+            response_payload = _dispatch_ipc_command(
+                line.decode(errors="replace"),
+                context_mgr=self._context_mgr,
+            )
             data = json.dumps(response_payload) + "\n"
             writer.write(data.encode())
             await writer.drain()
@@ -158,8 +201,11 @@ class WindowsNamedPipeIPCServer:
         log.info("Windows Named Pipe IPC server stopped")
 
 
-def create_local_ipc_server(custom_path: str | None = None) -> UnixSocketIPCServer | WindowsNamedPipeIPCServer:
+def create_local_ipc_server(
+    context_mgr: SessionContextManager,
+    custom_path: str | None = None,
+) -> UnixSocketIPCServer | WindowsNamedPipeIPCServer:
     path = custom_path or get_default_ipc_path()
     if sys.platform.startswith("win"):
-        return WindowsNamedPipeIPCServer(pipe_name=path)
-    return UnixSocketIPCServer(socket_path=path)
+        return WindowsNamedPipeIPCServer(pipe_name=path, context_mgr=context_mgr)
+    return UnixSocketIPCServer(socket_path=path, context_mgr=context_mgr)

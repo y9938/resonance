@@ -296,11 +296,9 @@ def run_stt_job(
             if hasattr(jobs, "get_status"):
                 status = jobs.get_status(job_id)
                 if status and "session_id" in status:
-                    session_context_manager.append(
+                    session_context_manager.append_session(
                         session_id=status["session_id"],
                         text=text,
-                        start_sec=start_sec,
-                        end_sec=end_sec,
                     )
 
             jobs.update_event(

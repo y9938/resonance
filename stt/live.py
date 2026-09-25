@@ -230,7 +230,7 @@ class LiveSTTSession:
             return None
         if self.dual_stream:
             text = f"[SOURCE:{src.upper()}]: {text}"
-        session_context_manager.append(self.session_id, text, start / self.sample_rate, end / self.sample_rate)
+        session_context_manager.append_live(self.session_id, text)
         segment = {"start": round(start / self.sample_rate, 3), "end": round(end / self.sample_rate, 3), "text": text, "source": src, "generation": generation}
         if self.jobs.update_event(self.job_id, "progress", {"current": round(end / self.sample_rate, 2), "total": round(end / self.sample_rate, 2), "segment": segment}) is False:
             raise RuntimeError("Live STT progress event was rejected")

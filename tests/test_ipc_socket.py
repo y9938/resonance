@@ -5,76 +5,80 @@ import sys
 
 import pytest
 
-from core.context import session_context_manager
-from core.ipc import (
-    UnixSocketIPCServer,
-    _dispatch_ipc_command,
-)
+from core.context import SessionContextManager
+from core.ipc import UnixSocketIPCServer, _dispatch_ipc_command
 
 
-def test_ipc_command_dispatch():
-    session_context_manager.clear("test_session")
-    session_context_manager.append("test_session", "Context line 1")
-    session_context_manager.append("test_session", "Context line 2")
+def test_ipc_tail_contract() -> None:
+    manager = SessionContextManager()
+    for index in range(7):
+        manager.append_live("session", f"line {index}")
 
-    res_ping = _dispatch_ipc_command("ping")
-    assert res_ping == {"pong": True}
+    assert _dispatch_ipc_command("tail", manager)["lines"] == [
+        f"line {index}" for index in range(2, 7)
+    ]
+    response = _dispatch_ipc_command("tail 3", manager)
+    assert response == {
+        "lines": ["line 4", "line 5", "line 6"],
+        "combined": "line 4 line 5 line 6",
+        "count": 3,
+    }
+    assert _dispatch_ipc_command("tail 10", manager)["lines"] == [
+        f"line {index}" for index in range(7)
+    ]
+    assert _dispatch_ipc_command("tail 0", manager)["error"] == "lines_must_be_positive"
+    assert _dispatch_ipc_command("tail -1", manager)["error"] == "lines_must_be_positive"
+    for argument in ("invalid", "1_0", "+1", "1.0", "0x10", "１２"):
+        assert _dispatch_ipc_command(f"tail {argument}", manager)["error"] == "invalid_lines_argument"
+    assert _dispatch_ipc_command("tail 2 extra", manager)["error"] == "invalid_command_syntax"
 
-    res_tail = _dispatch_ipc_command("tail 2")
-    assert res_tail["count"] == 2
-    assert res_tail["lines"] == ["Context line 1", "Context line 2"]
-    assert "Context line 1 Context line 2" in res_tail["combined"]
 
-    res_unknown = _dispatch_ipc_command("unknown_action")
-    assert "error" in res_unknown
+def test_ipc_ping_contract() -> None:
+    manager = SessionContextManager()
+    assert _dispatch_ipc_command("ping", manager) == {"pong": True}
+    assert _dispatch_ipc_command("ping extra", manager)["error"] == "invalid_command_syntax"
 
 
 @pytest.mark.asyncio
-async def test_unix_socket_ipc_server(tmp_path):
+async def test_unix_socket_permissions_and_tail(tmp_path):
     if sys.platform.startswith("win"):
         pytest.skip("Unix domain socket tests run on POSIX")
 
-    sock_path = str(tmp_path / "test_res.sock")
-    server = UnixSocketIPCServer(socket_path=sock_path)
+    socket_path = str(tmp_path / "test_res.sock")
+    manager = SessionContextManager()
+    manager.append_live("session", "Kernel socket check")
+    ipc_server = UnixSocketIPCServer(socket_path=socket_path, context_mgr=manager)
 
-    session_context_manager.append("sock_session", "Kernel socket check")
-
-    await server.start()
+    await ipc_server.start()
     try:
-        assert os.path.exists(sock_path)
-        # Check permissions: strictly owner-only (0600)
-        mode = os.stat(sock_path).st_mode & 0o777
-        assert mode == 0o600
-
-        reader, writer = await asyncio.open_unix_connection(sock_path)
+        assert os.stat(socket_path).st_mode & 0o777 == 0o600
+        reader, writer = await asyncio.open_unix_connection(socket_path)
         writer.write(b"tail 1\n")
         await writer.drain()
 
-        raw = await reader.readline()
-        data = json.loads(raw.decode())
-        assert "lines" in data
-        assert data["lines"] == ["Kernel socket check"]
+        response = json.loads((await reader.readline()).decode())
+        assert response["lines"] == ["Kernel socket check"]
 
         writer.close()
         await writer.wait_closed()
     finally:
-        await server.stop()
-        assert not os.path.exists(sock_path)
+        await ipc_server.stop()
+    assert not os.path.exists(socket_path)
 
 
 @pytest.mark.asyncio
-async def test_windows_named_pipe_ipc_server():
+async def test_windows_named_pipe_tail():
     if not sys.platform.startswith("win"):
         pytest.skip("Windows named pipe tests run on Windows")
 
     from core.ipc import WindowsNamedPipeIPCServer
 
     pipe_name = r"\\.\pipe\test-resonance-ipc-unit"
-    server = WindowsNamedPipeIPCServer(pipe_name=pipe_name)
+    manager = SessionContextManager()
+    manager.append_live("session", "Pipe payload check")
+    ipc_server = WindowsNamedPipeIPCServer(pipe_name=pipe_name, context_mgr=manager)
 
-    session_context_manager.append("win_pipe_session", "Pipe payload check")
-
-    await server.start()
+    await ipc_server.start()
     try:
         loop = asyncio.get_running_loop()
         client_reader = asyncio.StreamReader()
@@ -84,13 +88,10 @@ async def test_windows_named_pipe_ipc_server():
 
         writer.write(b"tail 1\n")
         await writer.drain()
-
-        raw = await client_reader.readline()
-        data = json.loads(raw.decode())
-        assert "lines" in data
-        assert data["lines"] == ["Pipe payload check"]
+        response = json.loads((await client_reader.readline()).decode())
+        assert response["lines"] == ["Pipe payload check"]
 
         writer.close()
         await writer.wait_closed()
     finally:
-        await server.stop()
+        await ipc_server.stop()

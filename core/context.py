@@ -1,89 +1,76 @@
 from __future__ import annotations
 
 import threading
-import time
-from dataclasses import dataclass
+from collections import deque
 
-
-@dataclass(frozen=True)
-class ContextEntry:
-    text: str
-    start_sec: float
-    end_sec: float
-    created_at: float
+DEFAULT_CONTEXT_CAPACITY: int = 1000
 
 
 class TextContextRingBuffer:
-    def __init__(self, capacity: int = 100) -> None:
-        self.capacity = capacity
-        self._lock = threading.Lock()
-        self._entries: list[ContextEntry] = []
+    """Thread-safe bounded text buffer with FIFO retention."""
 
-    def append(self, text: str, start_sec: float = 0.0, end_sec: float = 0.0) -> None:
+    def __init__(self, capacity: int = DEFAULT_CONTEXT_CAPACITY) -> None:
+        if capacity < 1:
+            raise ValueError(f"capacity must be >= 1, got {capacity}")
+        self._lock = threading.Lock()
+        self._entries: deque[str] = deque(maxlen=capacity)
+
+    def append(self, text: str) -> None:
         cleaned = text.strip()
         if not cleaned:
             return
-        entry = ContextEntry(
-            text=cleaned,
-            start_sec=round(start_sec, 2),
-            end_sec=round(end_sec, 2),
-            created_at=time.time(),
-        )
         with self._lock:
-            if len(self._entries) >= self.capacity:
-                self._entries.pop(0)
-            self._entries.append(entry)
+            self._entries.append(cleaned)
 
-    def get_tail(self, lines: int = 5, max_age_sec: float = 300.0) -> list[str]:
-        now = time.time()
+    def get_tail(self, lines: int = 5) -> list[str]:
+        if lines < 1:
+            raise ValueError(f"lines must be >= 1, got {lines}")
         with self._lock:
-            recent = [
-                e.text
-                for e in self._entries[-lines:]
-                if (now - e.created_at) <= max_age_sec
-            ]
-        return recent
-
-    def clear(self) -> None:
-        with self._lock:
-            self._entries.clear()
+            return list(self._entries)[-lines:]
 
 
 class SessionContextManager:
-    """Session-isolated context store preventing cross-tenant information disclosure."""
+    """Stores per-session context and a process-local live transcript feed.
 
-    def __init__(self, buffer_capacity: int = 100) -> None:
+    Session buffers live for the process lifetime and are bounded by FIFO.
+    Live commits update the session and IPC feed as one ordered operation.
+    """
+
+    def __init__(self, buffer_capacity: int = DEFAULT_CONTEXT_CAPACITY) -> None:
+        if buffer_capacity < 1:
+            raise ValueError(f"buffer_capacity must be >= 1, got {buffer_capacity}")
         self._capacity = buffer_capacity
         self._lock = threading.Lock()
         self._sessions: dict[str, TextContextRingBuffer] = {}
+        self._ipc_feed = TextContextRingBuffer(capacity=buffer_capacity)
 
-    def append(self, session_id: str, text: str, start_sec: float = 0.0, end_sec: float = 0.0) -> None:
+    def _append(self, session_id: str, text: str, *, publish_to_ipc: bool) -> None:
+        cleaned = text.strip()
+        if not cleaned:
+            return
         with self._lock:
             if session_id not in self._sessions:
                 self._sessions[session_id] = TextContextRingBuffer(capacity=self._capacity)
-            buf = self._sessions[session_id]
-            self._sessions[session_id] = self._sessions.pop(session_id)
-        buf.append(text, start_sec, end_sec)
+            self._sessions[session_id].append(cleaned)
+            if publish_to_ipc:
+                self._ipc_feed.append(cleaned)
 
-    def get_tail(self, session_id: str, lines: int = 5, max_age_sec: float = 300.0) -> list[str]:
+    def append_session(self, session_id: str, text: str) -> None:
+        self._append(session_id, text, publish_to_ipc=False)
+
+    def append_live(self, session_id: str, text: str) -> None:
+        """Appends a live conversational audio segment to session buffer and local IPC feed."""
+        self._append(session_id, text, publish_to_ipc=True)
+
+    def get_session_tail(self, session_id: str, lines: int = 5) -> list[str]:
+        if lines < 1:
+            raise ValueError(f"lines must be >= 1, got {lines}")
         with self._lock:
-            buf = self._sessions.get(session_id)
-        if buf is None:
-            return []
-        return buf.get_tail(lines=lines, max_age_sec=max_age_sec)
+            session = self._sessions.get(session_id)
+            return [] if session is None else session.get_tail(lines=lines)
 
-    def get_latest_tail(self, lines: int = 5, max_age_sec: float = 300.0) -> list[str]:
-        with self._lock:
-            if not self._sessions:
-                return []
-            latest_session = next(reversed(self._sessions.values()))
-            return latest_session.get_tail(lines=lines, max_age_sec=max_age_sec)
-
-    def clear(self, session_id: str) -> None:
-        with self._lock:
-            buf = self._sessions.get(session_id)
-        if buf is not None:
-            buf.clear()
+    def get_ipc_tail(self, lines: int = 5) -> list[str]:
+        return self._ipc_feed.get_tail(lines=lines)
 
 
-session_context_manager = SessionContextManager(buffer_capacity=100)
+session_context_manager = SessionContextManager()

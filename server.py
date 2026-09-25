@@ -166,8 +166,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     await asyncio.to_thread(tts_service.sweep_stale_files, Config.TTS_FILE_TTL_SEC)
 
+    from core.context import session_context_manager
     from core.ipc import create_local_ipc_server
-    ipc_server = create_local_ipc_server()
+    ipc_server = create_local_ipc_server(context_mgr=session_context_manager)
     try:
         await ipc_server.start()
     except Exception as exc:
@@ -888,16 +889,16 @@ async def stream_download(p: str, filename: str | None = None) -> FileResponse:
 async def get_context_tail(
     request: Request,
     response: Response,
-    lines: int = Query(default=5, ge=1, le=50),
+    lines: int = Query(default=5, ge=1),
 ) -> dict[str, Any]:
     session_id = get_or_set_session_id(request, response)
     from core.context import session_context_manager
 
-    tail_lines = session_context_manager.get_tail(session_id=session_id, lines=lines)
+    recent = session_context_manager.get_session_tail(session_id=session_id, lines=lines)
     return {
-        "lines": tail_lines,
-        "combined": " ".join(tail_lines),
-        "count": len(tail_lines),
+        "lines": recent,
+        "combined": " ".join(recent),
+        "count": len(recent),
     }
 
 
