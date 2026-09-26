@@ -22,7 +22,7 @@ Create `.env` only if you want to override defaults:
 touch .env
 ```
 
-- **CUDA**: set `DEVICE=cuda`, leave `PYTORCH_BACKEND=` for PyPI default or set a specific backend like `cu128`
+- **CUDA**: set `DEVICE=cuda`, leave `PYTORCH_BACKEND=` for PyPI default or set a specific backend like `cu126`
 - **CPU**: by default lightweight CPU-only wheels
 - **macOS**: use the setup script below
 - **Port**: set `RESONANCE_PORT` (default `8000`)
