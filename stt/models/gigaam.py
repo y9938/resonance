@@ -3,34 +3,46 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import numpy as np
+import torch
+from torch.nn.utils.rnn import pad_sequence
+
 from stt.models.base import STTModelAdapter
 
 log = logging.getLogger("resonance.server")
 
 
 class GigaAMAdapter(STTModelAdapter):
-    """Wraps GigaAM for True Zero-I/O in-RAM tensor inference without disk operations."""
+    """Runs GigaAM inference on in-memory PCM without creating media files."""
+
+    supports_native_batching = True
 
     def __init__(self, model: Any) -> None:
         self._model = model
 
     def transcribe(self, audio: Any, **kwargs: Any) -> str:
-        import numpy as np
-        import torch
-
-        # Domain Invariant: True Zero-I/O RAM pipeline bypassing file creation and wrapper threshold
         if isinstance(audio, np.ndarray):
-            wav = torch.from_numpy(audio).to(self._model._device).to(self._model._dtype)
-            if wav.ndim == 1:
-                wav = wav.unsqueeze(0)
-            length = torch.tensor([wav.shape[-1]], device=self._model._device)
-        else:
-            wav, length = self._model.prepare_wav(str(audio))
+            return self.transcribe_batch((audio,))[0]
 
+        wav, length = self._model.prepare_wav(str(audio))
         with torch.inference_mode():
             encoded, encoded_len = self._model.forward(wav, length)
-            text, _ = self._model._decode(encoded, encoded_len, length, False)[0]
-        return text
+            return self._model._decode(encoded, encoded_len, length, False)[0][0]
+
+    def transcribe_batch(self, chunks: tuple[np.ndarray, ...], **kwargs: Any) -> list[str]:
+        if not chunks:
+            raise ValueError("Inference batch must not be empty")
+        if any(chunk.ndim != 1 or not len(chunk) for chunk in chunks):
+            raise ValueError("GigaAM requires nonempty mono PCM chunks")
+
+        device, dtype = self._model._device, self._model._dtype
+        waveforms = [torch.from_numpy(chunk).to(device=device, dtype=dtype) for chunk in chunks]
+        lengths = torch.tensor([len(chunk) for chunk in chunks], device=device)
+        padded = pad_sequence(waveforms, batch_first=True)
+        with torch.inference_mode():
+            encoded, encoded_len = self._model.forward(padded, lengths)
+            decoded = self._model._decode(encoded, encoded_len, lengths, False)
+        return [text for text, _ in decoded]
 
 
 def load_gigaam(device: str | None = None) -> GigaAMAdapter:

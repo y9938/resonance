@@ -7,6 +7,7 @@ dependencies = [
     "torch==2.14.0",
     "torchaudio==2.11.0",
     "torchcodec==0.16.*",
+    "av>=17.1,<19",
     "transformers>=4.35.0",
     "numpy>=2.0.0",
     "scipy",

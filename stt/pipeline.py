@@ -1,20 +1,23 @@
 from __future__ import annotations
 
-import inspect
 import json
 import re
 import subprocess
 import threading
 import time
+from collections.abc import Iterator
 from contextlib import nullcontext
 from dataclasses import dataclass
+from itertools import islice
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 from core.context import session_context_manager
-from stt.inference import transcribe_serialized, transcription_text
+from stt.inference import transcribe_batch_serialized, transcription_text
+from stt.media import EncodedMedia, iter_media_frames, media_duration
+from stt.models.base import STTModelAdapter
 
 
 @dataclass(frozen=True)
@@ -35,6 +38,15 @@ class SegmentSpec:
     @property
     def duration_sec(self) -> float:
         return max(0.0, self.end_sec - self.start_sec)
+
+
+@dataclass(frozen=True)
+class STTChunk:
+    sequence: int
+    source: str
+    start_sec: float
+    end_sec: float
+    pcm: np.ndarray
 
 
 _DEFAULT_STT_TRANSCRIBE_MAX_SEC = 25.0
@@ -122,7 +134,57 @@ def probe_media(input_path: str | Path) -> MediaInfo:
 
 
 from .buffer import AudioMemoryBuffer
-from .stream_vad import pack_array_vad_chunks, stream_vad_chunks
+from .stream_vad import (
+    pack_array_vad_chunks,
+    pack_utterances_into_chunks,
+    segment_vad_frames,
+    stream_vad_chunks,
+)
+
+
+def iter_stt_chunks(
+    raw_inputs: dict[str, Any], *, sample_rate: int, chunk_sec: int, total_duration_sec: float
+) -> Iterator[STTChunk]:
+    """Merge the existing per-source VAD streams in timestamp order."""
+    import heapq
+
+    generators = {}
+    for source, audio in raw_inputs.items():
+        if isinstance(audio, AudioMemoryBuffer):
+            gen = pack_array_vad_chunks(audio.as_ndarray(), sample_rate=sample_rate, target_sec=chunk_sec)
+        elif isinstance(audio, np.ndarray):
+            gen = pack_array_vad_chunks(audio, sample_rate=sample_rate, target_sec=chunk_sec)
+        elif isinstance(audio, EncodedMedia):
+            utterances = segment_vad_frames(iter_media_frames(audio, sample_rate=sample_rate), sample_rate=sample_rate)
+            gen = pack_utterances_into_chunks(
+                utterances, sample_rate=sample_rate, target_sec=chunk_sec,
+                total_duration_sec=total_duration_sec,
+            )
+        else:
+            gen = stream_vad_chunks(
+                input_path=audio, sample_rate=sample_rate, target_sec=chunk_sec,
+                total_duration_sec=total_duration_sec,
+            )
+        generators[source] = gen
+
+    heap = []
+    for source, gen in generators.items():
+        try:
+            item = next(gen)
+            heapq.heappush(heap, (item[0], item[1], source, item, gen))
+        except StopIteration:
+            pass
+
+    sequence = 0
+    while heap:
+        start, end, source, item, gen = heapq.heappop(heap)
+        try:
+            next_item = next(gen)
+            heapq.heappush(heap, (next_item[0], next_item[1], source, next_item, gen))
+        except StopIteration:
+            pass
+        yield STTChunk(sequence, source, start, end, item[2])
+        sequence += 1
 
 
 def run_stt_job(
@@ -136,8 +198,9 @@ def run_stt_job(
     chunk_sec: int,
     max_duration_sec: int = 0,
     diarization: bool = False,
+    batch_size: int = 1,
 ) -> None:
-    """Sequential STT runner using RAM Streaming to avoid disk thrashing and frame drift."""
+    """Ordered STT runner with bounded model batches and source-specific publication."""
     start_time = time.time()
     cancelled_logged = False
 
@@ -157,7 +220,7 @@ def run_stt_job(
             return
 
         raw_inputs = input_paths if isinstance(input_paths, dict) else {"default": input_paths}
-        if not raw_inputs or not any(raw_inputs.values()):
+        if not raw_inputs or not any(value is not None for value in raw_inputs.values()):
             raise ValueError("No audio recorded or empty audio stream")
 
         # Input can be an on-disk path, an in-memory AudioMemoryBuffer, or a raw np.ndarray
@@ -166,6 +229,8 @@ def run_stt_job(
             total_duration_sec = first_input.duration_sec
         elif isinstance(first_input, np.ndarray):
             total_duration_sec = len(first_input) / sample_rate
+        elif isinstance(first_input, EncodedMedia):
+            total_duration_sec = media_duration(first_input)
         else:
             info = probe_media(first_input)
             total_duration_sec = info.duration_sec
@@ -200,6 +265,10 @@ def run_stt_job(
                         full_audio = audio_source.as_ndarray()
                     elif isinstance(audio_source, np.ndarray):
                         full_audio = audio_source
+                    elif isinstance(audio_source, EncodedMedia):
+                        # Diarization still needs complete decoded PCM; this is a separate memory contract.
+                        from .buffer import decode_media_bytes
+                        full_audio = decode_media_bytes(audio_source.data, target_sample_rate=sample_rate).as_ndarray()
                     else:
                         full_raw = subprocess.check_output([
                             "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
@@ -222,100 +291,64 @@ def run_stt_job(
         if cancel_requested():
             return
 
-        import heapq
-
-        generators = {}
-        for sid, audio_source in raw_inputs.items():
-            if isinstance(audio_source, AudioMemoryBuffer):
-                generators[sid] = pack_array_vad_chunks(
-                    audio_source.as_ndarray(),
-                    sample_rate=sample_rate,
-                    target_sec=chunk_sec,
-                )
-            elif isinstance(audio_source, np.ndarray):
-                generators[sid] = pack_array_vad_chunks(
-                    audio_source,
-                    sample_rate=sample_rate,
-                    target_sec=chunk_sec,
-                )
-            else:
-                generators[sid] = stream_vad_chunks(
-                    input_path=audio_source,
-                    sample_rate=sample_rate,
-                    target_sec=chunk_sec,
-                    total_duration_sec=total_duration_sec,
-                )
-
-        heap = []
-        for sid, gen in generators.items():
-            try:
-                item = next(gen)
-                heapq.heappush(heap, (item[0], item[1], sid, item, gen))
-            except StopIteration:
-                pass
-
-        chunk_index = 0
-        while heap:
+        if batch_size < 1:
+            raise ValueError("batch_size must be >= 1")
+        chunks = iter_stt_chunks(
+            raw_inputs, sample_rate=sample_rate, chunk_sec=chunk_sec,
+            total_duration_sec=total_duration_sec,
+        )
+        while True:
             if cancel_requested():
                 return
-
-            start_sec, end_sec, stream_id, item, gen = heapq.heappop(heap)
-            _, _, chunk_array = item
-
-            try:
-                next_item = next(gen)
-                heapq.heappush(heap, (next_item[0], next_item[1], stream_id, next_item, gen))
-            except StopIteration:
-                pass
-
-            sig = inspect.signature(model.transcribe)
-            if "diarization" in sig.parameters and model_class == "GraniteAdapter":
-                raw = transcribe_serialized(model, chunk_array, diarization=diarization)
-            else:
-                raw = transcribe_serialized(model, chunk_array)
+            group = tuple(islice(chunks, batch_size))
+            if not group:
+                break
+            options = {"diarization": diarization} if isinstance(model, STTModelAdapter) else {}
+            texts = transcribe_batch_serialized(model, tuple(chunk.pcm for chunk in group), **options)
 
             if cancel_requested():
                 return
 
-            text = transcription_text(raw)
+            for chunk, raw in zip(group, texts, strict=True):
+                if cancel_requested():
+                    return
+                start_sec, end_sec, stream_id = chunk.start_sec, chunk.end_sec, chunk.source
+                text = transcription_text(raw)
 
-            if stream_id == "mic":
-                text = f"[SOURCE:MIC]: {text}"
-            elif diarization and not text.startswith("[Speaker"):
-                intervals = speaker_intervals_by_stream.get(stream_id, [])
-                if intervals:
-                    from .diarization import match_speaker_tag
-                    tag = match_speaker_tag(start_sec, end_sec, intervals)
-                    text = f"{tag}{text}"
-                elif "mic" in raw_inputs:
+                if stream_id == "mic":
+                    text = f"[SOURCE:MIC]: {text}"
+                elif diarization and not text.startswith("[Speaker"):
+                    intervals = speaker_intervals_by_stream.get(stream_id, [])
+                    if intervals:
+                        from .diarization import match_speaker_tag
+                        tag = match_speaker_tag(start_sec, end_sec, intervals)
+                        text = f"{tag}{text}"
+                    elif "mic" in raw_inputs:
+                        text = f"[SOURCE:SYS]: {text}"
+                elif "mic" in raw_inputs or (len(raw_inputs) > 1 and stream_id == "sys"):
                     text = f"[SOURCE:SYS]: {text}"
-            elif "mic" in raw_inputs or (len(raw_inputs) > 1 and stream_id == "sys"):
-                text = f"[SOURCE:SYS]: {text}"
 
-            # Assumes: VAD yields exact absolute timestamps.
-            if hasattr(jobs, "get_status"):
-                status = jobs.get_status(job_id)
-                if status and "session_id" in status:
-                    session_context_manager.append_session(
-                        session_id=status["session_id"],
-                        text=text,
-                    )
+                if hasattr(jobs, "get_status"):
+                    status = jobs.get_status(job_id)
+                    if status and "session_id" in status:
+                        session_context_manager.append_session(
+                            session_id=status["session_id"], text=text,
+                        )
 
-            jobs.update_event(
-                job_id,
-                "progress",
-                {
-                    "current": round(end_sec, 2),
-                    "total": round(total_duration_sec, 2),
-                    "segment": {
-                        "start": round(start_sec, 6),
-                        "end": round(end_sec, 6),
-                        "text": text,
-                        "source": stream_id,
+                jobs.update_event(
+                    job_id,
+                    "progress",
+                    {
+                        "current": round(end_sec, 2),
+                        "total": round(total_duration_sec, 2),
+                        "segment": {
+                            "start": round(start_sec, 6),
+                            "end": round(end_sec, 6),
+                            "text": text,
+                            "source": stream_id,
+                        },
                     },
-                },
-            )
-            chunk_index += 1
+                )
 
         if cancel_requested():
             return
@@ -334,7 +367,7 @@ def run_stt_job(
 def run_stt_worker(
     *,
     job_id: str,
-    audio_path: str | dict[str, str] | dict[str, AudioMemoryBuffer],
+    audio_path: str | EncodedMedia | dict[str, str | AudioMemoryBuffer | EncodedMedia],
     semaphore: threading.BoundedSemaphore | None = None,
     jobs: Any,
     model: Any,
@@ -343,6 +376,7 @@ def run_stt_worker(
     chunk_sec: int,
     max_duration_sec: int = 0,
     diarization: bool = False,
+    batch_size: int = 1,
 ) -> None:
     # Workaround: Optional semaphore allows interactive real-time jobs to bypass batch queue throttling.
     sync_context = semaphore if semaphore is not None else nullcontext()
@@ -363,4 +397,5 @@ def run_stt_worker(
             chunk_sec=effective_chunk_sec,
             max_duration_sec=max_duration_sec,
             diarization=diarization,
+            batch_size=batch_size,
         )

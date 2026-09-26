@@ -46,6 +46,7 @@ from stt.live_transport import (
     LiveSessionFinishing,
     LiveSessionHandle,
 )
+from stt.media import EncodedMedia, media_duration
 from stt.models import ModelManager, resolve_stt_model
 from stt.pipeline import run_stt_worker
 from stt.system_audio import get_system_audio_capture
@@ -663,10 +664,13 @@ async def start_stt_job(
     if max_bytes > 0 and len(file_bytes) > max_bytes:
         raise HTTPException(413, f"File too large (max {Config.UPLOAD_LIMIT_MB}MB)")
 
+    if not file_bytes:
+        raise HTTPException(400, "Audio file is empty")
+    media = EncodedMedia(file_bytes, filename=file.filename)
     try:
-        audio_buffer = decode_media_bytes(file_bytes, target_sample_rate=Config.SR)
+        await asyncio.to_thread(media_duration, media)
     except Exception as exc:
-        raise HTTPException(400, f"Failed to decode audio file: {exc}") from exc
+        raise HTTPException(400, f"Failed to read audio file: {exc}") from exc
 
     size_kb = len(file_bytes) / 1024
     size_str = f"{size_kb:.1f} KB" if size_kb < 1024 else f"{size_kb / 1024:.1f} MB"
@@ -694,7 +698,7 @@ async def start_stt_job(
         asyncio.to_thread(
             run_stt_worker,
             job_id=rec.job_id,
-            audio_path=audio_buffer,
+            audio_path=media,
             semaphore=STT_WORKER_SEMAPHORE,
             jobs=jobs,
             model=resolved_model,
