@@ -1,6 +1,9 @@
+import subprocess
+import sys
 import threading
 
 import numpy as np
+import pytest
 
 from stt.stream_vad import (
     VADStreamState,
@@ -54,7 +57,21 @@ def test_concurrent_stream_vad_chunks_bit_exact() -> None:
             assert b_item[1] == c_item[1]
             np.testing.assert_array_equal(b_item[2], c_item[2])
 
-def test_pytorch_num_threads_preserved_after_import() -> None:
-    import torch
-
-    assert torch.get_num_threads() > 1, f"PyTorch thread pool was mutated to {torch.get_num_threads()}"
+@pytest.mark.parametrize("thread_count", [1, 4])
+@pytest.mark.parametrize("backend", ["frame", "sequence"])
+def test_vad_initialization_preserves_pytorch_threads(thread_count: int, backend: str) -> None:
+    module, factory = (
+        ("stt.stream_vad", "get_shared_vad_engine")
+        if backend == "frame"
+        else ("stt.sequence_vad", "get_sequence_vad_engine")
+    )
+    code = (
+        "import sys, torch\n"
+        f"torch.set_num_threads({thread_count})\n"
+        f"from {module} import {factory}\n"
+        f"engine = {factory}()\n"
+        f"assert torch.get_num_threads() == {thread_count}\n"
+        "assert 'silero_vad' not in sys.modules\n"
+        "assert engine._session.get_session_options().intra_op_num_threads == 1\n"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True, timeout=30)

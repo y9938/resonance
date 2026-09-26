@@ -1,21 +1,13 @@
 from __future__ import annotations
 
 import logging
-import os
 import subprocess
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from importlib import metadata
 
 import numpy as np
 import onnxruntime as ort
-import torch
-
-# Workaround: silero_vad package import mutates global PyTorch state via torch.set_num_threads(1).
-# We preserve PyTorch's self-calibrated thread count to maintain optimal multi-core performance for ASR.
-# Assumes: Silero VAD (ONNX) preserves single-threaded execution via internal SessionOptions.
-_INITIAL_PYTORCH_THREADS = torch.get_num_threads()
-import silero_vad  # noqa: I001
-torch.set_num_threads(_INITIAL_PYTORCH_THREADS)
 
 logger = logging.getLogger("resonance.stt.stream_vad")
 
@@ -69,8 +61,12 @@ def get_shared_vad_engine() -> StatelessSileroVAD:
     global _SHARED_VAD_ENGINE
     if _SHARED_VAD_ENGINE is None:
         logger.info("Initializing Stateless Silero VAD (ONNX)...")
-        onnx_path = os.path.join(os.path.dirname(silero_vad.__file__), "data", "silero_vad.onnx")
-        _SHARED_VAD_ENGINE = StatelessSileroVAD(onnx_path)
+        onnx_path = metadata.distribution("silero-vad").locate_file(
+            "silero_vad/data/silero_vad.onnx"
+        )
+        if not onnx_path.is_file():
+            raise FileNotFoundError(f"Silero VAD ONNX model missing: {onnx_path}")
+        _SHARED_VAD_ENGINE = StatelessSileroVAD(str(onnx_path))
     return _SHARED_VAD_ENGINE
 
 
@@ -95,6 +91,26 @@ def segment_vad_frames(
     """
     engine = vad_engine or get_shared_vad_engine()
     stream_state = VADStreamState()
+    frame_probabilities = (
+        (frame, engine.process_frame(stream_state, frame)) for frame in frames_iterator
+    )
+    yield from segment_scored_frames(
+        frame_probabilities,
+        sample_rate=sample_rate,
+        silence_threshold=silence_threshold,
+        min_silence_duration=min_silence_duration,
+        max_speech_duration=max_speech_duration,
+    )
+
+
+def segment_scored_frames(
+    frame_probabilities: Iterator[tuple[np.ndarray, float]],
+    sample_rate: int = 16000,
+    silence_threshold: float = 0.5,
+    min_silence_duration: float = 0.128,
+    max_speech_duration: float = 24.0,
+) -> Iterator[Utterance]:
+    """Apply Resonance's segmentation rules to ordered (frame, probability) pairs."""
 
     min_silence_windows = int(min_silence_duration * sample_rate / _VAD_WINDOW_SAMPLES)
     max_speech_windows = int(max_speech_duration * sample_rate / _VAD_WINDOW_SAMPLES)
@@ -107,9 +123,8 @@ def segment_vad_frames(
     silence_window_count = 0
     total_samples_read = 0
 
-    for window_f32 in frames_iterator:
+    for window_f32, prob in frame_probabilities:
         total_samples_read += _VAD_WINDOW_SAMPLES
-        prob = engine.process_frame(stream_state, window_f32)
 
         if prob >= silence_threshold:
             if not is_speech:

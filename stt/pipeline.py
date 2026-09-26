@@ -134,10 +134,11 @@ def probe_media(input_path: str | Path) -> MediaInfo:
 
 
 from .buffer import AudioMemoryBuffer
+from .sequence_vad import get_sequence_vad_engine
 from .stream_vad import (
     pack_array_vad_chunks,
     pack_utterances_into_chunks,
-    segment_vad_frames,
+    segment_scored_frames,
     stream_vad_chunks,
 )
 
@@ -155,7 +156,11 @@ def iter_stt_chunks(
         elif isinstance(audio, np.ndarray):
             gen = pack_array_vad_chunks(audio, sample_rate=sample_rate, target_sec=chunk_sec)
         elif isinstance(audio, EncodedMedia):
-            utterances = segment_vad_frames(iter_media_frames(audio, sample_rate=sample_rate), sample_rate=sample_rate)
+            frames = iter_media_frames(audio, sample_rate=sample_rate)
+            scored_frames = get_sequence_vad_engine().new_stream().score_frames(frames)
+            utterances = segment_scored_frames(
+                scored_frames, sample_rate=sample_rate,
+            )
             gen = pack_utterances_into_chunks(
                 utterances, sample_rate=sample_rate, target_sec=chunk_sec,
                 total_duration_sec=total_duration_sec,

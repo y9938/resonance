@@ -7,6 +7,7 @@ import numpy as np
 
 from stt.buffer import decode_media_bytes
 from stt.media import EncodedMedia, iter_media_frames, media_duration
+from stt.pipeline import iter_stt_chunks
 from stt.stream_vad import (
     pack_array_vad_chunks,
     pack_utterances_into_chunks,
@@ -34,6 +35,28 @@ def test_lazy_decoder_matches_full_reference_and_chunk_boundaries() -> None:
         )
     ]
     assert new == old
+
+
+def test_encoded_batch_chunks_match_frame_vad_reference() -> None:
+    media = EncodedMedia(Path("tests/fixtures/ru_audio.wav").read_bytes(), "ru_audio.wav")
+    duration = media_duration(media)
+    reference = list(
+        pack_utterances_into_chunks(
+            segment_vad_frames(iter_media_frames(media)),
+            target_sec=20,
+            total_duration_sec=duration,
+        )
+    )
+    actual = list(
+        iter_stt_chunks(
+            {"default": media}, sample_rate=16000, chunk_sec=20, total_duration_sec=duration
+        )
+    )
+
+    assert len(actual) == len(reference) > 0
+    for chunk, (start, end, pcm) in zip(actual, reference, strict=True):
+        assert (chunk.start_sec, chunk.end_sec, chunk.source) == (start, end, "default")
+        np.testing.assert_array_equal(chunk.pcm, pcm)
 
 
 def test_batch_upload_passes_encoded_bytes_to_worker_without_decoding() -> None:
