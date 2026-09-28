@@ -17,10 +17,14 @@ class GigaAMAdapter(STTModelAdapter):
 
     supports_native_batching = True
 
+    @classmethod
+    def supported_languages(cls) -> frozenset[str]:
+        return frozenset({"ru"})
+
     def __init__(self, model: Any) -> None:
         self._model = model
 
-    def transcribe(self, audio: Any, **kwargs: Any) -> str:
+    def transcribe(self, audio: Any, *, language: str | None = None, **kwargs: Any) -> str:
         if isinstance(audio, np.ndarray):
             return self.transcribe_batch((audio,))[0]
 
@@ -29,7 +33,7 @@ class GigaAMAdapter(STTModelAdapter):
             encoded, encoded_len = self._model.forward(wav, length)
             return self._model._decode(encoded, encoded_len, length, False)[0][0]
 
-    def transcribe_batch(self, chunks: tuple[np.ndarray, ...], **kwargs: Any) -> list[str]:
+    def transcribe_batch(self, chunks: tuple[np.ndarray, ...], *, language: str | None = None, **kwargs: Any) -> list[str]:
         if not chunks:
             raise ValueError("Inference batch must not be empty")
         if any(chunk.ndim != 1 or not len(chunk) for chunk in chunks):

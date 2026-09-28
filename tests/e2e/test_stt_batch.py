@@ -11,6 +11,16 @@ from urllib.parse import parse_qs, urlparse
 from playwright.sync_api import Page, expect
 
 AUDIO_FILE = Path(__file__).parent.parent / "fixtures" / "ru_audio.wav"
+STT_CATALOG = {
+    "stt": {
+        "default_language": "ru",
+        "models": [
+            {"id": "gigaam", "name": "GigaAM-v3", "languages": ["ru"], "loaded": False},
+            {"id": "whisper", "name": "Whisper Turbo", "languages": ["de", "en", "ru"], "loaded": False},
+            {"id": "granite", "name": "IBM Granite", "languages": ["en"], "loaded": False},
+        ],
+    }
+}
 
 
 def test_stt_batch_upload_creates_one_visible_queue(page: Page, base_url: str):
@@ -31,6 +41,10 @@ def test_stt_batch_upload_creates_one_visible_queue(page: Page, base_url: str):
 
         if parsed.path == "/api/config":
             fulfill_json(route, {"upload_limit_mb": 50, "tts": {"languages": []}})
+            return
+
+        if parsed.path == "/api/models":
+            fulfill_json(route, STT_CATALOG)
             return
 
         if parsed.path == "/api/jobs/stt":
@@ -98,7 +112,7 @@ def test_stt_batch_upload_creates_one_visible_queue(page: Page, base_url: str):
 
     page.route("**/api/**", handle_api)
     page.goto(f"{base_url}")
-    page.wait_for_selector("#sttDropzone")
+    page.wait_for_selector("#sttLanguage:not([disabled])")
 
     audio_bytes = AUDIO_FILE.read_bytes()
     page.evaluate(
@@ -204,6 +218,10 @@ def test_stt_language_dropdown_routing(page: Page, base_url: str):
             fulfill_json(route, {"upload_limit_mb": 50, "tts": {"languages": []}})
             return
 
+        if parsed.path == "/api/models":
+            fulfill_json(route, STT_CATALOG)
+            return
+
         if parsed.path == "/api/jobs/stt":
             job_id = f"job-{len(started) + 1}"
             started.append(qs)
@@ -250,14 +268,15 @@ def test_stt_language_dropdown_routing(page: Page, base_url: str):
         route.continue_()
 
     page.route("**/api/**", handle_api)
-    page.add_init_script("localStorage.setItem('resonance_locale', 'ru')")
+    page.add_init_script("localStorage.setItem('resonance_locale', 'ru'); localStorage.setItem('resonance_sttModel', 'whisper')")
     page.goto(f"{base_url}")
-    page.wait_for_selector("#sttDropzone")
+    page.wait_for_selector("#sttLanguage:not([disabled])")
 
     # Assert dropdown exists and defaults to 'ru'
     dropdown = page.locator("#sttLanguage")
-    expect(dropdown).to_be_visible()
+    expect(page.locator(".stt-language-picker .ts-control")).to_be_visible()
     assert dropdown.evaluate("el => el.value") == "ru"
+    assert page.locator("#sttModel").input_value() == ""
 
     # Create dummy files for upload
     audio_bytes = AUDIO_FILE.read_bytes()
@@ -292,7 +311,9 @@ def test_stt_language_dropdown_routing(page: Page, base_url: str):
     assert started[0]["language"] == ["ru"]
 
     # 2. Select 'en' from the dropdown
-    dropdown.select_option("en")
+    page.locator(".stt-language-picker .ts-control").click()
+    page.locator(".stt-language-picker .ts-control input").fill("English")
+    page.locator(".stt-language-picker .ts-dropdown .option").filter(has_text="English").first.click()
     assert dropdown.evaluate("el => el.value") == "en"
 
     # Upload in 'en'
@@ -313,3 +334,47 @@ def test_stt_language_dropdown_routing(page: Page, base_url: str):
 
     assert len(started) == 2
     assert started[1]["language"] == ["en"]
+    assert "model" not in started[1]
+
+    page.locator(".stt-language-picker .ts-control").click()
+    page.locator(".stt-language-picker .ts-control input").fill("Deutsch")
+    page.locator(".stt-language-picker .ts-dropdown .option").filter(has_text="Deutsch").first.click()
+    assert page.locator("#sttModel option").all_text_contents() == ["Рекомендованная", "Whisper Turbo"]
+    assert page.locator("#sttModel").input_value() == ""
+    assert not page.locator("#sttModelContainer").is_visible()
+
+    page.locator(".stt-language-picker .ts-control").click()
+    page.locator(".stt-language-picker .ts-control input").fill("English")
+    page.locator(".stt-language-picker .ts-dropdown .option").filter(has_text="English").first.click()
+    page.locator("#sttModel").select_option("granite")
+    page.locator("#sttAutoDetect").check()
+    assert page.locator("#sttAutoDetect").evaluate("el => !!el.closest('.input-footer')")
+    expect(page.locator("#sttAutoModelEffective")).to_contain_text("Whisper Turbo")
+    assert not page.locator("#sttModelContainer").is_visible()
+    assert dropdown.evaluate("el => el.value") == "en"
+
+    page.locator("#sttMicModeLive").click()
+    expect(page.locator("#sttAutoDetect")).to_be_visible()
+    expect(page.locator("#sttModelContainer")).to_be_visible()
+    assert page.locator("#sttModel").input_value() == "granite"
+
+    page.evaluate(
+        """
+        const input = document.getElementById('sttFileInput');
+        const dataTransfer = new DataTransfer();
+        dataTransfer.items.add(window.testFiles[0]);
+        input.files = dataTransfer.files;
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+    """
+    )
+    for _ in range(20):
+        if len(started) == 3:
+            break
+        page.wait_for_timeout(100)
+    assert started[2]["detect_language"] == ["true"]
+    assert "language" not in started[2]
+    assert "model" not in started[2]
+    page.locator("#sttAutoDetect").uncheck()
+    assert not page.locator("#sttAutoModelEffective").is_visible()
+    assert dropdown.evaluate("el => el.value") == "en"
+    assert page.locator("#sttModel").input_value() == "granite"

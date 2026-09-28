@@ -49,6 +49,7 @@
             toastCopyFailed: '复制失败',
             toastReadFailed: '文件读取失败',
             localeSearchEmpty: '未找到匹配的语言',
+            languageSearchPlaceholder: '搜索语言…',
             charUnit: '字符',
             defaultTranscriptionFile: '转录文本',
             sttViewBlocks: '分块',
@@ -96,11 +97,10 @@
             jobsBatchSummary: '{done} / {total}',
             jobsBatchOpen: '打开',
             sttLanguageLabel: 'STT 语言',
-            sttLangRu: '俄语',
-            sttLangEn: '英语',
             sttModelLabel: 'STT 模型',
-            sttModelWhisper: 'Whisper (默认)',
-            sttModelGranite: 'IBM Granite',
+            sttModelRecommended: '推荐',
+            sttAutoDetectLabel: '自动检测语言（Whisper Turbo）',
+            sttAutoModelEffective: '文件和听写：Whisper Turbo',
             sttDiarizationLabelText: '角色分离'
         },
         helpers: {

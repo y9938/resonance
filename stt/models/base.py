@@ -11,15 +11,20 @@ class STTModelAdapter(abc.ABC):
 
     supports_native_batching: bool = False
 
+    @classmethod
     @abc.abstractmethod
-    def transcribe(self, audio: Any, **kwargs: Any) -> str:
+    def supported_languages(cls) -> frozenset[str]:
+        """Canonical language codes accepted by this model."""
+
+    @abc.abstractmethod
+    def transcribe(self, audio: Any, *, language: str | None = None, **kwargs: Any) -> str:
         """Transcribe PCM audio tensor or file to text."""
 
-    def transcribe_batch(self, chunks: tuple[np.ndarray, ...], **kwargs: Any) -> list[str]:
+    def transcribe_batch(self, chunks: tuple[np.ndarray, ...], *, language: str | None = None, **kwargs: Any) -> list[str]:
         """Process one chunk until this adapter proves native batching."""
         if len(chunks) != 1:
             raise ValueError("This model accepts exactly one chunk per inference call")
-        return [self.transcribe(chunks[0], **kwargs)]
+        return [self.transcribe(chunks[0], language=language, **kwargs)]
 
 
 def safe_resolve_device(device: str | None = None) -> str:

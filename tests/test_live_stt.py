@@ -71,6 +71,16 @@ def test_live_stt_session_vad_and_transcribe():
     assert emitted[0]["source"] == "mic"
 
 
+def test_live_session_passes_language_to_inference():
+    model = MagicMock()
+    model.transcribe.return_value = "Hallo"
+    session = LiveSTTSession("job", "session", model, MagicMock(), language="de")
+    session._vad_engine = FakeVad([1.0] * 7)
+    session.process_pcm_chunk(np.ones(_VAD_WINDOW_SAMPLES * 7, dtype=np.float32))
+    session.flush()
+    assert model.transcribe.call_args.kwargs["language"] == "de"
+
+
 class FakeVad:
     def __init__(self, probabilities: list[float]) -> None:
         self._probabilities = iter(probabilities)

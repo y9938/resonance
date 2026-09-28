@@ -94,8 +94,10 @@ class LiveSTTSession:
     """VAD endpointing plus per-source ASR aggregation and durable final publication."""
 
     def __init__(self, job_id: str, session_id: str, model: Any, jobs: Any, sample_rate: int = 16000,
-                 source: str = "mic", dual_stream: bool = False, preview_broker: LivePreviewBroker | None = None) -> None:
+                 source: str = "mic", dual_stream: bool = False, preview_broker: LivePreviewBroker | None = None,
+                 language: str | None = None) -> None:
         self.job_id, self.session_id, self.model, self.jobs = job_id, session_id, model, jobs
+        self.language = language
         self.sample_rate, self.source, self.dual_stream, self.preview_broker = sample_rate, source, dual_stream, preview_broker
         self._lock, self._cancelled, self._vad_engine = threading.RLock(), threading.Event(), get_shared_vad_engine()
         self._streams: dict[str, dict[str, Any]] = {}
@@ -199,7 +201,8 @@ class LiveSTTSession:
     def _transcribe(self, pcm: np.ndarray, kind: str) -> Any:
         started = time.perf_counter()
         try:
-            return transcribe_serialized(self.model, pcm)
+            options = {"language": self.language} if self.language is not None else {}
+            return transcribe_serialized(self.model, pcm, **options)
         finally:
             self._inference_stats[f"{kind}_calls"] += 1
             self._inference_stats[f"{kind}_ms"].append((time.perf_counter() - started) * 1000)

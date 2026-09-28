@@ -81,12 +81,12 @@ def test_demo_flow(page: Page, base_url: str):
 
     # Switch interface language to the second option
     old_locale = page.eval_on_selector("#localeInput", "el => el.value")
-    page.click("#localeInput")
-    page.wait_for_selector("#localePicker.open")
+    page.click("#localePicker .ts-control")
+    page.wait_for_selector("#localePicker .ts-wrapper.dropdown-active")
     page.wait_for_timeout(700)
-    page.wait_for_selector("#localeListbox .locale-option")
+    page.wait_for_selector("#localePicker .ts-dropdown .option")
     page.wait_for_timeout(600)
-    page.locator("#localeListbox .locale-option").nth(1).click()
+    page.locator("#localePicker .ts-dropdown .option").nth(1).click()
     page.wait_for_function(
         "(oldVal) => document.getElementById('localeInput').value !== oldVal",
         arg=old_locale,

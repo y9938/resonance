@@ -48,6 +48,9 @@ from stt.live_transport import (
 )
 from stt.media import EncodedMedia, media_duration
 from stt.models import ModelManager, resolve_stt_model
+from stt.models.gigaam import GigaAMAdapter
+from stt.models.granite import GraniteAdapter
+from stt.models.whisper import WhisperAdapter
 from stt.pipeline import run_stt_worker
 from stt.system_audio import get_system_audio_capture
 from tts.service import TtsService
@@ -228,13 +231,19 @@ async def health() -> PlainTextResponse:
 
 @app.get("/api/models")
 async def list_models() -> dict[str, Any]:
+    from whisper.tokenizer import LANGUAGES
+
     primary_backend = tts_service.backends["silero_ru"]
+    whisper_languages = sorted(WhisperAdapter.supported_languages())
     return {
         "stt": {
-            "gigaam": {"name": "GigaAM-v3", "loaded": models.stt_gigaam_loaded},
-            "whisper": {"name": "Distil-Whisper-v3", "loaded": models.stt_whisper_loaded},
-            "granite": {"name": "IBM Granite Speech 4.1 Plus", "loaded": models.stt_granite_loaded},
-            "languages": {"ru": "gigaam", "en": "whisper"},
+            "models": [
+                {"id": "gigaam", "name": "GigaAM-v3", "languages": sorted(GigaAMAdapter.supported_languages()), "loaded": models.stt_gigaam_loaded},
+                {"id": "whisper", "name": "Whisper Turbo", "languages": whisper_languages, "loaded": models.stt_whisper_loaded},
+                {"id": "granite", "name": "IBM Granite Speech 4.1 Plus", "languages": sorted(GraniteAdapter.supported_languages()), "loaded": models.stt_granite_loaded},
+            ],
+            "default_language": "ru",
+            "language_names": {code: LANGUAGES[code] for code in whisper_languages},
         },
         "tts": {"name": primary_backend.name, "loaded": primary_backend.loaded},
         "tts_catalog": tts_service.serialize_catalog(),
@@ -393,6 +402,7 @@ async def start_system_audio(
                 source="sys",
                 dual_stream=include_microphone,
                 preview_broker=live_preview_broker,
+                language=resolved_language,
             )
             audio_engine.start_capture()
             capture_started = True
@@ -520,6 +530,7 @@ async def start_live_job(
             sample_rate=Config.SR,
             source="mic",
             preview_broker=live_preview_broker,
+            language=resolved_language,
         )
         handle = LiveSessionHandle(live_session, Config.LIVE_STT_IDLE_TIMEOUT_SEC)
         active_live_sessions[job_id] = handle
@@ -648,13 +659,19 @@ async def start_stt_job(
     file: UploadFile = File(...),
     language: str | None = Query(default=None),
     model: str | None = Query(default=None),
+    detect_language: bool = Query(default=False),
     diarization: bool = Query(default=False),
     batch_id: str | None = Query(default=None),
     batch_index: int | None = Query(default=None, ge=1),
     batch_total: int | None = Query(default=None, ge=1),
 ) -> dict[str, Any]:
     try:
-        resolved_language, model_name = resolve_stt_model(language, model)
+        if detect_language:
+            if language is not None or model not in (None, "whisper"):
+                raise ValueError("Auto detection requires Whisper and no explicit language")
+            resolved_language, model_name = None, "whisper"
+        else:
+            resolved_language, model_name = resolve_stt_model(language, model)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -707,6 +724,8 @@ async def start_stt_job(
             chunk_sec=Config.CHUNK_SEC,
             max_duration_sec=Config.STT_MAX_DURATION_SEC,
             diarization=diarization,
+            language=resolved_language,
+            detect_language=detect_language,
         )
     )
     return {"job_id": rec.job_id}

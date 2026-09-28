@@ -15,7 +15,11 @@ from typing import Any
 import numpy as np
 
 from core.context import session_context_manager
-from stt.inference import transcribe_batch_serialized, transcription_text
+from stt.inference import (
+    transcribe_and_detect_language_serialized,
+    transcribe_batch_serialized,
+    transcription_text,
+)
 from stt.media import EncodedMedia, iter_media_frames, media_duration
 from stt.models.base import STTModelAdapter
 
@@ -204,6 +208,8 @@ def run_stt_job(
     max_duration_sec: int = 0,
     diarization: bool = False,
     batch_size: int = 1,
+    language: str | None = None,
+    detect_language: bool = False,
 ) -> None:
     """Ordered STT runner with bounded model batches and source-specific publication."""
     start_time = time.time()
@@ -302,14 +308,23 @@ def run_stt_job(
             raw_inputs, sample_rate=sample_rate, chunk_sec=chunk_sec,
             total_duration_sec=total_duration_sec,
         )
+        detected_language = None
         while True:
             if cancel_requested():
                 return
-            group = tuple(islice(chunks, batch_size))
+            group = tuple(islice(chunks, 1 if detect_language and detected_language is None else batch_size))
             if not group:
                 break
-            options = {"diarization": diarization} if isinstance(model, STTModelAdapter) else {}
-            texts = transcribe_batch_serialized(model, tuple(chunk.pcm for chunk in group), **options)
+            if detect_language and detected_language is None:
+                first_text, detected_language = transcribe_and_detect_language_serialized(
+                    model, group[0].pcm
+                )
+                texts = [first_text]
+            else:
+                options = {"diarization": diarization} if isinstance(model, STTModelAdapter) else {}
+                if language is not None or detect_language:
+                    options["language"] = detected_language if detect_language else language
+                texts = transcribe_batch_serialized(model, tuple(chunk.pcm for chunk in group), **options)
 
             if cancel_requested():
                 return
@@ -382,6 +397,8 @@ def run_stt_worker(
     max_duration_sec: int = 0,
     diarization: bool = False,
     batch_size: int = 1,
+    language: str | None = None,
+    detect_language: bool = False,
 ) -> None:
     # Workaround: Optional semaphore allows interactive real-time jobs to bypass batch queue throttling.
     sync_context = semaphore if semaphore is not None else nullcontext()
@@ -403,4 +420,6 @@ def run_stt_worker(
             max_duration_sec=max_duration_sec,
             diarization=diarization,
             batch_size=batch_size,
+            language=language,
+            detect_language=detect_language,
         )

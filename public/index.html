@@ -55,6 +55,7 @@
     <link rel="icon" href="/icon.svg" type="image/svg+xml">
     <link rel="apple-touch-icon" href="/apple-touch-icon.png">
     <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="stylesheet" href="/vendor/tom-select/tom-select.min.css">
     <title data-i18n="pageTitle">Resonance</title>
     <style>
         :root {
@@ -223,100 +224,71 @@
             width: 180px;
         }
 
-        .locale-picker-input {
-            width: 100%;
-            padding: 0.55rem 2.1rem 0.55rem 0.8rem;
+        .language-picker { min-width: 180px; }
+        .language-picker .ts-control {
+            min-height: 38px;
+            padding-right: 1.8rem;
             border: 1px solid var(--border);
             border-radius: var(--radius-sm);
             background: var(--bg-secondary);
             color: var(--text-primary);
-            font-size: 0.75rem;
-            font-weight: 600;
-            letter-spacing: 0.04em;
-            text-transform: uppercase;
-            outline: none;
-            transition: border-color var(--transition), box-shadow var(--transition);
+            box-shadow: none;
+            cursor: text;
         }
-
-        .locale-picker-input::placeholder {
-            color: var(--text-muted);
-            text-transform: none;
-            letter-spacing: 0;
-        }
-
-        .locale-picker-input:focus {
-            border-color: var(--accent);
-            box-shadow: 0 0 0 3px rgba(201, 169, 98, 0.12);
-        }
-
-        .locale-picker-caret {
+        .language-picker .ts-control::after {
+            content: '';
             position: absolute;
             top: 50%;
-            right: 0.7rem;
+            right: 0.75rem;
+            border-left: 4px solid transparent;
+            border-right: 4px solid transparent;
+            border-top: 5px solid var(--text-muted);
             transform: translateY(-50%);
             pointer-events: none;
-            color: var(--text-muted);
-            transition: transform var(--transition), color var(--transition);
         }
-
-        .locale-picker.open .locale-picker-caret {
+        .language-picker.dropdown-active .ts-control::after {
             transform: translateY(-50%) rotate(180deg);
-            color: var(--accent);
         }
-
-        .locale-picker-list {
-            position: absolute;
-            top: calc(100% + 0.4rem);
-            left: 0;
-            right: 0;
-            max-height: 240px;
-            overflow-y: auto;
+        .language-picker.ts-wrapper.focus .ts-control {
+            border-color: var(--accent);
             background: var(--bg-secondary);
+            box-shadow: 0 0 0 3px rgba(201, 169, 98, 0.12);
+        }
+        .language-picker .ts-control input { color: var(--text-primary); }
+        .language-picker .ts-control input::placeholder { color: var(--text-muted); }
+        .language-picker.dropdown-active .ts-control .item { display: none; }
+        .language-picker .ts-dropdown {
+            margin-top: 0.4rem;
+            max-height: 250px;
             border: 1px solid var(--border);
             border-radius: var(--radius);
+            background: var(--bg-secondary);
+            color: var(--text-primary);
             box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
-            padding: 0.3rem;
-            display: none;
-            z-index: 30;
+            z-index: 50;
         }
-
-        .locale-picker.open .locale-picker-list {
-            display: block;
+        .language-picker .ts-dropdown .option { border-radius: 6px; }
+        .language-picker .ts-dropdown .active {
+            background: color-mix(in srgb, var(--accent) 14%, var(--bg-tertiary));
+            color: var(--text-primary);
+            box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 52%, transparent);
         }
+        .language-picker .ts-dropdown .selected .locale-option-code { color: var(--accent); }
+        .stt-language-picker { min-width: 210px; max-width: min(100%, 280px); }
+        .language-picker.dropdown-up .ts-dropdown {
+            top: auto;
+            bottom: calc(100% + 0.4rem);
+            margin-top: 0;
+            margin-bottom: 0;
+        }
+        .language-picker .ts-dropdown-content { max-height: 240px; }
 
-        .locale-option {
-            width: 100%;
+        .locale-option-content {
             display: grid;
             grid-template-columns: 52px 1fr;
             gap: 0.65rem;
             align-items: center;
             padding: 0.55rem 0.65rem;
-            border: none;
-            border-radius: 6px;
-            background: transparent;
-            color: inherit;
-            text-align: left;
-            cursor: pointer;
-            transition: background var(--transition), color var(--transition);
-        }
-
-        .locale-option:hover { background: var(--bg-tertiary); }
-
-        .locale-option.active {
-            background: color-mix(in srgb, var(--accent) 14%, var(--bg-tertiary));
-            box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 52%, transparent);
-        }
-
-        .locale-option.active .locale-option-code { color: var(--accent); }
-        .locale-option.active .locale-option-name { color: var(--text-primary); }
-
-        .locale-option:focus-visible {
-            outline: 1px solid var(--accent);
-            outline-offset: -1px;
-        }
-
-        .locale-option.selected .locale-option-code {
-            color: var(--accent);
         }
 
         .locale-option-code {
@@ -904,7 +876,12 @@
             .tabs { width: 100%; }
             .tab { flex: 1; text-align: center; }
             .dropzone { padding: 2rem 1rem; }
-            .locale-picker { width: 150px; }
+            .locale-picker { width: 82px; min-width: 82px; }
+            .locale-picker .ts-dropdown {
+                right: 0;
+                left: auto;
+                width: min(220px, calc(100vw - 2rem));
+            }
         }
     </style>
 </head>
@@ -931,24 +908,7 @@
         </div>
         <div class="header-right">
             <div class="locale-picker" id="localePicker">
-                <input
-                    class="locale-picker-input"
-                    id="localeInput"
-                    type="text"
-                    autocomplete="off"
-                    spellcheck="false"
-                    role="combobox"
-                    aria-expanded="false"
-                    aria-autocomplete="list"
-                    aria-controls="localeListbox"
-                    data-i18n="ariaLangGroup"
-                    data-i18n-attr="aria-label"
-                    aria-label="Interface language"
-                >
-                <svg class="locale-picker-caret" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-                    <polyline points="6 9 12 15 18 9"></polyline>
-                </svg>
-                <div class="locale-picker-list" id="localeListbox" role="listbox"></div>
+                <select id="localeInput" aria-hidden="true"></select>
             </div>
         </div>
     </header>
@@ -1066,19 +1026,19 @@
 
             <div class="input-footer">
                 <div class="stt-controls-group" style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
-                    <span data-i18n="sttLanguageLabel">STT Language</span>
-                    <select class="speaker-select" id="sttLanguage">
-                        <option value="ru" data-i18n="sttLangRu">Russian</option>
-                        <option value="en" data-i18n="sttLangEn">English</option>
-                    </select>
+                    <span id="sttLanguageLabel" data-i18n="sttLanguageLabel">STT Language</span>
+                    <select id="sttLanguage" aria-hidden="true" disabled></select>
 
                     <div id="sttModelContainer" style="display: flex; align-items: center; gap: 0.5rem; transition: opacity 0.2s;">
                         <span data-i18n="sttModelLabel">STT Model</span>
-                        <select class="speaker-select" id="sttModel">
-                            <option value="whisper" data-i18n="sttModelWhisper">Whisper (Default)</option>
-                            <option value="granite" data-i18n="sttModelGranite">IBM Granite</option>
-                        </select>
+                        <select class="speaker-select" id="sttModel" disabled></select>
                     </div>
+
+                    <label for="sttAutoDetect" style="display: flex; align-items: center; gap: 0.5rem; color: var(--text-secondary); font-size: 0.875rem; cursor: pointer;">
+                        <input type="checkbox" id="sttAutoDetect" style="width: 16px; height: 16px; accent-color: var(--accent);">
+                        <span data-i18n="sttAutoDetectLabel">Detect language automatically (Whisper Turbo)</span>
+                    </label>
+                    <span id="sttAutoModelEffective" data-i18n="sttAutoModelEffective" style="display: none; color: var(--text-muted); font-size: 0.8125rem;">Files &amp; dictation: Whisper Turbo</span>
 
                     <div id="sttDiarizationContainer" style="display: flex; align-items: center; gap: 0.35rem; transition: opacity 0.2s;">
                         <input type="checkbox" id="sttDiarization" style="cursor: pointer; width: 16px; height: 16px; accent-color: var(--accent);">
@@ -1197,6 +1157,7 @@
     </main>
 
     <script src="/locales/index.js"></script>
+    <script src="/vendor/tom-select/tom-select.base.min.js"></script>
     <script>
         let currentCaptureSource = "mic";
         let currentMicMode = localStorage.getItem('resonance_sttMicMode') || 'dictation';
@@ -1214,6 +1175,7 @@
 
         /** English DOM text stays in HTML for SEO/static fallback. JS-only English strings stay here. */
         const I18N_EN_SCRIPT = {
+            ariaLangGroup: 'Interface language',
             speakerMic: '🎤 Microphone',
             speakerSys: '🔊 System',
             hintSttMedia: 'Any files — {limit}',
@@ -1239,6 +1201,7 @@
             toastCopyFailed: 'Copy failed',
             toastReadFailed: 'Failed to read file',
             localeSearchEmpty: 'No matching languages',
+            languageSearchPlaceholder: 'Search language…',
             charUnit: 'chars',
             defaultTranscriptionFile: 'transcription',
             sttMicHintIdle: 'Record speech from your microphone',
@@ -1273,11 +1236,10 @@
             jobsBatchSummary: '{done} / {total}',
             jobsBatchOpen: 'Open',
             sttLanguageLabel: 'STT Language',
-            sttLangRu: 'Russian',
-            sttLangEn: 'English',
             sttModelLabel: 'STT Model',
-            sttModelWhisper: 'Whisper (Default)',
-            sttModelGranite: 'IBM Granite',
+            sttModelRecommended: 'Recommended',
+            sttAutoDetectLabel: 'Detect language automatically (Whisper Turbo)',
+            sttAutoModelEffective: 'Files & dictation: Whisper Turbo',
             sttDiarizationLabelText: 'Diarization',
         };
 
@@ -1545,6 +1507,8 @@
 
         const initialLocale = getLocale();
         let currentLocale = DEFAULT_LOCALE;
+        let localeSelect = null;
+        let sttLanguageSelect = null;
         document.documentElement.lang = currentLocale;
 
         async function setLocale(loc, options = {}) {
@@ -1558,11 +1522,13 @@
                 }
             }
             currentLocale = loc;
+            if (localeSelect && localeSelect.getValue() !== loc) localeSelect.setValue(loc, true);
             if (options.persist !== false) {
                 localStorage.setItem(LOCALE_STORAGE_KEY, loc);
             }
             document.documentElement.lang = loc;
             applyI18n();
+            renderSttLanguageOptions();
             return true;
         }
 
@@ -1804,118 +1770,41 @@
             return getLocaleHelpers(currentLocale).formatTtsMeta(chunks, durationSec);
         }
 
-        function getLocaleDisplayValue(locale) {
-            return locale ? locale.code.toUpperCase() : '';
+        function languageOption(data, escape) {
+            return `<div class="locale-option-content">
+                <span class="locale-option-code">${escape(data.value.toUpperCase())}</span>
+                <span class="locale-option-label">
+                    <span class="locale-option-name">${escape(data.label)}</span>
+                    <span class="locale-option-native">${escape(data.subtitle || data.label)}</span>
+                </span>
+            </div>`;
         }
 
-        function formatLocaleOptionText(locale) {
-            return [locale.code, locale.label, locale.nativeLabel].filter(Boolean).join(' ');
+        function positionLanguageDropdown(select) {
+            if (!select?.isOpen) return;
+            const viewport = window.visualViewport;
+            const top = viewport?.offsetTop || 0;
+            const bottom = top + (viewport?.height || window.innerHeight);
+            const control = select.control.getBoundingClientRect();
+            const below = Math.max(0, bottom - control.bottom - 10);
+            const above = Math.max(0, control.top - top - 10);
+            const needed = Math.min(150, select.dropdown.scrollHeight);
+            const openUp = below < needed && above > below;
+            select.wrapper.classList.toggle('dropdown-up', openUp);
+            const available = openUp ? above : below;
+            select.dropdown_content.style.maxHeight = `${Math.max(0, Math.min(240, available - 8))}px`;
         }
 
-        function getFilteredLocales() {
-            const raw = state.localeSearchTerm.trim().toLowerCase();
-            if (!raw) return AVAILABLE_LOCALES.slice();
-            return AVAILABLE_LOCALES.filter((locale) =>
-                formatLocaleOptionText(locale).toLowerCase().includes(raw)
-            );
-        }
-
-        function getInitialLocaleHighlightIndex(filtered) {
-            if (!filtered.length) return -1;
-            const currentIdx = filtered.findIndex((locale) => locale.code === currentLocale);
-            return currentIdx >= 0 ? currentIdx : 0;
-        }
-
-        function syncLocaleActivedescendant() {
-            if (!els.localeInput) return;
-            if (state.localeHighlightIndex < 0) {
-                els.localeInput.removeAttribute('aria-activedescendant');
-                return;
-            }
-            const option = els.localeListbox.querySelector(`.locale-option[data-index="${state.localeHighlightIndex}"]`);
-            if (!option || !option.id) {
-                els.localeInput.removeAttribute('aria-activedescendant');
-                return;
-            }
-            els.localeInput.setAttribute('aria-activedescendant', option.id);
-        }
-
-        function highlightLocaleOption(index, scrollIntoView = false) {
-            state.localeHighlightIndex = index;
-            els.localeListbox.querySelectorAll('.locale-option').forEach((option) => {
-                const isActive = Number(option.dataset.index) === index;
-                option.classList.toggle('active', isActive);
+        function openLanguagePickerOnFirstClick(select) {
+            let wasOpenOnPointerDown = false;
+            select.control.addEventListener('pointerdown', () => {
+                wasOpenOnPointerDown = select.isOpen;
+            }, true);
+            select.control.addEventListener('click', () => {
+                const wasOpen = wasOpenOnPointerDown;
+                wasOpenOnPointerDown = false;
+                if (!wasOpen && !select.isOpen) select.refreshOptions(true);
             });
-            syncLocaleActivedescendant();
-            if (!scrollIntoView || index < 0) return;
-            const active = els.localeListbox.querySelector(`.locale-option[data-index="${index}"]`);
-            if (active) active.scrollIntoView({ block: 'nearest' });
-        }
-
-        function openLocalePicker() {
-            els.localePicker.classList.add('open');
-            els.localeInput.setAttribute('aria-expanded', 'true');
-            renderLocaleOptions();
-        }
-
-        function closeLocalePicker(restoreValue = true) {
-            els.localePicker.classList.remove('open');
-            els.localeInput.setAttribute('aria-expanded', 'false');
-            state.localeSearchTerm = '';
-            state.localeHighlightIndex = -1;
-            syncLocaleActivedescendant();
-            if (restoreValue) {
-                const locale = getLocaleConfig(currentLocale);
-                els.localeInput.value = getLocaleDisplayValue(locale);
-            }
-        }
-
-        function renderLocaleOptions() {
-            const filtered = getFilteredLocales();
-            els.localeListbox.innerHTML = '';
-            if (!filtered.length) {
-                state.localeHighlightIndex = -1;
-                syncLocaleActivedescendant();
-                const empty = document.createElement('div');
-                empty.className = 'locale-picker-empty';
-                empty.textContent = t('localeSearchEmpty');
-                els.localeListbox.appendChild(empty);
-                return;
-            }
-
-            if (state.localeHighlightIndex < 0 || state.localeHighlightIndex >= filtered.length) {
-                state.localeHighlightIndex = getInitialLocaleHighlightIndex(filtered);
-            }
-
-            filtered.forEach((locale, index) => {
-                const option = document.createElement('button');
-                option.type = 'button';
-                option.className = 'locale-option';
-                option.id = 'locale-option-' + locale.code;
-                option.dataset.index = String(index);
-                if (locale.code === currentLocale) option.classList.add('selected');
-                if (index === state.localeHighlightIndex) option.classList.add('active');
-                option.dataset.locale = locale.code;
-                option.setAttribute('role', 'option');
-                option.setAttribute('aria-selected', locale.code === currentLocale ? 'true' : 'false');
-                option.innerHTML = `
-                    <span class="locale-option-code">${locale.code.toUpperCase()}</span>
-                    <span class="locale-option-label">
-                        <span class="locale-option-name">${locale.label}</span>
-                        <span class="locale-option-native">${locale.nativeLabel || locale.label}</span>
-                    </span>
-                `;
-                els.localeListbox.appendChild(option);
-            });
-            syncLocaleActivedescendant();
-        }
-
-        async function commitLocaleSelection(loc) {
-            const ok = await setLocale(loc);
-            const locale = getLocaleConfig(ok ? loc : currentLocale);
-            els.localeInput.value = getLocaleDisplayValue(locale);
-            closeLocalePicker(false);
-            return ok;
         }
 
         const savedTab = localStorage.getItem('resonance_activeTab');
@@ -1925,9 +1814,11 @@
         const TTS_DRAFT_STORAGE_MAX_CHARS = 100000;
         const STT_ACTIVE_JOB_KEY = 'resonance_stt_active_job_id';
         const STT_ACTIVE_BATCH_KEY = 'resonance_stt_active_batch_id';
+        const STT_MODEL_OVERRIDE_KEY = 'resonance_sttModelOverride';
         const TTS_ACTIVE_JOB_KEY = 'resonance_tts_active_job_id';
 
         let CONFIG = {};
+        let STT_CATALOG = null;
 
         const state = {
             stt: {
@@ -1964,8 +1855,6 @@
                 jobs: [],
                 pollTimer: null,
             },
-            localeSearchTerm: '',
-            localeHighlightIndex: -1,
             activeTab: savedTab || 'stt'
         };
 
@@ -1978,6 +1867,20 @@
                 }
             } catch (e) {
                 console.warn('Failed to load config, using defaults:', e);
+            }
+        }
+
+        async function loadSttCatalog() {
+            try {
+                const res = await fetch(API_URL + '/models');
+                if (!res.ok) throw new Error('Failed to load STT models');
+                const payload = await res.json();
+                if (!Array.isArray(payload.stt?.models)) throw new Error('Invalid STT model catalog');
+                STT_CATALOG = payload.stt;
+                renderSttLanguageOptions();
+            } catch (err) {
+                console.error('STT catalog error:', err);
+                showSttError(t('errNetwork'));
             }
         }
 
@@ -2156,9 +2059,7 @@
         const els = {
             tabs: document.querySelectorAll('.tab'),
             panels: document.querySelectorAll('.panel'),
-            localePicker: document.getElementById('localePicker'),
             localeInput: document.getElementById('localeInput'),
-            localeListbox: document.getElementById('localeListbox'),
             jobsMenuBtn: document.getElementById('jobsMenuBtn'),
             jobsDrawer: document.getElementById('jobsDrawer'),
             jobsDrawerClose: document.getElementById('jobsDrawerClose'),
@@ -2173,6 +2074,7 @@
 
             sttDropzone: document.getElementById('sttDropzone'),
             sttFileInput: document.getElementById('sttFileInput'),
+            sttAutoDetect: document.getElementById('sttAutoDetect'),
             sttBatchPanel: document.getElementById('sttBatchPanel'),
             sttBatchSummary: document.getElementById('sttBatchSummary'),
             sttBatchList: document.getElementById('sttBatchList'),
@@ -2202,6 +2104,7 @@
             sttCancel: document.getElementById('sttCancel'),
             sttLanguage: document.getElementById('sttLanguage'),
             sttModel: document.getElementById('sttModel'),
+            sttAutoModelEffective: document.getElementById('sttAutoModelEffective'),
             sttDiarization: document.getElementById('sttDiarization'),
             sttModelContainer: document.getElementById('sttModelContainer'),
             sttDiarizationContainer: document.getElementById('sttDiarizationContainer'),
@@ -2485,11 +2388,16 @@
                 els.sttMicStart.textContent = currentCaptureSource === 'sys' ? t('sttSysStart') : t('sttMicStart');
             }
 
-            const locale = getLocaleConfig(currentLocale);
-            if (els.localeInput && !els.localePicker.classList.contains('open')) {
-                els.localeInput.value = getLocaleDisplayValue(locale);
+            if (localeSelect) {
+                localeSelect.focus_node.setAttribute('aria-label', t('ariaLangGroup'));
+                localeSelect.settings.placeholder = t('languageSearchPlaceholder');
+                localeSelect.inputState();
             }
-            renderLocaleOptions();
+            if (sttLanguageSelect) {
+                sttLanguageSelect.focus_node.setAttribute('aria-labelledby', 'sttLanguageLabel');
+                sttLanguageSelect.settings.placeholder = t('languageSearchPlaceholder');
+                sttLanguageSelect.inputState();
+            }
 
             applyConfig();
             updateTtsCharCount();
@@ -2981,66 +2889,37 @@
             tab.addEventListener('click', () => switchTab(tab.dataset.tab));
         });
 
-        els.localeInput.value = getLocaleDisplayValue(getLocaleConfig(currentLocale));
-        els.localeInput.addEventListener('focus', () => {
-            state.localeSearchTerm = '';
-            state.localeHighlightIndex = -1;
-            els.localeInput.select();
-            openLocalePicker();
+        localeSelect = new TomSelect(els.localeInput, {
+            options: AVAILABLE_LOCALES.map(locale => ({
+                value: locale.code,
+                label: locale.label,
+                subtitle: locale.nativeLabel || locale.label,
+            })),
+            valueField: 'value',
+            labelField: 'label',
+            searchField: ['label', 'subtitle', 'value'],
+            sortField: [{ field: 'label', direction: 'asc' }],
+            maxItems: 1,
+            closeAfterSelect: true,
+            create: false,
+            placeholder: t('languageSearchPlaceholder'),
+            refreshThrottle: 0,
+            render: {
+                option: languageOption,
+                item: (data, escape) => `<div>${escape(data.value.toUpperCase())}</div>`,
+                no_results: () => `<div class="locale-picker-empty">${t('localeSearchEmpty')}</div>`,
+            },
+            onDropdownOpen: () => positionLanguageDropdown(localeSelect),
+            onType: () => positionLanguageDropdown(localeSelect),
+            onChange: async value => {
+                if (!value || value === currentLocale) return;
+                if (!await setLocale(value)) localeSelect.setValue(currentLocale, true);
+            },
         });
-        els.localeInput.addEventListener('input', () => {
-            state.localeSearchTerm = els.localeInput.value;
-            state.localeHighlightIndex = -1;
-            openLocalePicker();
-        });
-        els.localeInput.addEventListener('keydown', async (e) => {
-            const filtered = getFilteredLocales();
-            if (e.key === 'Escape') {
-                closeLocalePicker(true);
-                els.localeInput.blur();
-                return;
-            }
-            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-                e.preventDefault();
-                if (!els.localePicker.classList.contains('open')) {
-                    openLocalePicker();
-                    return;
-                }
-                if (!filtered.length) return;
-                const delta = e.key === 'ArrowDown' ? 1 : -1;
-                const nextIndex = state.localeHighlightIndex < 0
-                    ? getInitialLocaleHighlightIndex(filtered)
-                    : (state.localeHighlightIndex + delta + filtered.length) % filtered.length;
-                highlightLocaleOption(nextIndex, true);
-                return;
-            }
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                if (!filtered.length) return;
-                const selected = filtered[state.localeHighlightIndex] || filtered[0];
-                await commitLocaleSelection(selected.code);
-                els.localeInput.blur();
-            }
-        });
-        els.localeInput.addEventListener('blur', () => {
-            setTimeout(() => closeLocalePicker(true), 120);
-        });
-        els.localeListbox.addEventListener('mousedown', (e) => {
-            e.preventDefault();
-        });
-        els.localeListbox.addEventListener('mousemove', (e) => {
-            const option = e.target.closest('.locale-option');
-            if (!option) return;
-            const index = Number(option.dataset.index);
-            if (!Number.isFinite(index) || index === state.localeHighlightIndex) return;
-            highlightLocaleOption(index, false);
-        });
-        els.localeListbox.addEventListener('click', async (e) => {
-            const option = e.target.closest('.locale-option');
-            if (!option) return;
-            await commitLocaleSelection(option.dataset.locale);
-            els.localeInput.blur();
-        });
+        localeSelect.wrapper.classList.add('language-picker');
+        openLanguagePickerOnFirstClick(localeSelect);
+        localeSelect.setValue(currentLocale, true);
+        localeSelect.focus_node.setAttribute('aria-label', t('ariaLangGroup'));
 
         els.jobsMenuBtn.addEventListener('click', () => setJobsDrawerOpen(true));
         els.jobsDrawerClose.addEventListener('click', () => setJobsDrawerOpen(false));
@@ -3054,14 +2933,59 @@
 
         setSttViewMode(localStorage.getItem('resonance_stt_view_mode') || 'blocks');
 
+        function renderSttLanguageOptions() {
+            if (!STT_CATALOG || !sttLanguageSelect) return;
+            const codes = [...new Set(STT_CATALOG.models.flatMap(model => model.languages || []))];
+            const localNames = new Intl.DisplayNames([currentLocale], { type: 'language' });
+            const englishNames = new Intl.DisplayNames(['en'], { type: 'language' });
+            const preferred = sttLanguageSelect.getValue() || localStorage.getItem('resonance_sttLanguage') || STT_CATALOG.default_language;
+            const options = codes.map(code => {
+                const upstreamName = STT_CATALOG.language_names?.[code] || code;
+                const fallback = upstreamName.charAt(0).toUpperCase() + upstreamName.slice(1);
+                const english = englishNames.of(code);
+                const localized = localNames.of(code);
+                const native = new Intl.DisplayNames([code], { type: 'language' }).of(code);
+                return {
+                    value: code,
+                    label: localized !== code ? localized : english !== code ? english : fallback,
+                    english: english !== code ? english : fallback,
+                    native: native !== code ? native : fallback,
+                };
+            });
+            options.sort((a, b) => a.label.localeCompare(b.label, currentLocale));
+            sttLanguageSelect.clear(true);
+            sttLanguageSelect.clearOptions();
+            sttLanguageSelect.addOptions(options);
+            sttLanguageSelect.setValue(codes.includes(preferred) ? preferred : STT_CATALOG.default_language, true);
+            sttLanguageSelect.enable();
+            renderSttModelOptions();
+        }
+
+        function renderSttModelOptions() {
+            if (!STT_CATALOG || !els.sttModel || !els.sttLanguage) return;
+            const language = els.sttLanguage.value;
+            const compatible = STT_CATALOG.models.filter(model => model.languages.includes(language));
+            const preferred = compatible.length > 1
+                ? els.sttModel.value || localStorage.getItem(STT_MODEL_OVERRIDE_KEY) || ''
+                : '';
+            const options = [new Option(t('sttModelRecommended'), '')];
+            options.push(...compatible.map(model => new Option(model.name, model.id)));
+            els.sttModel.replaceChildren(...options);
+            els.sttModel.value = compatible.some(model => model.id === preferred) ? preferred : '';
+            localStorage.setItem(STT_MODEL_OVERRIDE_KEY, els.sttModel.value);
+            els.sttModel.disabled = false;
+            updateSttOptionsVisibility();
+        }
+
         function updateSttOptionsVisibility() {
             if (!els.sttLanguage) return;
-            const lang = els.sttLanguage.value;
-            if (lang === 'en') {
-                if (els.sttModelContainer) els.sttModelContainer.style.display = 'flex';
-            } else {
-                if (els.sttModelContainer) els.sttModelContainer.style.display = 'none';
+            const autoDetect = els.sttAutoDetect.checked;
+            const dictation = currentCaptureSource === 'mic' && currentMicMode === 'dictation';
+            if (els.sttModelContainer) {
+                const compatible = STT_CATALOG?.models.filter(model => model.languages.includes(els.sttLanguage.value)) || [];
+                els.sttModelContainer.style.display = compatible.length > 1 && !(autoDetect && dictation) ? 'flex' : 'none';
             }
+            els.sttAutoModelEffective.style.display = autoDetect ? 'inline' : 'none';
             if (els.sttDiarizationContainer) {
                 const hideDiarization = (currentCaptureSource === 'sys') || (currentCaptureSource === 'mic' && currentMicMode === 'live');
                 els.sttDiarizationContainer.style.display = hideDiarization ? 'none' : 'flex';
@@ -3069,23 +2993,37 @@
         }
 
         if (els.sttLanguage) {
-            const savedSttLanguage = localStorage.getItem('resonance_sttLanguage');
-            if (savedSttLanguage) {
-                els.sttLanguage.value = savedSttLanguage;
-            } else {
-                const defaultSttLang = (initialLocale === 'ru' || initialLocale === 'en') ? initialLocale : 'ru';
-                els.sttLanguage.value = defaultSttLang;
-            }
-
+            els.sttAutoDetect.addEventListener('change', updateSttOptionsVisibility);
+            sttLanguageSelect = new TomSelect(els.sttLanguage, {
+                valueField: 'value',
+                labelField: 'label',
+                searchField: ['label', 'english', 'native', 'value'],
+                sortField: [{ field: 'label', direction: 'asc' }],
+                maxItems: 1,
+                maxOptions: null,
+                closeAfterSelect: true,
+                create: false,
+                placeholder: t('languageSearchPlaceholder'),
+                refreshThrottle: 0,
+                render: {
+                    option: (data, escape) => languageOption({ ...data, subtitle: `${data.native} · ${data.value}` }, escape),
+                    item: (data, escape) => `<div>${escape(data.label)}</div>`,
+                    no_results: () => `<div class="locale-picker-empty">${t('localeSearchEmpty')}</div>`,
+                },
+                onDropdownOpen: () => positionLanguageDropdown(sttLanguageSelect),
+                onType: () => positionLanguageDropdown(sttLanguageSelect),
+                onChange: value => {
+                    if (!value) return;
+                    localStorage.setItem('resonance_sttLanguage', value);
+                    renderSttModelOptions();
+                },
+            });
+            sttLanguageSelect.wrapper.classList.add('language-picker', 'stt-language-picker');
+            openLanguagePickerOnFirstClick(sttLanguageSelect);
+            sttLanguageSelect.focus_node.setAttribute('aria-labelledby', 'sttLanguageLabel');
             if (els.sttModel) {
-                const savedSttModel = localStorage.getItem('resonance_sttModel');
-                if (savedSttModel) {
-                    els.sttModel.value = savedSttModel;
-                } else {
-                    els.sttModel.value = 'whisper';
-                }
                 els.sttModel.addEventListener('change', () => {
-                    localStorage.setItem('resonance_sttModel', els.sttModel.value);
+                    localStorage.setItem(STT_MODEL_OVERRIDE_KEY, els.sttModel.value);
                     updateSttOptionsVisibility();
                 });
             }
@@ -3100,11 +3038,14 @@
 
             updateSttOptionsVisibility();
 
-            els.sttLanguage.addEventListener('change', () => {
-                localStorage.setItem('resonance_sttLanguage', els.sttLanguage.value);
-                updateSttOptionsVisibility();
-            });
         }
+
+        function repositionOpenLanguagePickers() {
+            positionLanguageDropdown(localeSelect);
+            positionLanguageDropdown(sttLanguageSelect);
+        }
+        window.addEventListener('resize', repositionOpenLanguagePickers);
+        window.visualViewport?.addEventListener('resize', repositionOpenLanguagePickers);
 
         function setMicMode(mode) {
             currentMicMode = mode === 'live' ? 'live' : 'dictation';
@@ -3553,9 +3494,7 @@
 
                 const lang = els.sttLanguage.value;
                 const params = new URLSearchParams({ language: lang });
-                if (lang === 'en') {
-                    params.set('model', els.sttModel.value);
-                }
+                if (els.sttModel && els.sttModel.value) params.set('model', els.sttModel.value);
                 if (els.sttSysIncludeMic && els.sttSysIncludeMic.checked) {
                     params.set('include_microphone', 'true');
                 }
@@ -3634,9 +3573,7 @@
                 try {
                     const lang = els.sttLanguage.value;
                     const params = new URLSearchParams({ language: lang });
-                    if (lang === 'en') {
-                        params.set('model', els.sttModel.value);
-                    }
+                    if (els.sttModel && els.sttModel.value) params.set('model', els.sttModel.value);
                     const startRes = await fetch(`/api/jobs/live/start?${params}`, { method: 'POST' });
                     if (!startRes.ok) throw new Error(await startRes.text());
                     const startData = await startRes.json();
@@ -4271,16 +4208,14 @@
                 params.set('batch_index', String(batchMeta.batch_index));
                 params.set('batch_total', String(batchMeta.batch_total));
             }
-            if (els.sttLanguage && els.sttLanguage.value) {
+            if (els.sttAutoDetect.checked) {
+                params.set('detect_language', 'true');
+            } else if (els.sttLanguage && els.sttLanguage.value) {
                 params.set('language', els.sttLanguage.value);
-                if (els.sttLanguage.value === 'en') {
-                    if (els.sttModel && els.sttModel.value) {
-                        params.set('model', els.sttModel.value);
-                    }
-                }
-                if (els.sttDiarization && els.sttDiarization.checked) {
-                    params.set('diarization', 'true');
-                }
+                if (els.sttModel && els.sttModel.value) params.set('model', els.sttModel.value);
+            }
+            if (els.sttDiarization && els.sttDiarization.checked) {
+                params.set('diarization', 'true');
             }
             const url = API_URL + '/jobs/stt' + (params.toString() ? '?' + params.toString() : '');
             const startRes = await fetch(url, {
@@ -4669,6 +4604,7 @@
         });
 
         loadConfig();
+        loadSttCatalog();
     </script>
 </body>
 </html>

@@ -2,56 +2,72 @@ from __future__ import annotations
 
 import logging
 import os
+from functools import lru_cache
 from typing import Any
 
 import numpy as np
 
-from stt.models.base import STTModelAdapter
+from stt.models.base import STTModelAdapter, safe_resolve_device
 
 log = logging.getLogger("resonance.server")
+WHISPER_NUM_LANGUAGES = 100
+
+
+@lru_cache(maxsize=1)
+def _turbo_languages() -> frozenset[str]:
+    from whisper.tokenizer import get_tokenizer
+
+    tokenizer = get_tokenizer(multilingual=True, num_languages=WHISPER_NUM_LANGUAGES)
+    return frozenset(tokenizer.all_language_codes)
 
 
 class WhisperAdapter(STTModelAdapter):
-    """Wraps WhisperModel to match GigaAM's transcribe(path) -> str interface."""
+    """Transcribe Resonance PCM chunks with the official Whisper checkpoint."""
+
+    @classmethod
+    def supported_languages(cls) -> frozenset[str]:
+        return _turbo_languages()
 
     def __init__(self, model: Any, beam_size: int = 5) -> None:
         self._model = model
         self._beam_size = beam_size
 
-    def transcribe(self, audio: np.ndarray, **kwargs: Any) -> str:
-        segments, _ = self._model.transcribe(audio, beam_size=self._beam_size)
-        return " ".join(seg.text.strip() for seg in segments).strip()
+    def transcribe(self, audio: np.ndarray, *, language: str | None = None, **kwargs: Any) -> str:
+        if not isinstance(language, str) or language not in self.supported_languages():
+            raise ValueError("Whisper requires an explicit language")
+        return self._decode(audio, language=language).text.strip()
+
+    def transcribe_and_detect_language(self, audio: np.ndarray) -> tuple[str, str]:
+        result = self._decode(audio, language=None)
+        return result.text.strip(), result.language
+
+    def _decode(self, audio: np.ndarray, *, language: str | None) -> Any:
+        import torch
+        import whisper
+
+        pcm = np.asarray(audio, dtype=np.float32)
+        if pcm.ndim != 1 or not len(pcm):
+            raise ValueError("Whisper requires nonempty mono PCM")
+        if len(pcm) > whisper.audio.N_SAMPLES:
+            raise ValueError("Whisper chunk exceeds its audio context")
+
+        padded = whisper.pad_or_trim(pcm)
+        mel = whisper.log_mel_spectrogram(padded, n_mels=self._model.dims.n_mels).to(self._model.device)
+        options = whisper.DecodingOptions(
+            task="transcribe", language=language, beam_size=self._beam_size,
+            without_timestamps=False, fp16=self._model.device.type == "cuda",
+        )
+        with torch.inference_mode():
+            return whisper.decode(self._model, mel, options)
 
 
 def load_whisper(device: str | None = None) -> WhisperAdapter:
-    log.info("Loading STT model (Distil-Whisper-v3)...")
-    from faster_whisper import WhisperModel
+    log.info("Loading STT model (Whisper Turbo)...")
+    import whisper
 
-    target_device = device or os.getenv("DEVICE", "cpu")
-    if target_device.startswith("cuda"):
-        ct2_device = "cuda"
-        device_index = 0
-        if ":" in target_device:
-            try:
-                device_index = int(target_device.split(":")[1])
-            except ValueError:
-                pass
-        compute_type = "float16"
-    else:
-        ct2_device = "cpu"
-        device_index = 0
-        compute_type = "int8"
-
-    kwargs: dict[str, Any] = {
-        "device": ct2_device,
-        "compute_type": compute_type,
-    }
-    if device_index > 0:
-        kwargs["device_index"] = device_index
-
-    model = WhisperModel(
-        "Systran/faster-distil-whisper-large-v3",
-        **kwargs,
-    )
-    log.info(f"Whisper model loaded: device={ct2_device}, device_index={device_index}, compute_type={compute_type}")
+    target_device = safe_resolve_device(device or os.getenv("DEVICE", "cpu"))
+    model = whisper.load_model("turbo", device=target_device).eval()
+    if model.num_languages != WHISPER_NUM_LANGUAGES:
+        raise RuntimeError("Whisper Turbo language vocabulary does not match the configured checkpoint")
+    log.info("Whisper Turbo loaded: device=%s", model.device)
     return WhisperAdapter(model)

@@ -73,3 +73,9 @@ def transcribe_batch_serialized(model: Any, chunks: tuple[Any, ...], **kwargs: A
         return result
 
     return _INFERENCE_GATE.call(run, live=False)
+
+
+def transcribe_and_detect_language_serialized(model: Any, audio: Any) -> tuple[str, str]:
+    return _INFERENCE_GATE.call(
+        lambda: model.transcribe_and_detect_language(audio), live=False
+    )

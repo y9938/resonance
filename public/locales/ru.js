@@ -58,6 +58,7 @@
             toastCopyFailed: 'Не удалось скопировать',
             toastReadFailed: 'Не удалось прочитать файл',
             localeSearchEmpty: 'Подходящие языки не найдены',
+            languageSearchPlaceholder: 'Поиск языка…',
             charUnit: 'симв.',
             defaultTranscriptionFile: 'транскрипт',
             sttViewBlocks: 'Блоки',
@@ -105,11 +106,10 @@
             jobsBatchSummary: '{done} / {total}',
             jobsBatchOpen: 'Открыть',
             sttLanguageLabel: 'Язык STT',
-            sttLangRu: 'Русский',
-            sttLangEn: 'Английский',
             sttModelLabel: 'Модель STT',
-            sttModelWhisper: 'Whisper (по умолчанию)',
-            sttModelGranite: 'IBM Granite',
+            sttModelRecommended: 'Рекомендованная',
+            sttAutoDetectLabel: 'Определять язык автоматически (Whisper Turbo)',
+            sttAutoModelEffective: 'Файлы и диктовка: Whisper Turbo',
             sttDiarizationLabelText: 'Диаризация'
         },
         helpers: {

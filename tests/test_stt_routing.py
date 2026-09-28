@@ -2,9 +2,11 @@ import io
 import wave
 from unittest.mock import MagicMock, patch
 
+import pytest
 from fastapi.testclient import TestClient
 
-from server import JobRegistry, app, jobs
+from server import JobRegistry, active_live_sessions, app, jobs
+from stt.models.manager import resolve_stt_model
 
 client = TestClient(app)
 
@@ -23,19 +25,26 @@ VALID_WAV_BYTES = _make_minimal_wav_bytes()
 
 
 def test_api_models_includes_languages_routing():
-    response = client.get("/api/models")
+    with patch("whisper.load_model") as load_weights:
+        response = client.get("/api/models")
+    load_weights.assert_not_called()
     assert response.status_code == 200
     payload = response.json()
     assert "stt" in payload
-    assert "languages" in payload["stt"]
-    assert "granite" in payload["stt"]
-    assert payload["stt"]["granite"]["name"] == "IBM Granite Speech 4.1 Plus"
-    assert payload["stt"]["languages"] == {"ru": "gigaam", "en": "whisper"}
+    models = {entry["id"]: entry for entry in payload["stt"]["models"]}
+    assert payload["stt"]["default_language"] == "ru"
+    assert models["gigaam"]["languages"] == ["ru"]
+    assert models["granite"]["languages"] == ["en"]
+    assert {"de", "en", "ru"} <= set(models["whisper"]["languages"])
+    assert isinstance(models["whisper"]["loaded"], bool)
+    assert payload["stt"]["language_names"]["ba"] == "bashkir"
+    assert payload["stt"]["language_names"]["bo"] == "tibetan"
+    assert set(payload["stt"]["language_names"]) == set(models["whisper"]["languages"])
 
 
 def test_stt_routing_unsupported_language():
     files = {"file": ("test.wav", VALID_WAV_BYTES, "audio/wav")}
-    response = client.post("/api/jobs/stt?language=fr", files=files)
+    response = client.post("/api/jobs/stt?language=xx-unknown", files=files)
     assert response.status_code == 400
     assert "Unsupported language" in response.json()["detail"]
 
@@ -67,6 +76,42 @@ def test_stt_routing_english(mock_stt_whisper, mock_run_stt_worker):
     status = jobs.get_status(job_id)
     assert status is not None
     assert status["language"] == "en"
+    assert status["model"] == "whisper"
+
+
+@patch("server.run_stt_worker")
+@patch("server.models.stt_whisper")
+def test_batch_auto_uses_whisper_without_explicit_language(mock_stt_whisper, worker):
+    mock_stt_whisper.return_value = MagicMock()
+    files = {"file": ("test.wav", VALID_WAV_BYTES, "audio/wav")}
+    response = client.post("/api/jobs/stt?detect_language=true", files=files)
+    assert response.status_code == 200
+    status = jobs.get_status(response.json()["job_id"])
+    assert status["model"] == "whisper"
+    assert status["language"] is None
+    assert worker.call_args.kwargs["detect_language"] is True
+
+
+@pytest.mark.parametrize("query", [
+    "detect_language=true&language=de", "detect_language=true&model=gigaam",
+    "detect_language=true&model=granite",
+])
+def test_batch_auto_rejects_conflicting_routing(query):
+    files = {"file": ("test.wav", VALID_WAV_BYTES, "audio/wav")}
+    response = client.post(f"/api/jobs/stt?{query}", files=files)
+    assert response.status_code == 400
+
+
+@patch("server.run_stt_worker")
+@patch("server.models.stt_whisper")
+@pytest.mark.parametrize("language", ["de", "ru"])
+def test_explicit_whisper_supports_multilingual_batch(mock_stt_whisper, mock_run_stt_worker, language):
+    mock_stt_whisper.return_value = MagicMock()
+    files = {"file": ("test.wav", VALID_WAV_BYTES, "audio/wav")}
+    response = client.post(f"/api/jobs/stt?language={language}&model=whisper", files=files)
+    assert response.status_code == 200
+    status = jobs.get_status(response.json()["job_id"])
+    assert status["language"] == language
     assert status["model"] == "whisper"
 
 
@@ -131,16 +176,48 @@ def test_stt_routing_invalid_combinations():
     assert response.status_code == 400
     assert "Unsupported model" in response.json()["detail"]
 
-    response = client.post("/api/jobs/stt?language=ru&model=whisper", files=files)
-    assert response.status_code == 400
-    assert "Russian language only supports gigaam model" in response.json()["detail"]
-
     response = client.post("/api/jobs/stt?language=en&model=gigaam", files=files)
     assert response.status_code == 400
-    assert "English language does not support gigaam model" in response.json()["detail"]
+    assert "does not support language" in response.json()["detail"]
+
+    response = client.post("/api/jobs/stt?model=whisper", files=files)
+    assert response.status_code == 400
+    assert "Language is required" in response.json()["detail"]
 
     response = client.post("/api/jobs/stt?language=en&model=whisper&diarization=true", files=files)
     assert response.status_code == 200
     job_id = response.json()["job_id"]
     status = jobs.get_status(job_id)
     assert status["result"].get("diarization") is True
+
+
+@patch("server.models.get_stt_model")
+def test_live_route_retains_resolved_language(mock_get_model):
+    mock_get_model.return_value = MagicMock()
+    response = client.post("/api/jobs/live/start?language=de&model=whisper")
+    assert response.status_code == 200
+    job_id = response.json()["job_id"]
+    assert active_live_sessions[job_id].session.language == "de"
+    assert client.post(f"/api/jobs/live/{job_id}/stop").status_code == 200
+
+
+@pytest.mark.parametrize(("language", "model", "expected"), [
+    (None, None, ("ru", "gigaam")),
+    ("ru", None, ("ru", "gigaam")),
+    ("en", None, ("en", "whisper")),
+    ("de", None, ("de", "whisper")),
+    ("ru", "whisper", ("ru", "whisper")),
+    (None, "gigaam", ("ru", "gigaam")),
+    (None, "granite", ("en", "granite")),
+])
+def test_resolve_multilingual_stt(language, model, expected):
+    assert resolve_stt_model(language, model) == expected
+
+
+@pytest.mark.parametrize(("language", "model"), [
+    (None, "whisper"), ("auto", None), ("en-US", None),
+    ("en", "gigaam"), ("de", "granite"),
+])
+def test_reject_ambiguous_or_unsupported_language(language, model):
+    with pytest.raises(ValueError):
+        resolve_stt_model(language, model)

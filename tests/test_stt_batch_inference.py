@@ -9,6 +9,7 @@ import pytest
 import torch
 
 from stt.inference import InferenceGate, transcribe_batch_serialized
+from stt.models.base import STTModelAdapter
 from stt.models.gigaam import GigaAMAdapter
 from stt.pipeline import run_stt_job
 from tests.test_stt_pipeline import FakeJobs, FakeLog
@@ -88,6 +89,75 @@ def test_inference_batch_rejects_wrong_cardinality() -> None:
     model.transcribe_batch.return_value = ["only one"]
     with pytest.raises(RuntimeError, match="incorrect number"):
         transcribe_batch_serialized(model, (np.zeros(1), np.zeros(1)))
+
+
+def test_batch_pipeline_passes_resolved_language_to_adapter(monkeypatch) -> None:
+    seen: list[str | None] = []
+
+    class Model(STTModelAdapter):
+        @classmethod
+        def supported_languages(cls) -> frozenset[str]:
+            return frozenset({"de"})
+
+        def transcribe(self, audio, *, language=None, **kwargs):
+            seen.append(language)
+            return "Hallo"
+
+    monkeypatch.setattr(
+        "stt.pipeline.pack_array_vad_chunks",
+        lambda *args, **kwargs: iter([(0.0, 1.0, np.ones(16000, dtype=np.float32))]),
+    )
+    run_stt_job(
+        job_id="german", input_paths=np.ones(16000, dtype=np.float32),
+        jobs=FakeJobs(), model=Model(), log=FakeLog(), sample_rate=16000,
+        chunk_sec=20, language="de",
+    )
+    assert seen == ["de"]
+
+
+def test_batch_auto_locks_language_after_first_chunk(monkeypatch) -> None:
+    calls: list[tuple[str, str | None]] = []
+
+    class Model:
+        def transcribe_and_detect_language(self, audio):
+            calls.append(("detect", None))
+            return "Hallo", "de"
+
+        def transcribe(self, audio, *, language):
+            calls.append(("transcribe", language))
+            return "Welt"
+
+    monkeypatch.setattr(
+        "stt.pipeline.pack_array_vad_chunks",
+        lambda *args, **kwargs: iter([
+            (0.0, 1.0, np.ones(16000, dtype=np.float32)),
+            (1.0, 2.0, np.ones(16000, dtype=np.float32)),
+        ]),
+    )
+    jobs = FakeJobs()
+    run_stt_job(
+        job_id="auto", input_paths=np.ones(32000, dtype=np.float32),
+        jobs=jobs, model=Model(), log=FakeLog(), sample_rate=16000,
+        chunk_sec=20, detect_language=True,
+    )
+    assert calls == [("detect", None), ("transcribe", "de")]
+    assert [event for event, _ in jobs.events] == ["start", "progress", "progress", "complete"]
+    assert [data["segment"]["text"] for event, data in jobs.events if event == "progress"] == [
+        "Hallo", "Welt",
+    ]
+
+
+def test_batch_auto_with_no_speech_never_calls_model(monkeypatch) -> None:
+    monkeypatch.setattr("stt.pipeline.pack_array_vad_chunks", lambda *args, **kwargs: iter(()))
+    model = MagicMock()
+    jobs = FakeJobs()
+    run_stt_job(
+        job_id="silent", input_paths=np.zeros(16000, dtype=np.float32),
+        jobs=jobs, model=model, log=FakeLog(), sample_rate=16000,
+        chunk_sec=20, detect_language=True,
+    )
+    model.transcribe_and_detect_language.assert_not_called()
+    assert [event for event, _ in jobs.events] == ["start", "complete"]
 
 
 def test_live_waiter_runs_before_next_batch() -> None:

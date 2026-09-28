@@ -108,25 +108,30 @@ class ModelManager:
         raise ValueError(f"Unknown STT model: {model_name}")
 
 
-SUPPORTED_STT_LANGUAGES = {"ru", "en"}
-SUPPORTED_STT_MODELS = {"gigaam", "whisper", "granite"}
-DEFAULT_LANGUAGE_STT_MODELS = {"ru": "gigaam", "en": "whisper"}
+STT_MODEL_TYPES = {"gigaam": GigaAMAdapter, "whisper": WhisperAdapter, "granite": GraniteAdapter}
 
 
 def resolve_stt_model(language: str | None = None, model: str | None = None) -> tuple[str, str]:
     """Validate and resolve (language, model_name) for STT routing."""
-    resolved_lang = (language or "ru").strip().lower()
-    if resolved_lang not in SUPPORTED_STT_LANGUAGES:
+    norm_model = model.strip().lower() if model is not None else None
+    resolved_lang = language.strip().lower() if language is not None else None
+    if norm_model is not None and norm_model not in STT_MODEL_TYPES:
+        raise ValueError(f"Unsupported model: {model}")
+    if resolved_lang is None:
+        if norm_model is None:
+            return "ru", "gigaam"
+        languages = STT_MODEL_TYPES[norm_model].supported_languages()
+        if len(languages) != 1:
+            raise ValueError(f"Language is required for multilingual model: {norm_model}")
+        return next(iter(languages)), norm_model
+    if resolved_lang == "auto":
+        raise ValueError("Automatic language detection is not supported")
+    if norm_model is None:
+        if resolved_lang == "ru":
+            return "ru", "gigaam"
+        if resolved_lang in WhisperAdapter.supported_languages():
+            return resolved_lang, "whisper"
         raise ValueError(f"Unsupported language: {resolved_lang}")
-
-    if model:
-        norm_model = model.strip().lower()
-        if norm_model not in SUPPORTED_STT_MODELS:
-            raise ValueError(f"Unsupported model: {model}")
-        if resolved_lang == "ru" and norm_model != "gigaam":
-            raise ValueError("Russian language only supports gigaam model")
-        if resolved_lang == "en" and norm_model not in {"whisper", "granite"}:
-            raise ValueError(f"English language does not support {model} model")
-        return resolved_lang, norm_model
-
-    return resolved_lang, DEFAULT_LANGUAGE_STT_MODELS[resolved_lang]
+    if resolved_lang not in STT_MODEL_TYPES[norm_model].supported_languages():
+        raise ValueError(f"Model {norm_model} does not support language: {resolved_lang}")
+    return resolved_lang, norm_model

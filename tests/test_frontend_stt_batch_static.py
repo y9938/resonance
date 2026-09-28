@@ -44,7 +44,7 @@ def test_stt_batch_followup_ui_contracts() -> None:
     assert "jobs-batch-open" in html
     assert "restoreJob(job.job_id, 'stt', { preserveScroll: true, preserveSttLayout: true });" in html
     assert "sttResultText.style.minHeight" in html
-    assert ".locale-option.active" in html
+    assert ".language-picker .ts-dropdown .active" in html
     assert "box-shadow: inset 0 0 0 1px" in html
     assert "target.scrollIntoView({ block: 'start', behavior: 'smooth' });" not in html
     assert "els.sttBatchNext.hidden" in html
@@ -59,18 +59,21 @@ def test_stt_language_dropdown_static() -> None:
 
     assert 'id="sttLanguage"' in html
     assert 'sttLanguageLabel' in html
-    assert 'sttLangRu' in html
-    assert 'sttLangEn' in html
+    assert "fetch(API_URL + '/models')" in html
+    assert "Intl.DisplayNames([currentLocale], { type: 'language' })" in html
+    assert "new Option(t('sttModelRecommended'), '')" in html
+    assert "new TomSelect(els.localeInput" in html
+    assert "new TomSelect(els.sttLanguage" in html
+    assert "searchField: ['label', 'english', 'native', 'value']" in html
+    assert "lang === 'en'" not in html
 
     # Verify keys exist in ru.js
     assert 'sttLanguageLabel' in ru
-    assert 'sttLangRu' in ru
-    assert 'sttLangEn' in ru
+    assert 'sttModelRecommended' in ru
 
     # Verify keys exist in zh-CN.js
     assert 'sttLanguageLabel' in zh
-    assert 'sttLangRu' in zh
-    assert 'sttLangEn' in zh
+    assert 'sttModelRecommended' in zh
 
 
 def test_stt_language_js_contracts() -> None:

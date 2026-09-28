@@ -14,12 +14,16 @@ log = logging.getLogger("resonance.server")
 class GraniteAdapter(STTModelAdapter):
     """Wraps ibm-granite/granite-speech-4.1-2b-plus model for inference."""
 
+    @classmethod
+    def supported_languages(cls) -> frozenset[str]:
+        return frozenset({"en"})
+
     def __init__(self, model: Any, processor: Any, device: str) -> None:
         self._model = model
         self._processor = processor
         self._device = device
 
-    def transcribe(self, audio: np.ndarray, diarization: bool = False, **kwargs: Any) -> str:
+    def transcribe(self, audio: np.ndarray, diarization: bool = False, *, language: str | None = None, **kwargs: Any) -> str:
         import torch
 
         waveform = torch.from_numpy(audio)
