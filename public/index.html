@@ -1831,6 +1831,7 @@
                 lastEventSeq: 0,
                 progressCurrent: 0,
                 progressTotal: 0,
+                progressLabelKey: null,
                 statusPollTimer: null,
                 resize: {
                     active: false,
@@ -2153,11 +2154,11 @@
         }
 
         function refreshActiveProgressLabels() {
-            if (els.sttProgress.classList.contains('active') && state.stt.progressTotal > 0) {
-                if (state.stt.progressCurrent >= state.stt.progressTotal) {
-                    els.sttProgressText.textContent = t('progressComplete');
-                } else if (state.stt.progressCurrent > 0) {
-                    const pct = (state.stt.progressCurrent / state.stt.progressTotal) * 100;
+            if (els.sttProgress.classList.contains('active')) {
+                if (state.stt.progressLabelKey) {
+                    els.sttProgressText.textContent = t(state.stt.progressLabelKey);
+                } else if (state.stt.progressTotal > 0) {
+                    const pct = Math.max(0, Math.min(100, (state.stt.progressCurrent / state.stt.progressTotal) * 100));
                     els.sttProgressText.textContent = Math.round(pct) + '%';
                 }
             }
@@ -2266,6 +2267,27 @@
             return null;
         }
 
+        function renderSttProgress(current, total, labelKey = null) {
+            state.stt.progressCurrent = Number(current) || 0;
+            state.stt.progressTotal = Number(total) || 0;
+            state.stt.progressLabelKey = labelKey || (state.stt.progressTotal > 0 ? null : 'progressProcessing');
+            if (state.stt.progressTotal > 0) {
+                const pct = Math.max(0, Math.min(100, (state.stt.progressCurrent / state.stt.progressTotal) * 100));
+                els.sttProgressFill.style.width = pct + '%';
+                els.sttProgressText.textContent = state.stt.progressLabelKey
+                    ? t(state.stt.progressLabelKey) : Math.round(pct) + '%';
+            } else {
+                els.sttProgressFill.style.width = '0%';
+                els.sttProgressText.textContent = t(state.stt.progressLabelKey);
+            }
+        }
+
+        function renderSttComplete() {
+            state.stt.progressLabelKey = 'progressComplete';
+            els.sttProgressFill.style.width = '100%';
+            els.sttProgressText.textContent = t(state.stt.progressLabelKey);
+        }
+
         function applySttJobStatus(status) {
             updateSttJobControls(isLiveSttJob(status));
             if (Number.isInteger(status.last_event_seq)) {
@@ -2276,21 +2298,21 @@
                     .filter(s => s && Number.isFinite(s.start) && Number.isFinite(s.end) && typeof s.text === 'string')
                     .map(s => ({ start: s.start, end: s.end, text: s.text }))
                 : [];
-            if (!segs.length) return;
             state.stt.segments = segs;
             els.sttResult.classList.add('active');
             if (!isLiveSttJob(status)) {
                 els.sttProgress.classList.add('active');
             }
-            const total = status.progress_total || segs.length;
-            const current = status.progress_current || segs.length;
-            state.stt.progressCurrent = current;
-            state.stt.progressTotal = total;
-            const pct = total > 0 ? (current / total) * 100 : 0;
-            els.sttProgressFill.style.width = Math.max(0, Math.min(100, pct)) + '%';
             if (status.state === 'completed') {
-                els.sttProgressText.textContent = t('progressComplete');
-                els.sttProgressText.textContent = Math.round(pct) + '%';
+                state.stt.progressCurrent = Number(status.progress_current) || 0;
+                state.stt.progressTotal = Number(status.progress_total) || 0;
+                renderSttComplete();
+            } else {
+                renderSttProgress(
+                    status.progress_current,
+                    status.progress_total,
+                    status.state === 'queued' ? 'jobsStateQueued' : null,
+                );
             }
             if (status.result && status.result.filename) {
                 els.sttResultText.dataset.filename = status.result.filename;
@@ -3148,6 +3170,7 @@
                 els.sttHide.classList.remove('active');
                 state.stt.progressCurrent = 0;
                 state.stt.progressTotal = 0;
+                state.stt.progressLabelKey = null;
                 if (!keepResult) {
                     els.sttResult.classList.remove('active');
                     els.sttResultText.value = '';
@@ -3797,20 +3820,18 @@
                         break;
                     }
                     case 'start':
-                        state.stt.progressCurrent = 0;
-                        state.stt.progressTotal = event.total || 0;
-                        els.sttProgressText.textContent = event.stage === 'diarization' ? t('progressDiarizing') : t('progressProcessing');
+                        renderSttProgress(
+                            0,
+                            event.total,
+                            event.stage === 'diarization' ? 'progressDiarizing' : 'progressProcessing',
+                        );
                         break;
                     case 'progress':
-                        state.stt.progressCurrent = event.current || 0;
-                        state.stt.progressTotal = event.total || 0;
-                        if (event.stage === 'diarization') {
-                            els.sttProgressText.textContent = t('progressDiarizing');
-                            break;
-                        }
-                        const pct = event.total > 0 ? (event.current / event.total) * 100 : 0;
-                        els.sttProgressFill.style.width = pct + '%';
-                        els.sttProgressText.textContent = Math.round(pct) + '%';
+                        renderSttProgress(
+                            event.current,
+                            event.total,
+                            event.stage === 'diarization' ? 'progressDiarizing' : null,
+                        );
                         if (event.segment) {
                             const source = String(event.segment.source || 'mic');
                             const generation = Number(event.segment.generation);
@@ -3825,8 +3846,7 @@
                         break;
                     case 'complete':
                         state.stt.progressCurrent = state.stt.progressTotal || 0;
-                        els.sttProgressFill.style.width = '100%';
-                        els.sttProgressText.textContent = t('progressComplete');
+                        renderSttComplete();
                         updateDisplay();
                         setActiveJobId('STT', null);
                         closeJobStreams('STT');
@@ -4038,10 +4058,16 @@
                 file.textContent = getJobFilename(job);
                 const detail = document.createElement('div');
                 detail.className = 'stt-batch-detail';
-                if (job.state === 'running' || job.state === 'queued') {
+                if (job.state === 'queued') {
+                    detail.textContent = t('jobsStateQueued');
+                } else if (job.state === 'running') {
                     if (job.job_type === 'stt') {
-                        const pct = job.progress_total > 0 ? (job.progress_current / job.progress_total) * 100 : 0;
-                        detail.textContent = Math.round(pct) + '%';
+                        if (job.progress_total > 0) {
+                            const pct = Math.max(0, Math.min(100, (job.progress_current / job.progress_total) * 100));
+                            detail.textContent = Math.round(pct) + '%';
+                        } else {
+                            detail.textContent = t('progressProcessing');
+                        }
                     } else {
                         detail.textContent = t('progressChunk', {
                             current: job.progress_current || 0,
@@ -4296,6 +4322,7 @@
             els.sttHide.classList.add('active');
             els.sttCancel.classList.add('active');
             els.sttProgressFill.style.width = '5%';
+            state.stt.progressLabelKey = 'progressUploading';
             els.sttProgressText.textContent = t('progressUploading');
 
             const segments = [];

@@ -20,7 +20,14 @@ from stt.inference import (
     transcribe_batch_serialized,
     transcription_text,
 )
-from stt.media import EncodedMedia, iter_media_frames, media_duration
+from stt.media import (
+    DecodedSampleLimitExceeded,
+    DecodeStats,
+    EncodedMedia,
+    iter_media_frames,
+    iter_media_pcm,
+    media_duration,
+)
 from stt.models.base import STTModelAdapter
 
 
@@ -51,6 +58,10 @@ class STTChunk:
     start_sec: float
     end_sec: float
     pcm: np.ndarray
+
+
+class EmptyDecodedAudioError(ValueError):
+    """An encoded input produced no PCM in a completed decode pass."""
 
 
 _DEFAULT_STT_TRANSCRIBE_MAX_SEC = 25.0
@@ -148,7 +159,13 @@ from .stream_vad import (
 
 
 def iter_stt_chunks(
-    raw_inputs: dict[str, Any], *, sample_rate: int, chunk_sec: int, total_duration_sec: float
+    raw_inputs: dict[str, Any],
+    *,
+    sample_rate: int,
+    chunk_sec: int,
+    total_duration_sec: float,
+    max_samples: int | None = None,
+    decode_stats: DecodeStats | None = None,
 ) -> Iterator[STTChunk]:
     """Merge the existing per-source VAD streams in timestamp order."""
     import heapq
@@ -160,7 +177,10 @@ def iter_stt_chunks(
         elif isinstance(audio, np.ndarray):
             gen = pack_array_vad_chunks(audio, sample_rate=sample_rate, target_sec=chunk_sec)
         elif isinstance(audio, EncodedMedia):
-            frames = iter_media_frames(audio, sample_rate=sample_rate)
+            frames = iter_media_frames(
+                audio, sample_rate=sample_rate,
+                max_samples=max_samples, stats=decode_stats,
+            )
             scored_frames = get_sequence_vad_engine().new_stream().score_frames(frames)
             utterances = segment_scored_frames(
                 scored_frames, sample_rate=sample_rate,
@@ -241,13 +261,18 @@ def run_stt_job(
         elif isinstance(first_input, np.ndarray):
             total_duration_sec = len(first_input) / sample_rate
         elif isinstance(first_input, EncodedMedia):
-            total_duration_sec = media_duration(first_input)
+            total_duration_sec = media_duration(first_input) or 0.0
         else:
             info = probe_media(first_input)
             total_duration_sec = info.duration_sec
 
         if max_duration_sec > 0 and total_duration_sec > max_duration_sec:
             raise ValueError(f"Audio too long (max {max_duration_sec}s)")
+
+        # The public batch upload has one encoded source. Keep multi-source behavior unchanged.
+        single_encoded_input = len(raw_inputs) == 1 and isinstance(first_input, EncodedMedia)
+        max_samples = max_duration_sec * sample_rate if single_encoded_input and max_duration_sec > 0 else None
+        stt_stats = DecodeStats() if single_encoded_input else None
 
         model_class = model.__class__.__name__
         is_diarizing = bool(diarization and model_class != "GraniteAdapter")
@@ -278,8 +303,16 @@ def run_stt_job(
                         full_audio = audio_source
                     elif isinstance(audio_source, EncodedMedia):
                         # Diarization still needs complete decoded PCM; this is a separate memory contract.
-                        from .buffer import decode_media_bytes
-                        full_audio = decode_media_bytes(audio_source.data, target_sample_rate=sample_rate).as_ndarray()
+                        full_buffer = AudioMemoryBuffer(sample_rate=sample_rate)
+                        diarization_stats = DecodeStats()
+                        for pcm in iter_media_pcm(
+                            audio_source, sample_rate=sample_rate,
+                            max_samples=max_samples, stats=diarization_stats,
+                        ):
+                            full_buffer.append(pcm)
+                        if diarization_stats.decoded_samples == 0:
+                            raise EmptyDecodedAudioError("Audio too short or empty after decoding")
+                        full_audio = full_buffer.as_ndarray()
                     else:
                         full_raw = subprocess.check_output([
                             "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
@@ -294,6 +327,8 @@ def run_stt_job(
                     if cancel_requested() or exc.returncode in (255, 130, -2):
                         return
                     log.warning(f"Diarization failed for stream {stream_id}: {exc}")
+                except (DecodedSampleLimitExceeded, EmptyDecodedAudioError):
+                    raise
                 except Exception as e:
                     if cancel_requested():
                         return
@@ -306,7 +341,8 @@ def run_stt_job(
             raise ValueError("batch_size must be >= 1")
         chunks = iter_stt_chunks(
             raw_inputs, sample_rate=sample_rate, chunk_sec=chunk_sec,
-            total_duration_sec=total_duration_sec,
+            total_duration_sec=total_duration_sec, max_samples=max_samples,
+            decode_stats=stt_stats,
         )
         detected_language = None
         while True:
@@ -373,15 +409,27 @@ def run_stt_job(
         if cancel_requested():
             return
 
-        jobs.update_event(job_id, "complete", {"duration": total_duration_sec})
+        if stt_stats is not None and stt_stats.decoded_samples == 0:
+            raise EmptyDecodedAudioError("Audio too short or empty after decoding")
+        completed_duration_sec = (
+            stt_stats.decoded_samples / sample_rate
+            if stt_stats is not None and total_duration_sec == 0
+            else total_duration_sec
+        )
+        jobs.update_event(job_id, "complete", {"duration": completed_duration_sec})
         elapsed = time.time() - start_time
         log.info(f"STT completed: {elapsed:.2f}s")
     except Exception as exc:
         if cancel_requested():
             return
         elapsed = time.time() - start_time
-        log.error(f"STT failed: {exc} ({elapsed:.2f}s)")
-        jobs.update_event(job_id, "error", {"message": str(exc)})
+        message = (
+            f"Audio too long (max {max_duration_sec}s)"
+            if isinstance(exc, DecodedSampleLimitExceeded)
+            else str(exc)
+        )
+        log.error(f"STT failed: {message} ({elapsed:.2f}s)")
+        jobs.update_event(job_id, "error", {"message": message})
 
 
 def run_stt_worker(

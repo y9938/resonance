@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 
 from stt import pipeline
 from stt.pipeline import MediaInfo, run_stt_job
+from tests.media_helpers import silent_wav
 
 
 class FakeJobs:
@@ -46,6 +48,150 @@ class FakeLog:
 
     def error(self, message: str) -> None:
         self.messages.append(message)
+
+
+class SilentVAD:
+    def new_stream(self) -> SilentVAD:
+        return self
+
+    def score_frames(self, frames):
+        return ((frame, 0.0) for frame in frames)
+
+
+class InitialSpeechVAD(SilentVAD):
+    def score_frames(self, frames):
+        return ((frame, 1.0 if index < 10 else 0.0) for index, frame in enumerate(frames))
+
+
+def test_encoded_unknown_duration_completes_with_actual_pcm_duration(monkeypatch) -> None:
+    monkeypatch.setattr(pipeline, "media_duration", lambda media: None)
+    monkeypatch.setattr(pipeline, "get_sequence_vad_engine", lambda: SilentVAD())
+    jobs = FakeJobs()
+    run_stt_job(
+        job_id="unknown", input_paths=silent_wav(16001), jobs=jobs,
+        model=FakeModel(), log=FakeLog(), sample_rate=16000,
+        chunk_sec=20, max_duration_sec=2,
+    )
+
+    assert [event for event, _ in jobs.events] == ["start", "complete"]
+    assert jobs.events[0][1]["duration"] == jobs.events[0][1]["total"] == 0
+    assert jobs.events[-1][1]["duration"] == 16001 / 16000
+
+
+def test_encoded_unknown_duration_progress_has_unknown_total(monkeypatch) -> None:
+    monkeypatch.setattr(pipeline, "media_duration", lambda media: None)
+    monkeypatch.setattr(pipeline, "get_sequence_vad_engine", lambda: InitialSpeechVAD())
+    jobs = FakeJobs()
+    run_stt_job(
+        job_id="unknown-with-speech", input_paths=silent_wav(32000), jobs=jobs,
+        model=FakeModel(), log=FakeLog(), sample_rate=16000,
+        chunk_sec=20, max_duration_sec=2,
+    )
+
+    progress = [data for event, data in jobs.events if event == "progress"]
+    assert len(progress) == 1
+    assert progress[0]["total"] == 0
+    assert progress[0]["current"] < 2
+    assert jobs.events[-1] == ("complete", {"duration": 2.0})
+
+
+@pytest.mark.parametrize("hint", [None, 0.5])
+def test_encoded_actual_samples_override_duration_hint(monkeypatch, hint) -> None:
+    monkeypatch.setattr(pipeline, "media_duration", lambda media: hint)
+    monkeypatch.setattr(pipeline, "get_sequence_vad_engine", lambda: SilentVAD())
+    jobs = FakeJobs()
+    run_stt_job(
+        job_id="over-limit", input_paths=silent_wav(16001), jobs=jobs,
+        model=FakeModel(), log=FakeLog(), sample_rate=16000,
+        chunk_sec=20, max_duration_sec=1,
+    )
+
+    assert jobs.events[-1] == ("error", {"message": "Audio too long (max 1s)"})
+    assert all(event != "complete" for event, _ in jobs.events)
+
+
+def test_encoded_known_over_limit_fails_before_decode(monkeypatch) -> None:
+    monkeypatch.setattr(pipeline, "media_duration", lambda media: 2.0)
+    monkeypatch.setattr(
+        pipeline, "iter_media_frames",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("decoded")),
+    )
+    jobs = FakeJobs()
+    run_stt_job(
+        job_id="known-long", input_paths=silent_wav(1), jobs=jobs,
+        model=FakeModel(), log=FakeLog(), sample_rate=16000,
+        chunk_sec=20, max_duration_sec=1,
+    )
+
+    assert jobs.events == [("error", {"message": "Audio too long (max 1s)"})]
+
+
+@pytest.mark.parametrize("hint", [None, 1.0])
+def test_encoded_zero_pcm_fails_regardless_of_duration_hint(monkeypatch, hint) -> None:
+    monkeypatch.setattr(pipeline, "media_duration", lambda media: hint)
+    monkeypatch.setattr(pipeline, "get_sequence_vad_engine", lambda: SilentVAD())
+    jobs = FakeJobs()
+    run_stt_job(
+        job_id="empty-pcm", input_paths=silent_wav(0), jobs=jobs,
+        model=FakeModel(), log=FakeLog(), sample_rate=16000,
+        chunk_sec=20, max_duration_sec=1,
+    )
+
+    assert jobs.events[-1] == ("error", {"message": "Audio too short or empty after decoding"})
+
+
+def test_diarization_rejects_excess_pcm_before_accumulation(monkeypatch) -> None:
+    from stt import diarization
+
+    monkeypatch.setattr(pipeline, "media_duration", lambda media: None)
+
+    def limited_pcm(*args, **kwargs):
+        assert kwargs["max_samples"] == 16000
+        yield np.zeros(16000, dtype=np.float32)
+        raise pipeline.DecodedSampleLimitExceeded
+
+    monkeypatch.setattr(pipeline, "iter_media_pcm", limited_pcm)
+    diarize = MagicMock()
+    monkeypatch.setattr(diarization, "diarize_audio", diarize)
+    appended_samples = 0
+    original_append = pipeline.AudioMemoryBuffer.append
+
+    def tracked_append(buffer, pcm):
+        nonlocal appended_samples
+        appended_samples += len(pcm)
+        assert appended_samples <= 16000
+        return original_append(buffer, pcm)
+
+    monkeypatch.setattr(pipeline.AudioMemoryBuffer, "append", tracked_append)
+    jobs = FakeJobs()
+    run_stt_job(
+        job_id="diarization-over-limit", input_paths=silent_wav(16001), jobs=jobs,
+        model=FakeModel(), log=FakeLog(), sample_rate=16000,
+        chunk_sec=20, max_duration_sec=1, diarization=True,
+    )
+
+    assert appended_samples == 16000
+    diarize.assert_not_called()
+    assert jobs.events[-1] == ("error", {"message": "Audio too long (max 1s)"})
+
+
+def test_diarization_and_stt_use_separate_sample_budgets(monkeypatch) -> None:
+    from stt import diarization
+
+    monkeypatch.setattr(pipeline, "media_duration", lambda media: None)
+    monkeypatch.setattr(pipeline, "get_sequence_vad_engine", lambda: SilentVAD())
+    diarize = MagicMock(return_value=[])
+    monkeypatch.setattr(diarization, "diarize_audio", diarize)
+    jobs = FakeJobs()
+    run_stt_job(
+        job_id="diarization-at-limit", input_paths=silent_wav(16000), jobs=jobs,
+        model=FakeModel(), log=FakeLog(), sample_rate=16000,
+        chunk_sec=20, max_duration_sec=1, diarization=True,
+    )
+
+    diarize.assert_called_once()
+    assert len(diarize.call_args.args[0]) == 16000
+    assert jobs.events[-1] == ("complete", {"duration": 1.0})
 
 
 def test_run_stt_job_processes_segments_sequentially(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
