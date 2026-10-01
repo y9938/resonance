@@ -24,6 +24,11 @@ def _turbo_languages() -> frozenset[str]:
 class WhisperAdapter(STTModelAdapter):
     """Transcribe Resonance PCM chunks with the official Whisper checkpoint."""
 
+    # TODO: Revisit native batching after upgrading openai-whisper. In 20250625,
+    # batched beam search expands tokens by n_group but not audio_features.
+    # Keep beam=5; validate text quality, result order, and offline B=2 latency
+    # before declaring batching support or changing the production B=1 policy.
+
     @classmethod
     def supported_languages(cls) -> frozenset[str]:
         return _turbo_languages()
