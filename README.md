@@ -12,40 +12,12 @@ Unified Speech-to-Text (STT) and Text-to-Speech (TTS) API Server.
 
 ![Demo](https://raw.githubusercontent.com/y9938/assets/main/resonance/demo.gif)
 
-## Configuration
-
-`.env` is optional. Out of the box Resonance runs with CPU defaults.
-
-Create `.env` only if you want to override defaults:
-
-```bash
-touch .env
-```
-
-- **CUDA**: set `DEVICE=cuda`, leave `PYTORCH_BACKEND=` for PyPI default or set a specific backend like `cu126`
-- **CPU**: by default lightweight CPU-only wheels
-- **macOS**: use the setup script below
-- **Port**: set `RESONANCE_PORT` (default `8000`)
-- **CORS**: set `RESONANCE_CORS_ORIGINS` only for custom origins; default follows `RESONANCE_PORT`
-
-See `.env.example` for all available overrides and reference values.
-
-## Docker
-
-```bash
-just build
-just run
-```
-
 ## Local
 
 ### Deps
 
-- [**FFmpeg**](https://ffmpeg.org/download.html) — audio decoding and streaming backend
-- [**uv**](https://docs.astral.sh/uv/getting-started/installation/) — fast Python package and project manager
-- [**just**](https://github.com/casey/just#installation) — command runner
-
-install it on your platform
+- [**FFmpeg**](https://ffmpeg.org) — audio decoding and streaming backend
+- [**uv**](https://docs.astral.sh/uv/) — fast Python package and project manager
 
 #### macOS
 
@@ -57,8 +29,13 @@ This creates `.env` if missing, configures the device, installs dev dependencies
 
 #### Linux
 
-manually choose your methods for all deps, but:
-System FFmpeg (v4–v7 shared libs) or run `./scripts/download_ffmpeg7.sh`
+Install `uv`:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+FFmpeg: system shared libs (v4–v7) or run `./scripts/download_ffmpeg7.sh`
 
 #### Windows
 
@@ -76,6 +53,17 @@ just dev-deps
 just dev
 ```
 
+The standalone bootstrap runner is also available:
+
+```bash
+uv run --script scripts/tasks.py dev-deps
+```
+
+It reads only the repository's optional `.env`; existing environment variables
+take precedence. It installs into the repository's `.venv`, regardless of an
+activated external virtualenv or Conda environment. The runner currently supports
+only `dev-deps`; the other tasks use `just`.
+
 On **macOS** you can build `Resonance.app` menu bar app via:
 
 ```bash
@@ -88,11 +76,36 @@ and if you want to run from terminal with live logs:
 ./build/Resonance.app/Contents/MacOS/Resonance
 ```
 
+## Docker
+
+```bash
+just build
+just run
+```
+
 ## Note
 
 Open `http://localhost:${RESONANCE_PORT}` (default: http://localhost:8000)
 
 Models are loaded lazily on first real STT/TTS use. Startup does not pre-download or pre-load model weights, so the first request to a specific backend may take noticeably longer.
+
+## Configuration
+
+`.env` is optional. Out of the box Resonance runs with CPU defaults.
+
+Create `.env` only if you want to override defaults:
+
+```bash
+touch .env
+```
+
+- **CUDA**: set `DEVICE=cuda`, leave `PYTORCH_BACKEND=` for PyPI default or set a specific backend like `cu126`
+- **CPU**: by default lightweight CPU-only wheels
+- **macOS**: configured via setup script
+- **Port**: set `RESONANCE_PORT` (default `8000`)
+- **CORS**: set `RESONANCE_CORS_ORIGINS` only for custom origins; default follows `RESONANCE_PORT`
+
+See `.env.example` for all available overrides and reference values.
 
 ## API Endpoints
 
