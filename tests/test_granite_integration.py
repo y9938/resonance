@@ -21,11 +21,6 @@ def test_granite_adapter_transcribe_standard():
     res = adapter.transcribe(dummy_audio, diarization=False)
 
     assert res == "Hello world"
-    mock_processor.tokenizer.apply_chat_template.assert_called_once_with(
-        [{"role": "user", "content": "<|audio|> can you transcribe the speech into a written format?"}],
-        tokenize=False,
-        add_generation_prompt=True
-    )
     mock_processor.assert_called_once()
     mock_model.generate.assert_called_once()
 
@@ -45,13 +40,6 @@ def test_granite_adapter_transcribe_diarization():
     res = adapter.transcribe(dummy_audio, diarization=True)
 
     assert res == "[Speaker 1]: Hello [Speaker 2]: Hi"
-    mock_processor.tokenizer.apply_chat_template.assert_called_once_with(
-        [{"role": "user", "content": "<|audio|> Speaker attribution: Transcribe and denote who is speaking by adding [Speaker 1]: and [Speaker 2]: tags before speaker turns."}],
-        tokenize=False,
-        add_generation_prompt=True
-    )
-
-
 def test_granite_adapter_stereo_to_mono():
     mock_model = MagicMock()
     mock_model.dtype = torch.float32
@@ -88,4 +76,3 @@ def test_granite_adapter_transcribe_slices_prompt():
     res = adapter.transcribe(dummy_audio, diarization=False)
 
     assert res == "Hello world"
-

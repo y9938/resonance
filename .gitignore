@@ -6,6 +6,8 @@
 !/Dockerfile
 !/pyproject.toml
 !/server.py
+!/r
+!/r.cmd
 !/stt/
 !/tts/
 !/core/
@@ -15,7 +17,6 @@
 !/.env.example
 !/tests/
 !/tools/
-!/justfile
 !/scripts/
 
 **/__pycache__/**

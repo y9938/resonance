@@ -81,10 +81,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func startBackend() {
-        // Uses /usr/bin/env so `just` is resolved via PATH (works for both Intel and Apple Silicon)
+        // Keep the login shell and Homebrew PATH when launching the uv task runner.
         backend = Process()
         backend?.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        backend?.arguments = ["-l", "-c", "export PATH=\"/opt/homebrew/bin:$HOME/.cargo/bin:$PATH\"; exec just dev"]
+        backend?.arguments = ["-l", "-c", "export PATH=\"/opt/homebrew/bin:$HOME/.cargo/bin:$PATH\"; exec uv run --script scripts/tasks.py dev"]
         backend?.currentDirectoryURL = repoRoot
 
         let errorPipe = Pipe()

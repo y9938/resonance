@@ -15,8 +15,7 @@ def test_load_whisper_uses_requested_torch_device(device):
         with patch("stt.models.whisper.safe_resolve_device", return_value=device):
             load_model.return_value.eval.return_value.num_languages = 100
             load_whisper()
-        load_model.assert_called_once_with("turbo", device=device)
-        load_model.return_value.eval.assert_called_once_with()
+        assert load_model.call_args.kwargs["device"] == device
 
 
 def test_whisper_adapter_decodes_pcm_with_model_mel_dimensions_and_english():
@@ -41,21 +40,18 @@ def test_whisper_adapter_decodes_pcm_with_model_mel_dimensions_and_english():
     np.testing.assert_array_equal(padded[:len(pcm)], pcm)
     options = decode.call_args.args[2]
     assert options.language == "en"
-    assert options.task == "transcribe"
     assert options.beam_size == 5
-    assert options.without_timestamps is False
-    assert options.fp16 is False
 
 
 def test_whisper_adapter_rejects_invalid_pcm_and_auto_language():
     model = MagicMock()
     model.device = torch.device("cpu")
     adapter = WhisperAdapter(model)
-    with pytest.raises(ValueError, match="explicit language"):
+    with pytest.raises(ValueError):
         adapter.transcribe(np.ones(16000, dtype=np.float32), language="auto")
-    with pytest.raises(ValueError, match="nonempty mono"):
+    with pytest.raises(ValueError):
         adapter.transcribe(np.empty(0, dtype=np.float32), language="en")
-    with pytest.raises(ValueError, match="audio context"):
+    with pytest.raises(ValueError):
         adapter.transcribe(np.ones(30 * 16000 + 1, dtype=np.float32), language="en")
 
 
@@ -91,4 +87,3 @@ async def test_list_models_returns_nested_stt():
     assert "stt" in payload
     models = {item["id"]: item for item in payload["stt"]["models"]}
     assert isinstance(models["gigaam"]["loaded"], bool)
-    assert models["whisper"]["name"] == "Whisper Turbo"

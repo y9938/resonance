@@ -4,7 +4,7 @@ set -eu
 REPO_DIR="${${(%):-%x}:A:h:h}"
 cd "$REPO_DIR"
 
-brew install just uv ffmpeg resvg imagemagick
+brew install uv ffmpeg resvg imagemagick
 
 if [ ! -f .env ]; then
   if [ "$(uname -m)" = "arm64" ]; then
@@ -22,4 +22,4 @@ fi
 
 uv venv --python 3.12
 
-just dev-deps
+uv run --script scripts/tasks.py dev-deps

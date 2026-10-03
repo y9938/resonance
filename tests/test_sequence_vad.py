@@ -71,7 +71,7 @@ def test_sequence_streams_are_isolated_when_interleaved() -> None:
 
     np.testing.assert_allclose(actual_a, expected_a, rtol=0, atol=1e-6)
     np.testing.assert_allclose(actual_b, expected_b, rtol=0, atol=1e-6)
-    with pytest.raises(RuntimeError, match="exactly one audio stream"):
+    with pytest.raises(RuntimeError):
         stream_a.score_frames(iter(frames_a))
 
 

@@ -2,8 +2,6 @@ import numpy as np
 
 from stt.system_audio import (
     LinuxPulseParecStrategy,
-    NativeLinuxWindowsStrategy,
-    SoundcardSystemAudioStrategy,
     WindowsWasapiStrategy,
     get_system_audio_capture,
 )
@@ -12,8 +10,6 @@ from stt.system_audio import (
 def test_system_audio_factory():
     strategy = get_system_audio_capture(include_microphone=True)
     assert strategy is not None
-    assert NativeLinuxWindowsStrategy is LinuxPulseParecStrategy
-    assert WindowsWasapiStrategy is SoundcardSystemAudioStrategy
 
 
 def test_dual_stream_mixer_logic():

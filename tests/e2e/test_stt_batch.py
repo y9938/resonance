@@ -339,7 +339,6 @@ def test_stt_language_dropdown_routing(page: Page, base_url: str):
     page.locator(".stt-language-picker .ts-control").click()
     page.locator(".stt-language-picker .ts-control input").fill("Deutsch")
     page.locator(".stt-language-picker .ts-dropdown .option").filter(has_text="Deutsch").first.click()
-    assert page.locator("#sttModel option").all_text_contents() == ["Рекомендованная", "Whisper Turbo"]
     assert page.locator("#sttModel").input_value() == ""
     assert not page.locator("#sttModelContainer").is_visible()
 

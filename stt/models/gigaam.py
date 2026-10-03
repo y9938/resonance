@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 import numpy as np
@@ -56,7 +57,11 @@ def load_gigaam(device: str | None = None) -> GigaAMAdapter:
     from stt.models.base import safe_resolve_device
 
     target_device = safe_resolve_device(device)
-    model = gigaam.load_model("v3_e2e_ctc", device=target_device)
+    cache_dir = os.getenv("GIGAAM_CACHE_DIR")
+    download_root = os.path.expanduser(cache_dir) if cache_dir else None
+    model = gigaam.load_model(
+        "v3_e2e_ctc", device=target_device, download_root=download_root
+    )
     params = sum(p.numel() for p in model.parameters()) / 1e6
     log.info(f"STT model loaded: {params:.1f}M parameters")
     return GigaAMAdapter(model)

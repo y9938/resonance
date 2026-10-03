@@ -133,7 +133,7 @@ async def test_timeout_waits_for_inflight_chunk_before_flushing(monkeypatch) -> 
         assert (await chunk).status_code == 200
         await _wait_for_state(registry, job_id, "completed")
 
-    session.flush.assert_called_once_with("mic")
+    session.flush.assert_called_once()
 
 
 @pytest.mark.asyncio

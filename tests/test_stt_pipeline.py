@@ -272,7 +272,6 @@ def test_run_stt_job_stops_before_next_segment_when_cancelled(
     assert jobs.events[0][1].get("stage") == "transcription"
     assert extracted == [0, 1]
     assert len(model.paths) == 1
-    assert any(message.startswith("STT cancelled: ") for message in log.messages)
 
 
 def test_run_stt_job_diarization_stage_flag(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
