@@ -3,6 +3,11 @@
 
     window.__registerResonanceLocale('zh-CN', {
         messages: {
+            sttLocalTitle: '本地文件 — 无需上传',
+            sttLocalPathsLabel: '绝对路径，每行一个文件',
+            sttLocalHint: '转录完成前，文件必须始终可在此计算机上访问。',
+            sttLocalStart: '转录本地文件',
+
             speakerMic: '🎤 麦克风',
             speakerSys: '🔊 系统声音',
             pageTitle: 'Resonance',

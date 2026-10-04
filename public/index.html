@@ -655,6 +655,12 @@
         .cancel-btn:hover { opacity: 1; }
         .cancel-btn.active { display: inline-flex; }
 
+        #sttLocalFiles { margin-top: 1rem; }
+        #sttLocalFiles summary { cursor: pointer; color: var(--accent); }
+        #sttLocalFiles label { display: block; margin: 0.75rem 0; }
+        #sttLocalPaths { min-height: 6rem; }
+        #sttLocalStart { margin-top: 0.75rem; }
+
         .text-input-wrapper { position: relative; }
 
         .text-input {
@@ -976,6 +982,14 @@
                 </div>
             </div>
             <input type="file" id="sttFileInput" accept="audio/*,video/*" multiple>
+
+            <details id="sttLocalFiles" hidden>
+                <summary data-i18n="sttLocalTitle">Local files — without uploading</summary>
+                <label for="sttLocalPaths" data-i18n="sttLocalPathsLabel">Absolute paths, one file per line</label>
+                <textarea class="text-input" id="sttLocalPaths" rows="3" spellcheck="false" aria-describedby="sttLocalHint"></textarea>
+                <p class="dropzone-hint" id="sttLocalHint" data-i18n="sttLocalHint">Files must stay available on this computer until transcription finishes.</p>
+                <button class="btn btn-primary" id="sttLocalStart" type="button" data-i18n="sttLocalStart">Transcribe local files</button>
+            </details>
 
             <div class="stt-batch-panel" id="sttBatchPanel" aria-live="polite">
                 <div class="stt-batch-header">
@@ -2013,6 +2027,7 @@
         }
 
         function applyConfig() {
+            els.sttLocalFiles.hidden = CONFIG.local_files_enabled !== true;
             const hint = document.getElementById('sttDropzoneHint');
             if (hint) {
                 const limitText = CONFIG.upload_limit_mb > 0
@@ -2075,6 +2090,9 @@
 
             sttDropzone: document.getElementById('sttDropzone'),
             sttFileInput: document.getElementById('sttFileInput'),
+            sttLocalFiles: document.getElementById('sttLocalFiles'),
+            sttLocalPaths: document.getElementById('sttLocalPaths'),
+            sttLocalStart: document.getElementById('sttLocalStart'),
             sttAutoDetect: document.getElementById('sttAutoDetect'),
             sttBatchPanel: document.getElementById('sttBatchPanel'),
             sttBatchSummary: document.getElementById('sttBatchSummary'),
@@ -2844,6 +2862,7 @@
             if (jobType === 'stt') {
                 if (status.state === 'failed') {
                     resetUI('STT', false);
+                    showSttError(status.error || t('errNetwork'));
                     await loadJobsList();
                     return;
                 }
@@ -2960,7 +2979,10 @@
             const codes = [...new Set(STT_CATALOG.models.flatMap(model => model.languages || []))];
             const localNames = new Intl.DisplayNames([currentLocale], { type: 'language' });
             const englishNames = new Intl.DisplayNames(['en'], { type: 'language' });
-            const preferred = sttLanguageSelect.getValue() || localStorage.getItem('resonance_sttLanguage') || STT_CATALOG.default_language;
+            const preferred = [
+                sttLanguageSelect.getValue(), localStorage.getItem('resonance_sttLanguage'),
+                initialLocale.split('-')[0], DEFAULT_LOCALE, codes[0],
+            ].find(code => codes.includes(code));
             const options = codes.map(code => {
                 const upstreamName = STT_CATALOG.language_names?.[code] || code;
                 const fallback = upstreamName.charAt(0).toUpperCase() + upstreamName.slice(1);
@@ -2978,7 +3000,7 @@
             sttLanguageSelect.clear(true);
             sttLanguageSelect.clearOptions();
             sttLanguageSelect.addOptions(options);
-            sttLanguageSelect.setValue(codes.includes(preferred) ? preferred : STT_CATALOG.default_language, true);
+            sttLanguageSelect.setValue(preferred, true);
             sttLanguageSelect.enable();
             renderSttModelOptions();
         }
@@ -3102,6 +3124,7 @@
                 const status = await fetchJobStatusForRestore('STT', sttJobId);
                 if (!status || status.state === 'failed' || status.state === 'cancelled') {
                     setActiveJobId('STT', null);
+                    if (status && status.state === 'failed') showSttError(status.error || t('errNetwork'));
                 } else {
                     setActiveJobId('STT', sttJobId);
                     applySttJobStatus(status);
@@ -4226,8 +4249,9 @@
         }
 
         async function startSttServerJob(file, batchMeta) {
-            const formData = new FormData();
-            formData.append('file', file);
+            const local = typeof file.path === 'string';
+            const body = local ? JSON.stringify({ path: file.path }) : new FormData();
+            if (!local) body.append('file', file);
             const params = new URLSearchParams();
             if (batchMeta && batchMeta.batch_id) {
                 params.set('batch_id', batchMeta.batch_id);
@@ -4243,13 +4267,17 @@
             if (els.sttDiarization && els.sttDiarization.checked) {
                 params.set('diarization', 'true');
             }
-            const url = API_URL + '/jobs/stt' + (params.toString() ? '?' + params.toString() : '');
+            const url = API_URL + '/jobs/stt' + (local ? '/local' : '') + '?' + params.toString();
             const startRes = await fetch(url, {
                 method: 'POST',
-                body: formData,
+                body,
+                headers: local ? { 'Content-Type': 'application/json' } : {},
             });
 
-            if (!startRes.ok) throw new Error(t('errUploadFailed'));
+            if (!startRes.ok) {
+                const error = await startRes.json().catch(() => ({}));
+                throw new Error(typeof error.detail === 'string' ? error.detail : t('errUploadFailed'));
+            }
             const startData = await startRes.json();
             if (!startData.job_id) throw new Error(t('errNoResponseBody'));
             return startData.job_id;
@@ -4322,8 +4350,8 @@
             els.sttHide.classList.add('active');
             els.sttCancel.classList.add('active');
             els.sttProgressFill.style.width = '5%';
-            state.stt.progressLabelKey = 'progressUploading';
-            els.sttProgressText.textContent = t('progressUploading');
+            state.stt.progressLabelKey = file.path ? 'progressStarting' : 'progressUploading';
+            els.sttProgressText.textContent = t(state.stt.progressLabelKey);
 
             const segments = [];
             state.stt.segments = segments;
@@ -4344,12 +4372,11 @@
                 subscribeSttJobEvents(myJobId, segments, updateDisplay);
             } catch (err) {
                 console.error('STT Error:', err);
-                if (err.name !== 'AbortError') {
-                    els.sttError.textContent = err.message || t('errNetwork');
-                    els.sttError.classList.add('active');
-                }
                 setActiveJobId('STT', null);
                 resetUI('STT');
+                if (err.name !== 'AbortError') {
+                    showSttError(err.message || t('errNetwork'));
+                }
             }
         }
 
@@ -4369,6 +4396,21 @@
             els.sttDropzone.classList.remove('dragover');
             const files = e.dataTransfer.files;
             if (files.length > 0) handleSttFiles(files);
+        });
+
+        els.sttLocalStart.addEventListener('click', async () => {
+            const files = els.sttLocalPaths.value.split(/\r?\n/).map(path => path.trim())
+                .map(path => path.startsWith('"') && path.endsWith('"') ? path.slice(1, -1) : path)
+                .filter(Boolean)
+                .map(path => ({ path, name: path.split(/[\\/]/).pop() }));
+            if (!files.length) return;
+            els.sttLocalStart.disabled = true;
+            els.sttLocalPaths.value = '';
+            try {
+                await handleSttFiles(files);
+            } finally {
+                els.sttLocalStart.disabled = false;
+            }
         });
 
         els.sttFileInput.addEventListener('change', (e) => {

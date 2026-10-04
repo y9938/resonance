@@ -9,7 +9,7 @@ from playwright.sync_api import Page, expect
 PUBLIC_ROOT = Path(__file__).resolve().parents[2] / "public"
 
 
-def open_stt_page(page: Page, base_url: str, status: dict | None = None) -> None:
+def open_stt_page(page: Page, base_url: str, status: dict | None = None, *, local_files: bool = False) -> None:
     page.add_init_script("""
         localStorage.setItem('resonance_locale', 'en');
         window.__sttEventSources = [];
@@ -22,11 +22,10 @@ def open_stt_page(page: Page, base_url: str, status: dict | None = None) -> None
     def handle_request(route):
         path = urlparse(route.request.url).path
         if path == "/api/config":
-            payload = {"upload_limit_mb": 50, "tts": {"languages": []}}
+            payload = {"upload_limit_mb": 50, "local_files_enabled": local_files, "tts": {"languages": []}}
         elif path == "/api/models":
             payload = {
                 "stt": {
-                    "default_language": "en",
                     "models": [{
                         "id": "whisper", "name": "Whisper", "languages": ["en"], "loaded": False,
                     }],
@@ -51,6 +50,26 @@ def open_stt_page(page: Page, base_url: str, status: dict | None = None) -> None
     page.route("**/*", handle_request)
     page.goto(base_url)
     page.wait_for_selector("#sttLanguage:not([disabled])")
+
+
+def test_windows_clipboard_path_and_submission_error(page: Page, base_url: str) -> None:
+    open_stt_page(page, base_url, local_files=True)
+    paths = []
+    error = "The selected media file cannot be opened"
+
+    def reject_submission(route):
+        paths.append(route.request.post_data_json["path"])
+        route.fulfill(status=400, content_type="application/json", body=json.dumps({"detail": error}))
+
+    page.route("**/api/jobs/stt/local?*", reject_submission)
+    path = r"Z:\Легендарные и пугающие часы за 15 баксов： от Осамы до Обамы.mp4"
+    page.locator("#sttLocalFiles summary").click()
+    page.locator("#sttLocalPaths").fill(f'"{path}"')
+    page.locator("#sttLocalStart").click()
+    expect(page.locator("#sttError")).to_be_visible()
+    expect(page.locator("#sttError")).to_have_text(error)
+    expect(page.locator("#sttLocalStart")).to_be_enabled()
+    assert paths == [path]
 
 
 def test_stt_sse_progress_uses_known_or_unknown_total(page: Page, base_url: str) -> None:
@@ -143,3 +162,19 @@ def test_stt_batch_rows_show_queued_unknown_and_known_progress(page: Page, base_
         page.evaluate("t('progressProcessing')"),
         "37%",
     ]
+
+
+def test_failed_local_job_error_survives_reload_and_history_open(page: Page, base_url: str) -> None:
+    status = {
+        "job_id": "job-1", "job_type": "stt", "state": "failed",
+        "error": "The selected file is no longer accessible",
+        "result": {"filename": "lecture.mp4"},
+    }
+    page.add_init_script("localStorage.setItem('resonance_stt_active_job_id', 'job-1')")
+    open_stt_page(page, base_url, status)
+    expect(page.locator("#sttError")).to_be_visible()
+    expect(page.locator("#sttError")).to_have_text(status["error"])
+    page.evaluate("document.getElementById('sttError').classList.remove('active')")
+    page.evaluate("restoreJob('job-1', 'stt')")
+    expect(page.locator("#sttError")).to_be_visible()
+    expect(page.locator("#sttError")).to_have_text(status["error"])

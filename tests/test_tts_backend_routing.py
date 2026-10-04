@@ -2,12 +2,13 @@
 
 from pathlib import Path
 
+import httpx
 import pytest
 import torch
 from fastapi import HTTPException
 
 import server
-from server import Config, get_config, list_models
+from server import Config, list_models
 from tts.service import KokoroEnTtsBackend, SileroRuTtsBackend, TtsSynthesisResult
 
 
@@ -36,7 +37,8 @@ def test_invalid_default_tts_voice_falls_back_to_first_catalog_entry(
 
 @pytest.mark.asyncio
 async def test_public_config_uses_voice_catalog_and_default_resolution() -> None:
-    config = await get_config()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app), base_url="http://test") as client:
+        config = (await client.get("/api/config")).json()
 
     assert config["tts"]["languages"][0]["default_voice_id"] == server.tts_service.default_voice_id()
 
@@ -78,7 +80,8 @@ async def test_public_models_expose_all_tts_backends() -> None:
 
 @pytest.mark.asyncio
 async def test_public_config_exposes_backend_id_per_voice() -> None:
-    config = await get_config()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app), base_url="http://test") as client:
+        config = (await client.get("/api/config")).json()
 
     languages = {entry["id"]: entry for entry in config["tts"]["languages"]}
     ru_voices = {voice["id"]: voice for voice in languages["ru"]["voices"]}

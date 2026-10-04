@@ -3,6 +3,15 @@
 import pytest
 
 
+@pytest.fixture
+def local_host_app(monkeypatch):
+    import server
+
+    monkeypatch.setattr(server.app.state, "local_host", False, raising=False)
+    monkeypatch.setattr(server.Config, "ENABLE_SYSTEM_AUDIO", True)
+    return server.create_local_app()
+
+
 @pytest.fixture(scope="session")
 def browser_context_args(browser_context_args):
     """Set viewport and video recording for all tests."""

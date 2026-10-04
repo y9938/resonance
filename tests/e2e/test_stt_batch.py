@@ -5,15 +5,16 @@ requiring an actual STT model run.
 """
 
 import json
+import re
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+import pytest
 from playwright.sync_api import Page, expect
 
 AUDIO_FILE = Path(__file__).parent.parent / "fixtures" / "ru_audio.wav"
 STT_CATALOG = {
     "stt": {
-        "default_language": "ru",
         "models": [
             {"id": "gigaam", "name": "GigaAM-v3", "languages": ["ru"], "loaded": False},
             {"id": "whisper", "name": "Whisper Turbo", "languages": ["de", "en", "ru"], "loaded": False},
@@ -23,10 +24,12 @@ STT_CATALOG = {
 }
 
 
-def test_stt_batch_upload_creates_one_visible_queue(page: Page, base_url: str):
+@pytest.mark.parametrize("local_paths", [False, True])
+def test_stt_batch_upload_creates_one_visible_queue(page: Page, base_url: str, local_paths):
     started: list[dict[str, list[str]]] = []
     jobs: list[dict[str, object]] = []
     cancelled: list[str] = []
+    paths: list[str] = []
 
     def fulfill_json(route, payload):
         route.fulfill(
@@ -40,14 +43,16 @@ def test_stt_batch_upload_creates_one_visible_queue(page: Page, base_url: str):
         qs = parse_qs(parsed.query)
 
         if parsed.path == "/api/config":
-            fulfill_json(route, {"upload_limit_mb": 50, "tts": {"languages": []}})
+            fulfill_json(route, {"upload_limit_mb": 50, "local_files_enabled": local_paths, "tts": {"languages": []}})
             return
 
         if parsed.path == "/api/models":
             fulfill_json(route, STT_CATALOG)
             return
 
-        if parsed.path == "/api/jobs/stt":
+        if parsed.path in {"/api/jobs/stt", "/api/jobs/stt/local"}:
+            if parsed.path.endswith("/local"):
+                paths.append(route.request.post_data_json["path"])
             job_id = f"job-{len(started) + 1}"
             started.append(qs)
             job = {
@@ -126,15 +131,20 @@ def test_stt_batch_upload_creates_one_visible_queue(page: Page, base_url: str):
     """
     )
 
-    page.evaluate(
+    if local_paths:
+        page.locator("#sttLocalFiles summary").click()
+        page.locator("#sttLocalPaths").fill("/media/clip-1.wav\n/media/clip-2.wav")
+        page.locator("#sttLocalStart").click()
+    else:
+        page.evaluate(
+            """
+            const input = document.getElementById('sttFileInput');
+            const dataTransfer = new DataTransfer();
+            for (const file of window.batchFiles) dataTransfer.items.add(file);
+            input.files = dataTransfer.files;
+            input.dispatchEvent(new Event('change', { bubbles: true }));
         """
-        const input = document.getElementById('sttFileInput');
-        const dataTransfer = new DataTransfer();
-        for (const file of window.batchFiles) dataTransfer.items.add(file);
-        input.files = dataTransfer.files;
-        input.dispatchEvent(new Event('change', { bubbles: true }));
-    """
-    )
+        )
 
     page.wait_for_selector("#sttBatchPanel.active")
     expect(page.locator("#sttBatchList .stt-batch-row")).to_have_count(2)
@@ -149,6 +159,7 @@ def test_stt_batch_upload_creates_one_visible_queue(page: Page, base_url: str):
     assert started[0]["batch_total"] == ["2"]
     assert started[1]["batch_total"] == ["2"]
 
+    expect(page.locator("#sttResultText")).to_have_value(re.compile("clip-1.wav"))
     page.evaluate(
         """
         document.body.style.minHeight = '2200px';
@@ -171,6 +182,18 @@ def test_stt_batch_upload_creates_one_visible_queue(page: Page, base_url: str):
     page.wait_for_function("() => !document.getElementById('jobsDrawer').classList.contains('open')")
     page.wait_for_selector("#sttBatchPanel.active")
     assert abs(page.evaluate("window.scrollY") - 500) < 5
+
+    if local_paths:
+        assert paths == ["/media/clip-1.wav", "/media/clip-2.wav"]
+        page.evaluate("localStorage.setItem('resonance_locale', 'ru')")
+        page.reload()
+        expect(page.locator("#sttBatchList .stt-batch-row")).to_have_count(2)
+        expect(page.locator("#sttLocalFiles summary")).to_contain_text("Локальные файлы")
+        expect(page.locator("#sttLocalPaths")).to_have_value("")
+        assert "/media/" not in page.evaluate("JSON.stringify(localStorage)")
+        page.locator("#sttBatchList .stt-batch-row").first.click()
+        # Files selected through the browser remain an upload fallback after restore.
+        page.evaluate("window.batchFiles = [new File(['audio'], 'clip-1.wav', {type: 'audio/wav'})]")
 
     page.click("#sttBatchCancelCurrent")
     for _ in range(20):

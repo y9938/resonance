@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import json
-import re
+import math
 import subprocess
 import threading
 import time
-from collections.abc import Iterator
-from contextlib import nullcontext
+from collections.abc import Callable, Iterator
+from contextlib import closing, nullcontext
 from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
@@ -61,7 +61,7 @@ class STTChunk:
 
 
 class EmptyDecodedAudioError(ValueError):
-    """An encoded input produced no PCM in a completed decode pass."""
+    """A media input produced no PCM in a completed decode pass."""
 
 
 _DEFAULT_STT_TRANSCRIBE_MAX_SEC = 25.0
@@ -83,28 +83,20 @@ def stt_transcribe_hard_limit_sec() -> float:
     return _DEFAULT_STT_TRANSCRIBE_MAX_SEC
 
 
-def _decode_duration(input_path: str | Path) -> float:
-    """Fallback for browser WebM files where MediaRecorder omits duration from the container header."""
-    raw = subprocess.run(
-        ["ffmpeg", "-nostdin", "-i", str(input_path), "-f", "null", "-"],
-        capture_output=True,
-        text=True,
-        stdin=subprocess.DEVNULL,
-        timeout=15.0,
-        check=False,
-    )
-    matches = re.findall(r"time=(\d+:\d+:\d+\.\d+)", raw.stderr)
-    if not matches:
-        return 0.0
-    h, m, s = matches[-1].split(":")
-    return int(h) * 3600 + int(m) * 60 + float(s)
-
-
 def probe_media(input_path: str | Path) -> MediaInfo:
+    try:
+        source = Path(input_path)
+        if not source.is_file():
+            raise ValueError()
+        with source.open("rb"):
+            pass
+    except (OSError, ValueError) as exc:
+        raise ValueError("Local file is missing, unreadable, or not a regular file") from exc
     cmd = [
         "ffprobe",
         "-v",
         "error",
+        "-protocol_whitelist", "file",
         "-show_entries",
         "format=duration,size",
         "-show_entries",
@@ -113,7 +105,10 @@ def probe_media(input_path: str | Path) -> MediaInfo:
         "json",
         str(input_path),
     ]
-    raw = subprocess.run(cmd, check=True, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=15.0)
+    try:
+        raw = subprocess.run(cmd, check=True, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=15.0)
+    except (subprocess.SubprocessError, OSError) as exc:
+        raise ValueError("Cannot probe local media; check that the file is still accessible and contains valid audio") from exc
     payload = json.loads(raw.stdout or "{}")
     streams = payload.get("streams") or []
     audio_stream = next(
@@ -126,12 +121,10 @@ def probe_media(input_path: str | Path) -> MediaInfo:
     fmt = payload.get("format") or {}
     try:
         duration_sec = float(fmt.get("duration") or 0.0)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("Invalid media duration") from exc
-    if duration_sec <= 0:
-        duration_sec = _decode_duration(input_path)
-    if duration_sec <= 0:
-        raise ValueError("Audio too short or empty after probing")
+    except (TypeError, ValueError):
+        duration_sec = 0.0
+    if not math.isfinite(duration_sec) or duration_sec < 0:
+        duration_sec = 0.0
 
     def _optional_int(value: Any) -> int | None:
         try:
@@ -151,6 +144,7 @@ def probe_media(input_path: str | Path) -> MediaInfo:
 from .buffer import AudioMemoryBuffer
 from .sequence_vad import get_sequence_vad_engine
 from .stream_vad import (
+    iter_file_pcm,
     pack_array_vad_chunks,
     pack_utterances_into_chunks,
     segment_scored_frames,
@@ -166,6 +160,7 @@ def iter_stt_chunks(
     total_duration_sec: float,
     max_samples: int | None = None,
     decode_stats: DecodeStats | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> Iterator[STTChunk]:
     """Merge the existing per-source VAD streams in timestamp order."""
     import heapq
@@ -192,28 +187,33 @@ def iter_stt_chunks(
         else:
             gen = stream_vad_chunks(
                 input_path=audio, sample_rate=sample_rate, target_sec=chunk_sec,
-                total_duration_sec=total_duration_sec,
+                total_duration_sec=total_duration_sec, max_samples=max_samples,
+                decode_stats=decode_stats, cancel_check=cancel_check,
             )
         generators[source] = gen
 
-    heap = []
-    for source, gen in generators.items():
-        try:
-            item = next(gen)
-            heapq.heappush(heap, (item[0], item[1], source, item, gen))
-        except StopIteration:
-            pass
+    try:
+        heap = []
+        for source, gen in generators.items():
+            try:
+                item = next(gen)
+                heapq.heappush(heap, (item[0], item[1], source, item, gen))
+            except StopIteration:
+                pass
 
-    sequence = 0
-    while heap:
-        start, end, source, item, gen = heapq.heappop(heap)
-        try:
-            next_item = next(gen)
-            heapq.heappush(heap, (next_item[0], next_item[1], source, next_item, gen))
-        except StopIteration:
-            pass
-        yield STTChunk(sequence, source, start, end, item[2])
-        sequence += 1
+        sequence = 0
+        while heap:
+            start, end, source, item, gen = heapq.heappop(heap)
+            try:
+                next_item = next(gen)
+                heapq.heappush(heap, (next_item[0], next_item[1], source, next_item, gen))
+            except StopIteration:
+                pass
+            yield STTChunk(sequence, source, start, end, item[2])
+            sequence += 1
+    finally:
+        for gen in generators.values():
+            gen.close()
 
 
 def run_stt_job(
@@ -234,6 +234,7 @@ def run_stt_job(
     """Ordered STT runner with bounded model batches and source-specific publication."""
     start_time = time.time()
     cancelled_logged = False
+    chunks = None
 
     def cancel_requested() -> bool:
         nonlocal cancelled_logged
@@ -269,10 +270,10 @@ def run_stt_job(
         if max_duration_sec > 0 and total_duration_sec > max_duration_sec:
             raise ValueError(f"Audio too long (max {max_duration_sec}s)")
 
-        # The public batch upload has one encoded source. Keep multi-source behavior unchanged.
-        single_encoded_input = len(raw_inputs) == 1 and isinstance(first_input, EncodedMedia)
-        max_samples = max_duration_sec * sample_rate if single_encoded_input and max_duration_sec > 0 else None
-        stt_stats = DecodeStats() if single_encoded_input else None
+        # Both public batch modes decode one source; live multi-source jobs keep their existing policy.
+        single_media_input = len(raw_inputs) == 1 and isinstance(first_input, (EncodedMedia, str, Path))
+        max_samples = max_duration_sec * sample_rate if single_media_input and max_duration_sec > 0 else None
+        stt_stats = DecodeStats() if single_media_input else None
 
         model_class = model.__class__.__name__
         is_diarizing = bool(diarization and model_class != "GraniteAdapter")
@@ -301,24 +302,31 @@ def run_stt_job(
                         full_audio = audio_source.as_ndarray()
                     elif isinstance(audio_source, np.ndarray):
                         full_audio = audio_source
-                    elif isinstance(audio_source, EncodedMedia):
-                        # Diarization still needs complete decoded PCM; this is a separate memory contract.
+                    else:
+                        # Diarization still retains complete decoded PCM, bounded by MAX_DURATION when set.
                         full_buffer = AudioMemoryBuffer(sample_rate=sample_rate)
                         diarization_stats = DecodeStats()
-                        for pcm in iter_media_pcm(
-                            audio_source, sample_rate=sample_rate,
-                            max_samples=max_samples, stats=diarization_stats,
-                        ):
-                            full_buffer.append(pcm)
+                        if isinstance(audio_source, EncodedMedia):
+                            decoded = iter_media_pcm(
+                                audio_source, sample_rate=sample_rate,
+                                max_samples=max_samples, stats=diarization_stats,
+                            )
+                        else:
+                            decoded = iter_file_pcm(
+                                audio_source, sample_rate=sample_rate,
+                                max_samples=max_samples, stats=diarization_stats,
+                                cancel_check=cancel_requested,
+                            )
+                        with closing(decoded):
+                            for pcm in decoded:
+                                if cancel_requested():
+                                    return
+                                full_buffer.append(pcm)
+                        if cancel_requested():
+                            return
                         if diarization_stats.decoded_samples == 0:
                             raise EmptyDecodedAudioError("Audio too short or empty after decoding")
                         full_audio = full_buffer.as_ndarray()
-                    else:
-                        full_raw = subprocess.check_output([
-                            "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
-                            "-i", str(audio_source), "-f", "s16le", "-ac", "1", "-ar", "16000", "-"
-                        ], timeout=min(600.0, max(30.0, total_duration_sec * 2)))
-                        full_audio = np.frombuffer(full_raw, dtype=np.int16).astype(np.float32) / 32768.0
 
                     if cancel_requested():
                         return
@@ -342,7 +350,7 @@ def run_stt_job(
         chunks = iter_stt_chunks(
             raw_inputs, sample_rate=sample_rate, chunk_sec=chunk_sec,
             total_duration_sec=total_duration_sec, max_samples=max_samples,
-            decode_stats=stt_stats,
+            decode_stats=stt_stats, cancel_check=cancel_requested,
         )
         detected_language = None
         while True:
@@ -430,6 +438,9 @@ def run_stt_job(
         )
         log.error(f"STT failed: {message} ({elapsed:.2f}s)")
         jobs.update_event(job_id, "error", {"message": message})
+    finally:
+        if chunks is not None:
+            chunks.close()
 
 
 def run_stt_worker(

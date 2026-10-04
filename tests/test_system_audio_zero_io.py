@@ -108,7 +108,7 @@ def test_run_stt_job_in_memory_buffers_zero_disk() -> None:
 
 
 @pytest.mark.asyncio
-async def test_server_system_audio_lifecycle_pure_in_ram(monkeypatch) -> None:
+async def test_server_system_audio_lifecycle_pure_in_ram(monkeypatch, local_host_app) -> None:
     def fail_on_disk(*args, **kwargs):
         pytest.fail("Disk write detected in server system audio!")
 
@@ -133,7 +133,7 @@ async def test_server_system_audio_lifecycle_pure_in_ram(monkeypatch) -> None:
 
     import httpx
 
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://localhost") as client:
         # Start capture
         resp = await client.post("/api/system-audio/start?language=ru&model=gigaam")
         assert resp.status_code == 200

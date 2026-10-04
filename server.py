@@ -26,7 +26,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import FastAPI, File, HTTPException, Query, Request, Response, UploadFile
+from fastapi import (
+    Body,
+    FastAPI,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import (
     FileResponse,
@@ -220,6 +229,26 @@ app.add_middleware(
 )
 
 
+def create_local_app() -> FastAPI:
+    """Used by the loopback-only dev/desktop launcher, never the Docker entrypoint."""
+    app.state.local_host = True
+    return app
+
+
+def local_host_allowed(request: Request) -> bool:
+    # CORS alone does not prevent writes. Reject rebinding, cross-origin requests
+    # and proxies independently of the application's configurable CORS policy.
+    return (
+        getattr(request.app.state, "local_host", False)
+        and request.client is not None
+        and request.client.host in {"127.0.0.1", "::1"}
+        and request.url.hostname in {"localhost", "127.0.0.1", "::1"}
+        and not any(key == "forwarded" or key.startswith("x-forwarded-") for key in request.headers)
+        and request.headers.get("origin", str(request.base_url).rstrip("/")) == str(request.base_url).rstrip("/")
+        and request.headers.get("sec-fetch-site") in {None, "same-origin", "none"}
+    )
+
+
 # -----------------------------------------------------------------------------
 # API Endpoints
 # -----------------------------------------------------------------------------
@@ -242,7 +271,6 @@ async def list_models() -> dict[str, Any]:
                 {"id": "whisper", "name": "Whisper Turbo", "languages": whisper_languages, "loaded": models.stt_whisper_loaded},
                 {"id": "granite", "name": "IBM Granite Speech 4.1 Plus", "languages": sorted(GraniteAdapter.supported_languages()), "loaded": models.stt_granite_loaded},
             ],
-            "default_language": "ru",
             "language_names": {code: LANGUAGES[code] for code in whisper_languages},
         },
         "tts": {"name": primary_backend.name, "loaded": primary_backend.loaded},
@@ -344,10 +372,10 @@ async def start_system_audio(
     model: str | None = Query(default=None),
     include_microphone: bool = Query(default=False),
 ) -> dict[str, Any]:
-    if not Config.ENABLE_SYSTEM_AUDIO:
+    if not local_host_allowed(request) or not Config.ENABLE_SYSTEM_AUDIO:
         raise HTTPException(
             status_code=403,
-            detail="System audio capture is disabled on this server environment.",
+            detail="System audio capture requires the local launcher with system audio enabled.",
         )
 
     try:
@@ -442,10 +470,10 @@ async def stop_system_audio(
     response: Response,
     job_id: str = Query(...),
 ) -> dict[str, Any]:
-    if not Config.ENABLE_SYSTEM_AUDIO:
+    if not local_host_allowed(request) or not Config.ENABLE_SYSTEM_AUDIO:
         raise HTTPException(
             status_code=403,
-            detail="System audio capture is disabled on this server environment.",
+            detail="System audio capture requires the local launcher with system audio enabled.",
         )
 
     with system_capture_lock:
@@ -665,6 +693,64 @@ async def start_stt_job(
     batch_index: int | None = Query(default=None, ge=1),
     batch_total: int | None = Query(default=None, ge=1),
 ) -> dict[str, Any]:
+    max_bytes = Config.UPLOAD_LIMIT_MB * 1024 * 1024
+    file_bytes = await file.read()
+    if max_bytes > 0 and len(file_bytes) > max_bytes:
+        raise HTTPException(413, f"File too large (max {Config.UPLOAD_LIMIT_MB}MB)")
+    if not file_bytes:
+        raise HTTPException(400, "Audio file is empty")
+    media = EncodedMedia(file_bytes, filename=file.filename)
+    try:
+        await asyncio.to_thread(media_duration, media)
+    except Exception as exc:
+        raise HTTPException(400, f"Failed to read audio file: {exc}") from exc
+
+    return submit_stt_job(
+        request, response, media, file.filename,
+        language=language, model=model, detect_language=detect_language,
+        diarization=diarization, batch_id=batch_id,
+        batch_index=batch_index, batch_total=batch_total,
+    )
+
+
+@app.post("/api/jobs/stt/local")
+async def start_local_stt_job(
+    request: Request,
+    response: Response,
+    path: str = Body(..., embed=True, min_length=1),
+    language: str | None = Query(default=None),
+    model: str | None = Query(default=None),
+    detect_language: bool = Query(default=False),
+    diarization: bool = Query(default=False),
+    batch_id: str | None = Query(default=None),
+    batch_index: int | None = Query(default=None, ge=1),
+    batch_total: int | None = Query(default=None, ge=1),
+) -> dict[str, Any]:
+    if not local_host_allowed(request):
+        raise HTTPException(403, "Local files require a direct local connection to the dev/desktop server")
+    if request.headers.get("content-type", "").split(";", 1)[0] != "application/json":
+        raise HTTPException(415, "Use application/json")
+    try:
+        source = Path(path).expanduser()
+        if not source.is_absolute():
+            raise ValueError()
+    except (OSError, ValueError, RuntimeError) as exc:
+        raise HTTPException(400, "Use an absolute filesystem path") from exc
+
+    # The job borrows the file; it must remain accessible until the job ends.
+    return submit_stt_job(
+        request, response, str(source), source.name,
+        language=language, model=model, detect_language=detect_language,
+        diarization=diarization, batch_id=batch_id,
+        batch_index=batch_index, batch_total=batch_total,
+    )
+
+
+def submit_stt_job(
+    request: Request, response: Response, media: str | EncodedMedia, filename: str | None,
+    *, language: str | None, model: str | None, detect_language: bool,
+    diarization: bool, batch_id: str | None, batch_index: int | None, batch_total: int | None,
+) -> dict[str, Any]:
     try:
         if detect_language:
             if language is not None or model not in (None, "whisper"):
@@ -676,25 +762,10 @@ async def start_stt_job(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     resolved_model = models.get_stt_model(model_name)
-    max_bytes = Config.UPLOAD_LIMIT_MB * 1024 * 1024
-    file_bytes = await file.read()
-    if max_bytes > 0 and len(file_bytes) > max_bytes:
-        raise HTTPException(413, f"File too large (max {Config.UPLOAD_LIMIT_MB}MB)")
-
-    if not file_bytes:
-        raise HTTPException(400, "Audio file is empty")
-    media = EncodedMedia(file_bytes, filename=file.filename)
-    try:
-        await asyncio.to_thread(media_duration, media)
-    except Exception as exc:
-        raise HTTPException(400, f"Failed to read audio file: {exc}") from exc
-
-    size_kb = len(file_bytes) / 1024
-    size_str = f"{size_kb:.1f} KB" if size_kb < 1024 else f"{size_kb / 1024:.1f} MB"
-    log.info(f"STT started: {file.filename or 'unknown'} ({size_str})")
+    log.info(f"STT started: {filename or 'unknown'}")
 
     session_id = get_or_set_session_id(request, response)
-    initial_result: dict[str, Any] = {"filename": file.filename or None}
+    initial_result: dict[str, Any] = {"filename": filename or None}
     if diarization:
         initial_result["diarization"] = True
     if batch_id:
@@ -931,12 +1002,15 @@ async def get_context_tail(
 
 
 @app.get("/api/config")
-async def get_config() -> dict[str, Any]:
+async def get_config(request: Request, response: Response) -> dict[str, Any]:
+    # Establish one session before the browser submits a batch concurrently.
+    get_or_set_session_id(request, response)
     return {
+        "local_files_enabled": local_host_allowed(request),
         "upload_limit_mb": Config.UPLOAD_LIMIT_MB,
         "tts_max_chars": Config.TTS_MAX_CHARS,
         "tts_max_input_chars": Config.TTS_MAX_INPUT_CHARS,
-        "system_audio_enabled": Config.ENABLE_SYSTEM_AUDIO,
+        "system_audio_enabled": Config.ENABLE_SYSTEM_AUDIO and local_host_allowed(request),
         "tts": tts_service.serialize_catalog(),
     }
 

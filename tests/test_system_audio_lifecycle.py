@@ -45,15 +45,17 @@ class CooperativeCapture:
 
 
 @pytest.mark.asyncio
-async def test_system_audio_cooperative_stop_flushes_then_completes(monkeypatch) -> None:
+async def test_system_audio_cooperative_stop_flushes_then_completes(monkeypatch, local_host_app) -> None:
     registry = _isolated_system_registry(monkeypatch)
     capture = CooperativeCapture()
     monkeypatch.setattr(server.models, "get_stt_model", MagicMock(return_value=MagicMock()))
     monkeypatch.setattr(server, "get_system_audio_capture", MagicMock(return_value=capture))
 
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=server.app), base_url="http://test"
+        transport=httpx.ASGITransport(app=server.app), base_url="http://localhost"
     ) as client:
+        config = (await client.get("/api/config")).json()
+        assert config["local_files_enabled"] and config["system_audio_enabled"]
         started = await client.post("/api/system-audio/start?language=ru&model=gigaam")
         job_id = started.json()["job_id"]
         stopped = await client.post(f"/api/system-audio/stop?job_id={job_id}")
@@ -65,7 +67,7 @@ async def test_system_audio_cooperative_stop_flushes_then_completes(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_system_audio_producer_exception_fails_and_cleans_registry(monkeypatch) -> None:
+async def test_system_audio_producer_exception_fails_and_cleans_registry(monkeypatch, local_host_app) -> None:
     registry = _isolated_system_registry(monkeypatch)
 
     class CrashingCapture(CooperativeCapture):
@@ -76,7 +78,7 @@ async def test_system_audio_producer_exception_fails_and_cleans_registry(monkeyp
     monkeypatch.setattr(server, "get_system_audio_capture", CrashingCapture)
 
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=server.app), base_url="http://test"
+        transport=httpx.ASGITransport(app=server.app), base_url="http://localhost"
     ) as client:
         started = await client.post("/api/system-audio/start?language=ru&model=gigaam")
         job_id = started.json()["job_id"]
@@ -88,7 +90,7 @@ async def test_system_audio_producer_exception_fails_and_cleans_registry(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_system_audio_stop_timeout_fails_without_premature_completion(monkeypatch) -> None:
+async def test_system_audio_stop_timeout_fails_without_premature_completion(monkeypatch, local_host_app) -> None:
     registry = _isolated_system_registry(monkeypatch)
 
     class HungCapture(CooperativeCapture):
@@ -110,7 +112,7 @@ async def test_system_audio_stop_timeout_fails_without_premature_completion(monk
     monkeypatch.setattr(server, "get_system_audio_capture", MagicMock(return_value=capture))
 
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=server.app), base_url="http://test"
+        transport=httpx.ASGITransport(app=server.app), base_url="http://localhost"
     ) as client:
         started = await client.post("/api/system-audio/start?language=ru&model=gigaam")
         job_id = started.json()["job_id"]
@@ -124,14 +126,14 @@ async def test_system_audio_stop_timeout_fails_without_premature_completion(monk
 
 
 @pytest.mark.asyncio
-async def test_system_audio_cancel_keeps_cancelled_terminal_and_cleans_registry(monkeypatch) -> None:
+async def test_system_audio_cancel_keeps_cancelled_terminal_and_cleans_registry(monkeypatch, local_host_app) -> None:
     registry = _isolated_system_registry(monkeypatch)
     capture = CooperativeCapture()
     monkeypatch.setattr(server.models, "get_stt_model", MagicMock(return_value=MagicMock()))
     monkeypatch.setattr(server, "get_system_audio_capture", MagicMock(return_value=capture))
 
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=server.app), base_url="http://test"
+        transport=httpx.ASGITransport(app=server.app), base_url="http://localhost"
     ) as client:
         started = await client.post("/api/system-audio/start?language=ru&model=gigaam")
         job_id = started.json()["job_id"]
@@ -145,14 +147,14 @@ async def test_system_audio_cancel_keeps_cancelled_terminal_and_cleans_registry(
 
 
 @pytest.mark.asyncio
-async def test_system_audio_reattach_requires_identical_config(monkeypatch) -> None:
+async def test_system_audio_reattach_requires_identical_config(monkeypatch, local_host_app) -> None:
     _isolated_system_registry(monkeypatch)
     capture = CooperativeCapture()
     monkeypatch.setattr(server.models, "get_stt_model", MagicMock(return_value=MagicMock()))
     monkeypatch.setattr(server, "get_system_audio_capture", MagicMock(return_value=capture))
 
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=server.app), base_url="http://test"
+        transport=httpx.ASGITransport(app=server.app), base_url="http://localhost"
     ) as client:
         started = await client.post("/api/system-audio/start?language=ru&model=gigaam")
         job_id = started.json()["job_id"]

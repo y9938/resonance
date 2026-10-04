@@ -1,7 +1,10 @@
+import asyncio
 import io
+import threading
 import wave
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -73,12 +76,17 @@ def test_stt_routing_english(mock_stt_whisper, mock_run_stt_worker):
     assert status["model"] == "whisper"
 
 
+@pytest.mark.asyncio
 @patch("server.run_stt_worker")
 @patch("server.models.stt_whisper")
-def test_batch_auto_uses_whisper_without_explicit_language(mock_stt_whisper, worker):
+async def test_batch_auto_uses_whisper_without_explicit_language(mock_stt_whisper, worker):
     mock_stt_whisper.return_value = MagicMock()
+    started = threading.Event()
+    worker.side_effect = lambda **kwargs: started.set()
     files = {"file": ("test.wav", VALID_WAV_BYTES, "audio/wav")}
-    response = client.post("/api/jobs/stt?detect_language=true", files=files)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as async_client:
+        response = await async_client.post("/api/jobs/stt?detect_language=true", files=files)
+        assert await asyncio.to_thread(started.wait, 5)
     assert response.status_code == 200
     status = jobs.get_status(response.json()["job_id"])
     assert status["model"] == "whisper"

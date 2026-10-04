@@ -12,6 +12,11 @@
 
     window.__registerResonanceLocale('ru', {
         messages: {
+            sttLocalTitle: 'Локальные файлы — без загрузки',
+            sttLocalPathsLabel: 'Абсолютные пути, по одному файлу на строку',
+            sttLocalHint: 'Файлы должны оставаться доступными на этом компьютере до завершения распознавания.',
+            sttLocalStart: 'Распознать локальные файлы',
+
             speakerMic: '🎤 Микрофон',
             speakerSys: '🔊 Система',
             pageTitle: 'Resonance',

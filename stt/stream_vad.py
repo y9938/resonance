@@ -2,19 +2,22 @@ from __future__ import annotations
 
 import logging
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from contextlib import closing
 from dataclasses import dataclass, field
 from importlib import metadata
 
 import numpy as np
 import onnxruntime as ort
 
+from .media import DecodedSampleLimitExceeded, DecodeStats
+from .sequence_vad import get_sequence_vad_engine
+
 logger = logging.getLogger("resonance.stt.stream_vad")
 
 # Assumes: Silero VAD strictly requires 16000 Hz.
 _SAMPLE_RATE = 16000
 _VAD_WINDOW_SAMPLES = 512
-_WINDOW_BYTES = _VAD_WINDOW_SAMPLES * 2  # s16le: 2 bytes per sample
 _CONTEXT_SIZE = 64  # 4ms context prefix at 16kHz for Silero CNN boundary alignment
 
 _SHARED_VAD_ENGINE: StatelessSileroVAD | None = None
@@ -202,56 +205,40 @@ def vad_segment_array(
     )
 
 
-def _stream_vad_utterances(
+def iter_file_pcm(
     input_path: str,
+    *,
     sample_rate: int = 16000,
-    silence_threshold: float = 0.5,
-    min_silence_duration: float = 0.128,
-    max_speech_duration: float = 24.0,
-    vad_engine: StatelessSileroVAD | None = None,
-) -> Iterator[Utterance]:
+    max_samples: int | None = None,
+    stats: DecodeStats | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+) -> Iterator[np.ndarray]:
+    """Read a seekable file through FFmpeg with bounded PCM and no encoded copy."""
+    if stats is None:
+        stats = DecodeStats()
     cmd = [
         "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
-        "-i", str(input_path),
-        "-f", "s16le", "-ac", "1", "-ar", str(sample_rate), "-",
+        "-protocol_whitelist", "file", "-i", str(input_path), "-map", "0:a:0",
+        "-f", "f32le", "-ac", "1", "-ar", str(sample_rate), "-",
     ]
-    try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    except Exception as exc:
-        raise RuntimeError(f"Failed to start FFmpeg: {exc}") from exc
-
-    def _ffmpeg_frame_generator() -> Iterator[np.ndarray]:
-        raw_carry = b""
+    # Do not pipe stderr: an unread pipe can fill and deadlock a long decode.
+    with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as proc:
         try:
-            while True:
-                raw = proc.stdout.read(4096)
+            while not (cancel_check and cancel_check()):
+                raw = proc.stdout.read(_VAD_WINDOW_SAMPLES * 4)
                 if not raw:
+                    if proc.wait() != 0:
+                        raise ValueError("Cannot decode local media; check that the file is still accessible and contains valid audio")
                     break
-                raw_carry += raw
-                while len(raw_carry) >= _WINDOW_BYTES:
-                    window_s16 = np.frombuffer(raw_carry[:_WINDOW_BYTES], dtype=np.int16)
-                    raw_carry = raw_carry[_WINDOW_BYTES:]
-                    yield window_s16.astype(np.float32) / 32768.0
-
-            proc.wait(timeout=15.0)
-            if proc.returncode != 0:
-                stderr = proc.stderr.read().decode().strip()
-                raise RuntimeError(f"FFmpeg failed (code {proc.returncode}): {stderr}")
+                pcm = np.frombuffer(raw, dtype="<f4")
+                stats.decoded_samples += len(pcm)
+                if max_samples is not None and stats.decoded_samples > max_samples:
+                    raise DecodedSampleLimitExceeded()
+                yield pcm
         finally:
-            if proc.stdout:
-                proc.stdout.close()
-            if proc.stderr:
-                proc.stderr.close()
-            proc.terminate()
+            if proc.poll() is None:
+                proc.kill()
 
-    return segment_vad_frames(
-        _ffmpeg_frame_generator(),
-        sample_rate=sample_rate,
-        silence_threshold=silence_threshold,
-        min_silence_duration=min_silence_duration,
-        max_speech_duration=max_speech_duration,
-        vad_engine=vad_engine,
-    )
 
 
 def pack_utterances_into_chunks(
@@ -353,19 +340,22 @@ def stream_vad_chunks(
     max_gap_sec: float = 3.0,
     silence_threshold: float = 0.5,
     total_duration_sec: float = 0.0,
+    max_samples: int | None = None,
+    decode_stats: DecodeStats | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> Iterator[tuple[float, float, np.ndarray]]:
-    utterances = _stream_vad_utterances(
-        input_path,
-        sample_rate=sample_rate,
-        silence_threshold=silence_threshold,
-        min_silence_duration=0.128,
-        max_speech_duration=max_sec,
-    )
-    return pack_utterances_into_chunks(
-        utterances,
-        sample_rate=sample_rate,
-        target_sec=target_sec,
-        max_sec=max_sec,
-        max_gap_sec=max_gap_sec,
-        total_duration_sec=total_duration_sec,
-    )
+    with closing(iter_file_pcm(
+        input_path, sample_rate=sample_rate, max_samples=max_samples,
+        stats=decode_stats, cancel_check=cancel_check,
+    )) as pcm:
+        frames = (frame for frame in pcm if len(frame) == _VAD_WINDOW_SAMPLES)
+        scored = get_sequence_vad_engine().new_stream().score_frames(frames)
+        utterances = segment_scored_frames(
+            scored, sample_rate=sample_rate, silence_threshold=silence_threshold,
+            max_speech_duration=max_sec,
+        )
+        yield from pack_utterances_into_chunks(
+            utterances, sample_rate=sample_rate, target_sec=target_sec,
+            max_sec=max_sec, max_gap_sec=max_gap_sec,
+            total_duration_sec=total_duration_sec,
+        )

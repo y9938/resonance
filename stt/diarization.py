@@ -88,7 +88,7 @@ _DIARIZER: sherpa_onnx.OfflineSpeakerDiarization | None = None
 def get_diarizer() -> sherpa_onnx.OfflineSpeakerDiarization:
     global _DIARIZER
     if _DIARIZER is None:
-        log.info("Loading Diarization model (PyAnnote Segmentation 3.0 + WeSpeaker VoxCeleb ResNet34)...")
+        log.info("Loading sherpa-onnx diarization (PyAnnote Segmentation 3.0 + WeSpeaker VoxCeleb ResNet34)...")
         seg_model, emb_model = _ensure_models()
         threads = min(4, os.cpu_count() or 1)
         config = sherpa_onnx.OfflineSpeakerDiarizationConfig(
@@ -110,7 +110,7 @@ def get_diarizer() -> sherpa_onnx.OfflineSpeakerDiarization:
         )
         assert config.validate(), "Fail-fast: sherpa-onnx diarization config validation failed"
         _DIARIZER = sherpa_onnx.OfflineSpeakerDiarization(config)
-        log.info(f"Diarization model loaded (threads={threads}).")
+        log.info(f"sherpa-onnx diarization loaded (threads={threads}).")
     return _DIARIZER
 
 

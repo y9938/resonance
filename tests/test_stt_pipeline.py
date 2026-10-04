@@ -201,7 +201,7 @@ def test_run_stt_job_processes_segments_sequentially(tmp_path: Path, monkeypatch
         return MediaInfo(duration_sec=45.0, codec_name="opus", sample_rate=48000, channels=2, size_bytes=123)
 
     def fake_stream_vad_chunks(input_path, *args, **kwargs):
-        # Yield two dummy chunks with timestamps
+        kwargs["decode_stats"].decoded_samples = 45 * 16000
         extracted.append(0)
         yield 0.0, 20.0, np.zeros(16000 * 20, dtype=np.float32)
         extracted.append(1)
@@ -283,8 +283,7 @@ def test_run_stt_job_diarization_stage_flag(tmp_path: Path, monkeypatch: pytest.
 
     monkeypatch.setattr(pipeline, "probe_media", fake_probe_media)
     monkeypatch.setattr(pipeline, "stream_vad_chunks", fake_stream_vad_chunks)
-    monkeypatch.setattr("subprocess.check_output", lambda *args, **kwargs: np.zeros(16000 * 10, dtype=np.int16).tobytes())
-    monkeypatch.setattr("stt.diarization.diarize_audio", lambda audio: [])
+    monkeypatch.setattr("stt.diarization.diarize_audio", lambda audio, **kwargs: [])
 
     jobs = FakeJobs()
     model = FakeModel()
@@ -292,7 +291,7 @@ def test_run_stt_job_diarization_stage_flag(tmp_path: Path, monkeypatch: pytest.
     upload_root = tmp_path / "upload"
     upload_root.mkdir()
     input_path = upload_root / "input.opus"
-    input_path.write_bytes(b"audio")
+    input_path.write_bytes(silent_wav(16000).data)
 
     run_stt_job(
         job_id="job-diarize",
@@ -328,7 +327,7 @@ def test_run_stt_job_diarization_cancelled_midway(tmp_path: Path, monkeypatch: p
         return []
 
     monkeypatch.setattr(pipeline, "probe_media", fake_probe_media)
-    monkeypatch.setattr("subprocess.check_output", lambda *args, **kwargs: np.zeros(16000 * 10, dtype=np.int16).tobytes())
+    input_path.write_bytes(silent_wav(16000).data)
     monkeypatch.setattr("stt.diarization.diarize_audio", fake_diarize)
 
     run_stt_job(

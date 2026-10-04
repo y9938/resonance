@@ -105,7 +105,7 @@ def test_batch_pipeline_passes_resolved_language_to_adapter(monkeypatch) -> None
 
     monkeypatch.setattr(
         "stt.pipeline.pack_array_vad_chunks",
-        lambda *args, **kwargs: iter([(0.0, 1.0, np.ones(16000, dtype=np.float32))]),
+        lambda *args, **kwargs: (chunk for chunk in [(0.0, 1.0, np.ones(16000, dtype=np.float32))]),
     )
     run_stt_job(
         job_id="german", input_paths=np.ones(16000, dtype=np.float32),
@@ -129,7 +129,7 @@ def test_batch_auto_locks_language_after_first_chunk(monkeypatch) -> None:
 
     monkeypatch.setattr(
         "stt.pipeline.pack_array_vad_chunks",
-        lambda *args, **kwargs: iter([
+        lambda *args, **kwargs: (chunk for chunk in [
             (0.0, 1.0, np.ones(16000, dtype=np.float32)),
             (1.0, 2.0, np.ones(16000, dtype=np.float32)),
         ]),
@@ -148,7 +148,7 @@ def test_batch_auto_locks_language_after_first_chunk(monkeypatch) -> None:
 
 
 def test_batch_auto_with_no_speech_never_calls_model(monkeypatch) -> None:
-    monkeypatch.setattr("stt.pipeline.pack_array_vad_chunks", lambda *args, **kwargs: iter(()))
+    monkeypatch.setattr("stt.pipeline.pack_array_vad_chunks", lambda *args, **kwargs: (chunk for chunk in ()))
     model = MagicMock()
     jobs = FakeJobs()
     run_stt_job(

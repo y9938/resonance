@@ -45,7 +45,8 @@ def dev(env: dict[str, str]) -> None:
     port = env.get("RESONANCE_PORT", "8000")
     cmd = [
         "uv", "run", "--no-sync", "python", "-m", "uvicorn",
-        "server:app", "--reload",
+        "server:create_local_app", "--factory", "--reload",
+        "--host", "127.0.0.1", "--no-proxy-headers",
     ]
     for path in ("server.py", "core", "stt", "tts", "public"):
         cmd.extend(["--reload-dir", path])

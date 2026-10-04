@@ -58,7 +58,7 @@ def test_live_start_session_failure_marks_job_failed_and_retry_succeeds(monkeypa
     assert client.post(f"/api/jobs/live/{job_id}/stop").status_code == 200
 
 
-def test_system_audio_factory_failure_creates_no_job_or_capture(monkeypatch) -> None:
+def test_system_audio_factory_failure_creates_no_job_or_capture(monkeypatch, local_host_app) -> None:
     registry = _isolated_registry(monkeypatch)
     monkeypatch.setattr(server.models, "get_stt_model", MagicMock(return_value=MagicMock()))
     monkeypatch.setattr(
@@ -67,20 +67,20 @@ def test_system_audio_factory_failure_creates_no_job_or_capture(monkeypatch) -> 
         MagicMock(side_effect=RuntimeError("capture unavailable")),
     )
 
-    response = TestClient(server.app).post("/api/system-audio/start?language=ru&model=gigaam")
+    response = TestClient(server.app, base_url="http://localhost", client=("127.0.0.1", 12345)).post("/api/system-audio/start?language=ru&model=gigaam")
 
     assert response.status_code == 500
     assert registry._jobs == {}
     assert server.active_system_captures == {}
 
 
-def test_system_audio_model_failure_creates_no_job_or_capture(monkeypatch) -> None:
+def test_system_audio_model_failure_creates_no_job_or_capture(monkeypatch, local_host_app) -> None:
     registry = _isolated_registry(monkeypatch)
     monkeypatch.setattr(server.models, "get_stt_model", MagicMock(side_effect=RuntimeError("model unavailable")))
     capture_factory = MagicMock()
     monkeypatch.setattr(server, "get_system_audio_capture", capture_factory)
 
-    response = TestClient(server.app).post("/api/system-audio/start?language=ru&model=gigaam")
+    response = TestClient(server.app, base_url="http://localhost", client=("127.0.0.1", 12345)).post("/api/system-audio/start?language=ru&model=gigaam")
 
     assert response.status_code == 500
     capture_factory.assert_not_called()
@@ -89,7 +89,7 @@ def test_system_audio_model_failure_creates_no_job_or_capture(monkeypatch) -> No
 
 
 @pytest.mark.asyncio
-async def test_system_audio_start_failure_marks_job_failed_and_retry_succeeds(monkeypatch) -> None:
+async def test_system_audio_start_failure_marks_job_failed_and_retry_succeeds(monkeypatch, local_host_app) -> None:
     registry = _isolated_registry(monkeypatch)
     monkeypatch.setattr(server.models, "get_stt_model", MagicMock(return_value=MagicMock()))
 
@@ -116,7 +116,7 @@ async def test_system_audio_start_failure_marks_job_failed_and_retry_succeeds(mo
 
     monkeypatch.setattr(server, "get_system_audio_capture", RetryCapture)
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=server.app), base_url="http://test"
+        transport=httpx.ASGITransport(app=server.app), base_url="http://localhost"
     ) as client:
         failed = await client.post("/api/system-audio/start?language=ru&model=gigaam")
 
@@ -133,14 +133,14 @@ async def test_system_audio_start_failure_marks_job_failed_and_retry_succeeds(mo
         assert (await client.post(f"/api/system-audio/stop?job_id={job_id}")).status_code == 200
 
 
-def test_system_audio_session_failure_marks_job_failed_without_starting_capture(monkeypatch) -> None:
+def test_system_audio_session_failure_marks_job_failed_without_starting_capture(monkeypatch, local_host_app) -> None:
     registry = _isolated_registry(monkeypatch)
     monkeypatch.setattr(server.models, "get_stt_model", MagicMock(return_value=MagicMock()))
     capture = MagicMock()
     monkeypatch.setattr(server, "get_system_audio_capture", MagicMock(return_value=capture))
     monkeypatch.setattr(server, "LiveSTTSession", MagicMock(side_effect=RuntimeError("VAD unavailable")))
 
-    response = TestClient(server.app).post("/api/system-audio/start?language=ru&model=gigaam")
+    response = TestClient(server.app, base_url="http://localhost", client=("127.0.0.1", 12345)).post("/api/system-audio/start?language=ru&model=gigaam")
 
     assert response.status_code == 500
     capture.start_capture.assert_not_called()
@@ -149,7 +149,7 @@ def test_system_audio_session_failure_marks_job_failed_without_starting_capture(
     assert server.active_system_captures == {}
 
 
-def test_system_audio_rolls_back_started_engine_when_task_registration_fails(monkeypatch) -> None:
+def test_system_audio_rolls_back_started_engine_when_task_registration_fails(monkeypatch, local_host_app) -> None:
     registry = _isolated_registry(monkeypatch)
     monkeypatch.setattr(server.models, "get_stt_model", MagicMock(return_value=MagicMock()))
 
@@ -158,7 +158,7 @@ def test_system_audio_rolls_back_started_engine_when_task_registration_fails(mon
     monkeypatch.setattr(server.asyncio, "to_thread", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(server.asyncio, "create_task", MagicMock(side_effect=RuntimeError("task registration failed")))
 
-    response = TestClient(server.app).post("/api/system-audio/start?language=ru&model=gigaam")
+    response = TestClient(server.app, base_url="http://localhost", client=("127.0.0.1", 12345)).post("/api/system-audio/start?language=ru&model=gigaam")
 
     assert response.status_code == 500
     capture.start_capture.assert_called_once_with()

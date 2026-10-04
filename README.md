@@ -47,23 +47,23 @@ winget install Microsoft.VCRedist.2015+.x64 -e
 
 ### Run
 
+Use `./r` on Linux/macOS or `.\r` in Windows PowerShell.
+
 ```bash
-uv run --script scripts/tasks.py dev-deps
-uv run --script scripts/tasks.py dev
+./r dev-deps
+./r dev
 ```
 
 `dev-deps` installs into the project's `.venv`. `dev` uses those dependencies
 without syncing them. Run `dev-deps` before the first launch and after changing
 dependencies.
 
-Available commands: `uv run --script scripts/tasks.py --help`.
-
-Shortcut: `./r <task>` on Linux/macOS or `.\r <task>` on Windows; no shell setup needed.
+Available commands: `./r --help`.
 
 On **macOS** you can build `Resonance.app` menu bar app via:
 
 ```bash
-uv run --script scripts/tasks.py build-macos
+./r build-macos
 ```
 
 If you want to run from terminal with live logs:
@@ -75,8 +75,8 @@ If you want to run from terminal with live logs:
 ## Docker
 
 ```bash
-uv run --script scripts/tasks.py build
-uv run --script scripts/tasks.py run
+./r build
+./r run
 ```
 
 Model caches are shared with the host. On Linux, run as a non-root user.
@@ -117,6 +117,7 @@ See `.env.example` for all available overrides and reference values.
 | `/api/context/tail` | GET | Get recent recognized conversation context for active session |
 | `/api/jobs` | GET | List current session jobs (compact DTO); query `limit` (default 60), `offset`; JSON includes `has_more`, `next_offset` |
 | `/api/jobs/stt` | POST | Start STT job, returns `job_id` |
+| `/api/jobs/stt/local` | POST | Local launcher only: JSON `{"path":"/absolute/media.wav"}`, same STT query options and job lifecycle |
 | `/api/jobs/live/start` | POST | Start session-scoped microphone live STT, returns `job_id` |
 | `/api/jobs/live/{job_id}/chunk` | POST | Append one ordered audio chunk to a live microphone job |
 | `/api/jobs/live/{job_id}/stop` | POST | Flush buffered microphone speech and complete a live job |
@@ -125,12 +126,5 @@ See `.env.example` for all available overrides and reference values.
 | `/api/jobs/{job_id}/events` | GET | Stream job events (SSE, session-scoped) |
 | `/api/jobs/{job_id}/cancel` | POST | Cancel active job (session-scoped) |
 | `/api/stream/download` | GET | Download TTS audio |
-| `/api/system-audio/start` | POST | Start host-wide system-audio capture, optionally including the microphone |
-| `/api/system-audio/stop` | POST | Stop capture, flush recognized speech, and complete the same job |
-
-## IPC
-
-Local socket for desktop integration:
-- POSIX: `$XDG_RUNTIME_DIR/resonance.sock` (fallback `~/.cache/resonance/ipc.sock`)
-- Windows: `\\.\pipe\resonance-ipc`
-- Custom path: `RESONANCE_IPC_PATH` in `.env`
+| `/api/system-audio/start` | POST | Local launcher only: start host-wide system-audio capture, optionally including the microphone |
+| `/api/system-audio/stop` | POST | Local launcher only: stop capture, flush recognized speech, and complete the same job |
