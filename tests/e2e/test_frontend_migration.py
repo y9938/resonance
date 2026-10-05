@@ -318,3 +318,67 @@ def test_system_audio_include_microphone_and_stop(page, frontend_api):
     page.locator("#sttMicStop").click()
     expect(page.locator("#sttMicStart")).to_be_visible()
     assert frontend_api["stopped"] == ["/api/system-audio/stop"]
+
+
+def test_star_field_preserves_geometry_and_interactions(page, frontend_api):
+    page.set_viewport_size({"width": 1440, "height": 900})
+    frontend_api["open"]()
+    field = page.locator(".star-field")
+    expect(field).to_be_visible()
+    expect(field).to_have_attribute("aria-hidden", "true")
+    page.wait_for_timeout(250)  # Let the existing panel entrance finish.
+    assert page.evaluate("""() => {
+        const main = document.querySelector('main').getBoundingClientRect();
+        return [...document.querySelectorAll('.star-field svg')].every(star => {
+            const rect = star.getBoundingClientRect();
+            return (rect.right <= main.left || rect.left >= main.right)
+                && rect.top >= main.top && rect.bottom <= main.bottom;
+        });
+    }""")
+
+    geometry = """() => {
+        const r = document.querySelector('main').getBoundingClientRect();
+        return [r.x, r.y, r.width, r.height,
+                document.documentElement.scrollWidth, document.documentElement.scrollHeight];
+    }"""
+    for width in [1440, 390]:
+        page.set_viewport_size({"width": width, "height": 900})
+        before = page.evaluate(geometry)
+        field.evaluate("e => e.style.display = 'none'")
+        assert page.evaluate(geometry) == before
+        field.evaluate("e => e.style.removeProperty('display')")
+
+    page.set_viewport_size({"width": 1440, "height": 900})
+    assert page.evaluate("document.documentElement.scrollWidth === document.documentElement.clientWidth")
+    page.locator('[data-tab="tts"]').click()
+    page.locator("#ttsInput").fill("The decorative layer leaves forms usable.")
+    expect(page.locator("#ttsInput")).to_be_focused()
+    page.locator("#jobsMenuBtn").click()
+    expect(page.locator("#jobsMenuBtn")).to_have_attribute("aria-expanded", "true")
+    page.keyboard.press("Escape")
+    expect(page.locator("#jobsMenuBtn")).to_have_attribute("aria-expanded", "false")
+
+
+def test_star_field_motion_preferences_and_resize(page, frontend_api):
+    page.set_viewport_size({"width": 1440, "height": 900})
+    page.emulate_media(reduced_motion="no-preference")
+    frontend_api["open"]()
+    field = page.locator(".star-field")
+    expect(field).to_be_visible()
+    snapshot = """() => [...document.querySelectorAll('.star-field *')].map(e => {
+        const style = getComputedStyle(e);
+        return [style.opacity, style.transform];
+    })"""
+    initial = page.evaluate(snapshot)
+    changed = f"initial => JSON.stringify(({snapshot})()) !== JSON.stringify(initial)"
+    page.wait_for_function(changed, arg=initial)
+
+    for motion, width in [("reduce", 1440), ("no-preference", 390)]:
+        page.emulate_media(reduced_motion=motion)
+        page.set_viewport_size({"width": width, "height": 900})
+        if width == 390:
+            expect(field).not_to_be_visible()
+        page.wait_for_timeout(100)
+        stopped = page.evaluate(snapshot)
+        page.wait_for_timeout(250)
+        assert page.evaluate(snapshot) == stopped

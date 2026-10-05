@@ -11,6 +11,8 @@
   import JobsDrawer from "./components/JobsDrawer.svelte";
   import SttPanel from "./components/SttPanel.svelte";
   import TtsPanel from "./components/TtsPanel.svelte";
+  import StarField from "./components/StarField.svelte";
+  let main: HTMLElement;
   onMount(() => {
     document.documentElement.lang = locale.code;
     void loadSettings()
@@ -102,7 +104,7 @@
 </header>
 
 <JobsDrawer />
-<main class="main">
+<main class="main" bind:this={main}>
   <div class="tabs" role="tablist">
     <button
       class="tab"
@@ -123,4 +125,5 @@
   </div>
   <SttPanel /><TtsPanel />
 </main>
+<StarField content={main} />
 {#if settings.toast}<div class="toast">{settings.toast}</div>{/if}

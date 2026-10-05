@@ -32,8 +32,9 @@ icons and manifest. Vite collects bundled dependencies' license texts in
 `npm run build` builds these assets for `./r serve-local`; Node is only needed for setup/builds.
 Docker and the macOS launcher use these built assets.
 
-The existing global CSS is retained to preserve the visual design. There is no
-animation library; animation and further CSS ownership changes are separate work.
+The existing global CSS is retained to preserve the visual design. `StarField`
+owns CSS-animated decoration in the measured side gutters of main, including motion
+preferences and animation/listener cleanup. Its constants and styles stay local.
 
 Frontend tooling (`package.json`, lockfile, Vite and TypeScript configuration) lives
 at the repository root. Vite uses `src/web` as its root and writes `dist/web`.
