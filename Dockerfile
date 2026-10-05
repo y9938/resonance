@@ -1,3 +1,11 @@
+FROM node:22-bookworm-slim AS frontend-builder
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY vite.config.ts tsconfig.json ./
+COPY src/web/ ./src/web/
+RUN npm run build
+
 FROM ghcr.io/astral-sh/uv:python3.11-bookworm-slim AS builder
 
 ARG PYTORCH_BACKEND=cpu
@@ -42,7 +50,7 @@ COPY --chown=resonance:resonance server.py .
 COPY --chown=resonance:resonance core/ ./core/
 COPY --chown=resonance:resonance stt/ ./stt/
 COPY --chown=resonance:resonance tts/ ./tts/
-COPY --chown=resonance:resonance public/ ./public/
+COPY --from=frontend-builder --chown=resonance:resonance /app/dist/web/ ./dist/web/
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

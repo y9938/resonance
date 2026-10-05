@@ -20,8 +20,8 @@ class AssetTests(unittest.TestCase):
     def test_real_web_icon_sizes(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            (root / "public").mkdir()
-            shutil.copy(tasks.ROOT / "public/icon.svg", root / "public/icon.svg")
+            (root / "src/web/public").mkdir(parents=True)
+            shutil.copy(tasks.ROOT / "src/web/public/icon.svg", root / "src/web/public/icon.svg")
             with (
                 patch.object(tasks, "ROOT", root),
                 contextlib.redirect_stdout(io.StringIO()),
@@ -31,12 +31,12 @@ class AssetTests(unittest.TestCase):
                 path = root / (
                     f"build/favicons/{size}.png"
                     if size != 180
-                    else "public/apple-touch-icon.png"
+                    else "src/web/public/apple-touch-icon.png"
                 )
                 self.assertEqual(
                     struct.unpack(">II", path.read_bytes()[16:24]), (size, size)
                 )
-            favicon = (root / "public/favicon.ico").read_bytes()
+            favicon = (root / "src/web/public/favicon.ico").read_bytes()
             self.assertEqual(struct.unpack("<HHH", favicon[:6]), (0, 1, 3))
             self.assertEqual(
                 [(favicon[6 + i * 16], favicon[7 + i * 16]) for i in range(3)],

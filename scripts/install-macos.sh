@@ -4,7 +4,7 @@ set -eu
 REPO_DIR="${${(%):-%x}:A:h:h}"
 cd "$REPO_DIR"
 
-brew install uv ffmpeg resvg imagemagick
+brew install uv node ffmpeg resvg imagemagick
 
 if [ ! -f .env ]; then
   if [ "$(uname -m)" = "arm64" ]; then

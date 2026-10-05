@@ -43,7 +43,6 @@ from fastapi.responses import (
     PlainTextResponse,
     StreamingResponse,
 )
-from fastapi.staticfiles import StaticFiles
 
 from core.jobs import JobRegistry
 from core.logging import setup_logging
@@ -1019,11 +1018,6 @@ async def get_config(request: Request, response: Response) -> dict[str, Any]:
 # Static Files
 # -----------------------------------------------------------------------------
 
-public_dir = Path(__file__).parent / "public"
-if public_dir.exists():
-    app.mount("/", StaticFiles(directory=public_dir, html=True), name="static")
-else:
+from core.frontend import mount_frontend
 
-    @app.get("/")
-    async def root() -> dict[str, Any]:
-        return {"message": "Resonance API. Create public/index.html for web UI."}
+mount_frontend(app, Path(__file__).parent)

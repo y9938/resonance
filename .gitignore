@@ -12,12 +12,15 @@
 !/tts/
 !/core/
 !/src/
-!/public/
 
 !/.env.example
 !/tests/
 !/tools/
 !/scripts/
+!/package.json
+!/package-lock.json
+!/vite.config.ts
+!/tsconfig.json
 
 **/__pycache__/**
 

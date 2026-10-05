@@ -11,10 +11,14 @@ import csv
 import gzip
 import io
 import os
+import plistlib
 import shutil
+import signal
+import socket
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -24,7 +28,7 @@ CONTAINER_CACHE_ROOT = "/home/resonance/.cache"
 
 
 def dev_deps(env: dict[str, str]) -> None:
-    """Install project and development dependencies into <repo>/.venv."""
+    """Install Python and frontend dependencies."""
     venv = ROOT / ".venv"
     if not venv.exists():
         execute(["uv", "venv", str(venv)], env)
@@ -38,23 +42,101 @@ def dev_deps(env: dict[str, str]) -> None:
     if backend:
         cmd.append(f"--torch-backend={backend}")
     execute(cmd, env)
+    frontend(["ci"], env)
 
 
 def dev(env: dict[str, str]) -> None:
-    """Run the development server in the project's environment."""
+    """Develop with backend reload and frontend hot reload."""
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+    child_env = {
+        **env, "RESONANCE_FRONTEND_DEV": "1",
+        "RESONANCE_VITE_ORIGIN": f"http://127.0.0.1:{port}",
+    }
+    commands = [
+        [npm_command(env), "--silent", "run", "dev", "--", "--logLevel", "warn"],
+        local_server_command(env, reload=True),
+    ]
+    processes = []
+    previous_term = signal.getsignal(signal.SIGTERM)
+
+    def interrupted(signum, frame):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, interrupted)
+    try:
+        for cmd in commands:
+            processes.append(subprocess.Popen(
+                cmd, cwd=ROOT, env=child_env,
+                start_new_session=os.name != "nt",
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+            ))
+        while True:
+            for proc, cmd in zip(processes, commands):
+                code = proc.poll()
+                if code is not None:
+                    print(f"tasks: required dev process exited ({code}): {cmd}", file=sys.stderr)
+                    raise subprocess.CalledProcessError(code or 1, cmd)
+            time.sleep(0.1)
+    finally:
+        for proc in processes:
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], check=False, capture_output=True)
+            else:
+                try:
+                    os.killpg(proc.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+        for proc in processes:
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                if os.name == "nt":
+                    proc.kill()
+                else:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                proc.wait()
+        signal.signal(signal.SIGTERM, previous_term)
+
+
+def local_server_command(env: dict[str, str], reload: bool = False) -> list[str]:
     port = env.get("RESONANCE_PORT", "8000")
     cmd = [
         "uv", "run", "--no-sync", "python", "-m", "uvicorn",
-        "server:create_local_app", "--factory", "--reload",
+        "server:create_local_app", "--factory",
         "--host", "127.0.0.1", "--no-proxy-headers",
     ]
-    for path in ("server.py", "core", "stt", "tts", "public"):
-        cmd.extend(["--reload-dir", path])
+    if reload:
+        cmd.append("--reload")
+        for path in ("core", "stt", "tts", "."):
+            cmd.extend(["--reload-dir", path])
     cmd.extend(["--port", port])
-    execute(cmd, env)
+    return cmd
+
+
+def serve_local(env: dict[str, str]) -> None:
+    """Run the built app locally, without Node.js."""
+    if not (ROOT / "dist/web/index.html").exists():
+        raise FileNotFoundError("Frontend build missing; run npm run build first")
+    clean_env = {k: v for k, v in env.items() if k != "RESONANCE_FRONTEND_DEV"}
+    execute(local_server_command(clean_env), clean_env)
+
+
+def npm_command(env: dict[str, str]) -> str:
+    command = shutil.which("npm.cmd" if os.name == "nt" else "npm", path=env.get("PATH"))
+    if not command:
+        raise FileNotFoundError("Node.js 22.12+ and npm are required to build the frontend")
+    return command
+
+
+def frontend(args: list[str], env: dict[str, str]) -> None:
+    execute([npm_command(env), *args], env)
 
 
 def run_tests(env: dict[str, str], args: list[str]) -> None:
+    """Build the frontend and run pytest; browser tests need a running server."""
+    frontend(["run", "build"], env)
     port = env.get("RESONANCE_PORT", "8000")
     cmd = [
         "uv", "run", "--no-sync", "python", "-m", "pytest", "tests/",
@@ -65,6 +147,8 @@ def run_tests(env: dict[str, str], args: list[str]) -> None:
 
 
 def check(env: dict[str, str], args: list[str]) -> None:
+    """Check Svelte, TypeScript and Python code."""
+    frontend(["run", "check"], env)
     cmd = [
         "uv", "run", "--no-sync", "python", "-m", "ruff", "check",
         "server.py", "core/", "stt/", "tts/", "tests/", "scripts/",
@@ -74,6 +158,7 @@ def check(env: dict[str, str], args: list[str]) -> None:
 
 
 def build_image(env: dict[str, str], args: list[str]) -> None:
+    """Build the Docker image."""
     cmd = [
         "docker", "build",
         "--build-arg", f"PYTORCH_BACKEND={build_backend(env)}",
@@ -84,7 +169,7 @@ def build_image(env: dict[str, str], args: list[str]) -> None:
 
 
 def run_container(env: dict[str, str], args: list[str]) -> None:
-    """Create host cache directories and run Docker with options before image."""
+    """Run the Docker container."""
     if sys.platform == "linux" and os.geteuid() == 0:
         raise PermissionError("Run Docker as a non-root user")
     # Host directories must exist before Docker starts.
@@ -119,7 +204,7 @@ def run_container(env: dict[str, str], args: list[str]) -> None:
 
 
 def save_image(env: dict[str, str]) -> None:
-    """Replace the archive only after Docker has successfully exported the image."""
+    """Export the Docker image as a gzip archive."""
     prefix = "gpu_" if env.get("DEVICE", "cpu") == "cuda" else ""
     archive = ROOT / f"resonance_{prefix}{env.get('IMAGE_TAG', 'latest')}.tar.gz"
     with tempfile.NamedTemporaryFile(
@@ -143,7 +228,7 @@ def save_image(env: dict[str, str]) -> None:
 
 
 def icons(env: dict[str, str]) -> None:
-    """Generate favicon and Apple touch icons with resvg and ImageMagick."""
+    """Generate web icons with resvg and ImageMagick."""
     for tool, message in (
         ("resvg", "resvg not found."),
         ("magick", "magick (ImageMagick) not found."),
@@ -155,7 +240,7 @@ def icons(env: dict[str, str]) -> None:
     for size in (16, 32, 48):
         execute(
             [
-                "resvg", "-w", str(size), "-h", str(size), "public/icon.svg",
+                "resvg", "-w", str(size), "-h", str(size), "src/web/public/icon.svg",
                 f"build/favicons/{size}.png",
             ],
             env,
@@ -164,61 +249,91 @@ def icons(env: dict[str, str]) -> None:
         [
             "magick", "-background", "none",
             "build/favicons/16.png", "build/favicons/32.png", "build/favicons/48.png",
-            "public/favicon.ico",
+            "src/web/public/favicon.ico",
         ],
         env,
     )
     execute(
-        ["resvg", "-w", "180", "-h", "180", "public/icon.svg", "public/apple-touch-icon.png"],
+        ["resvg", "-w", "180", "-h", "180", "src/web/public/icon.svg", "src/web/public/apple-touch-icon.png"],
         env,
     )
     print("Web icons generated with pixel-perfect resvg vector rendering.")
 
 
 def build_macos(env: dict[str, str]) -> None:
-    """Build and sign the macOS menu bar app, retaining its existing icon script."""
+    """Build and install the macOS menu bar app."""
     if sys.platform != "darwin":
         raise OSError("build-macos is only available on macOS")
 
+    frontend(["run", "build"], env)
     execute(["bash", "scripts/build-icns.sh"], env)
-    app = ROOT / "build/Resonance.app"
-    if app.exists():
-        shutil.rmtree(app)
-    macos = app / "Contents/MacOS"
-    resources = app / "Contents/Resources"
-    macos.mkdir(parents=True, exist_ok=True)
-    resources.mkdir(parents=True, exist_ok=True)
-    shutil.copy(ROOT / "build/AppIcon.icns", resources)
-    status_icons = sorted((ROOT / "build").glob("StatusBarIcon*.png"))
-    if not status_icons:
-        raise FileNotFoundError("build/StatusBarIcon*.png")
-    for icon in status_icons:
-        shutil.copy(icon, resources)
-    execute(
-        [
-            "swiftc", "-O", "src/swift/main.swift", "src/swift/CaptureEngine.swift",
-            "-o", str(macos / "Resonance"),
-        ],
-        env,
-    )
-    shutil.copy(ROOT / "src/swift/Info.plist", app / "Contents/Info.plist")
-    # Keep the existing designated requirement stable across recompiles for TCC.
-    execute(
-        [
-            "codesign", "--force", "--deep", "--sign", "-",
-            "--requirements", '=designated => identifier "com.resonance.app"',
-            str(app),
-        ],
-        env,
-    )
-    print("Built and signed: build/Resonance.app")
     applications = Path.home() / "Applications"
     applications.mkdir(parents=True, exist_ok=True)
-    link = applications / "Resonance.app"
-    link.unlink(missing_ok=True)
-    link.symlink_to(app, target_is_directory=True)
-    link.touch()  # Refresh the macOS icon cache, following the symlink.
-    print("Added to Launchpad")
+    destination = applications / "Resonance.app"
+    legacy = ROOT / "build/Resonance.app"
+    if (
+        (destination.exists() or destination.is_symlink())
+        and not is_resonance_app(destination)
+        and not (destination.is_symlink() and destination.resolve() == legacy.resolve())
+    ):
+        raise FileExistsError(f"Refusing to replace an unrelated app: {destination}")
+
+    # Stage on the installation filesystem; failed builds leave the installed app intact.
+    with tempfile.TemporaryDirectory(prefix=".resonance-build-", dir=applications) as temporary:
+        staging = Path(temporary)
+        app = staging / "Resonance.app"
+        macos = app / "Contents/MacOS"
+        resources = app / "Contents/Resources"
+        macos.mkdir(parents=True)
+        resources.mkdir(parents=True)
+        shutil.copy(ROOT / "build/AppIcon.icns", resources)
+        status_icons = sorted((ROOT / "build").glob("StatusBarIcon*.png"))
+        if not status_icons:
+            raise FileNotFoundError("build/StatusBarIcon*.png")
+        for icon in status_icons:
+            shutil.copy(icon, resources)
+        (resources / "RepositoryPath.txt").write_text(str(ROOT.resolve()), encoding="utf-8")
+        execute(
+            [
+                "swiftc", "-O", "src/macos/main.swift", "src/macos/CaptureEngine.swift",
+                "-o", str(macos / "Resonance"),
+            ],
+            env,
+        )
+        shutil.copy(ROOT / "src/macos/Info.plist", app / "Contents/Info.plist")
+        # Keep the designated requirement stable across recompiles for TCC.
+        execute(
+            [
+                "codesign", "--force", "--deep", "--sign", "-",
+                "--requirements", '=designated => identifier "com.resonance.app"',
+                str(app),
+            ],
+            env,
+        )
+        previous = staging / "previous"
+        if destination.exists() or destination.is_symlink():
+            destination.rename(previous)
+        try:
+            app.rename(destination)
+        except OSError:
+            if previous.exists() or previous.is_symlink():
+                previous.rename(destination)
+            raise
+
+    # Remove only the old bundle owned by Resonance, without following symlinks.
+    if legacy.is_dir() and not legacy.is_symlink() and is_resonance_app(legacy):
+        shutil.rmtree(legacy)
+    destination.touch()
+    print(f"Built, signed and installed: {destination}")
+
+
+def is_resonance_app(path: Path) -> bool:
+    try:
+        with (path / "Contents/Info.plist").open("rb") as source:
+            metadata = plistlib.load(source)
+            return isinstance(metadata, dict) and metadata.get("CFBundleIdentifier") == "com.resonance.app"
+    except (OSError, ValueError, plistlib.InvalidFileException):
+        return False
 
 
 # Configuration and execution helpers
@@ -343,6 +458,7 @@ def main() -> int:
     tasks = {
         "dev-deps": (dev_deps, False),
         "dev": (dev, False),
+        "serve-local": (serve_local, False),
         "test": (run_tests, True),
         "check": (check, True),
         "build": (build_image, True),
@@ -352,11 +468,16 @@ def main() -> int:
         "build-macos": (build_macos, False),
     }
     parser = argparse.ArgumentParser(
-        prog="r", usage="%(prog)s [-h] [task] [args ...]", description=__doc__
+        prog="r", usage="%(prog)s [-h] [task] [args ...]", description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="tasks:\n" + "\n".join(
+            f"  {name:<13} {handler.__doc__ or ''}"
+            for name, (handler, _) in tasks.items()
+        ),
     )
     parser.add_argument(
         "task", choices=tasks, metavar="task", nargs="?",
-        help=", ".join(tasks),
+        help="Task to run (see below)",
     )
     parser.add_argument(
         "args", nargs=argparse.REMAINDER, help="Arguments passed to the selected task"

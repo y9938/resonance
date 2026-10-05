@@ -169,7 +169,7 @@ def test_stt_batch_upload_creates_one_visible_queue(page: Page, base_url: str, l
     )
     page.wait_for_timeout(200)
     assert abs(page.evaluate("window.scrollY") - 500) < 5
-    assert page.eval_on_selector("#sttResultText", "el => el.style.minHeight") == "300px"
+    assert page.eval_on_selector("#sttResultText", "el => getComputedStyle(el).minHeight") == "300px"
 
     page.evaluate("document.getElementById('jobsMenuBtn').click()")
     page.wait_for_selector("#jobsDrawer.open")

@@ -1,5 +1,11 @@
 *
-!public/
+!package.json
+!package-lock.json
+!vite.config.ts
+!tsconfig.json
+!src/
+src/*
+!src/web/
 !pyproject.toml
 !server.py
 !core/

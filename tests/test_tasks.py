@@ -92,6 +92,10 @@ class Pep723Tests(unittest.TestCase):
                         "[dependency-groups]\ndev=[]\n",
                         encoding="utf-8",
                     )
+                    (root / "package.json").write_text('{"name":"bootstrap-test","private":true}')
+                    (root / "package-lock.json").write_text(
+                        '{"name":"bootstrap-test","lockfileVersion":3,"packages":{"":{"name":"bootstrap-test"}}}'
+                    )
                     child_env = dict(env, **{activation: str(external)})
                     command = ["uv", "run", "--python", "3.13", "--script"]
                     self.run_command(

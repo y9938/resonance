@@ -17,6 +17,7 @@ Unified Speech-to-Text (STT) and Text-to-Speech (TTS) API Server.
 ### Deps
 
 - [**FFmpeg**](https://ffmpeg.org) — audio decoding and streaming backend
+- [**Node.js 22.12+**](https://nodejs.org/) and npm — frontend development and build
 - [**uv**](https://docs.astral.sh/uv/) — fast Python package and project manager
 
 #### macOS
@@ -25,7 +26,7 @@ Unified Speech-to-Text (STT) and Text-to-Speech (TTS) API Server.
 ./scripts/install-macos.sh
 ```
 
-This creates `.env` if missing, configures the device, installs dev dependencies
+This creates `.env` if missing, configures the device and installs development dependencies.
 
 #### Linux
 
@@ -51,14 +52,17 @@ Use `./r` on Linux/macOS or `.\r` in Windows PowerShell.
 
 ```bash
 ./r dev-deps
-./r dev
+npm run build
+./r serve-local
 ```
 
-`dev-deps` installs into the project's `.venv`. `dev` uses those dependencies
-without syncing them. Run `dev-deps` before the first launch and after changing
-dependencies.
+Run `dev-deps` again when dependencies change, and `npm run build` after frontend changes.
+For development with automatic reload, use `./r dev`.
 
-Available commands: `./r --help`.
+Open http://localhost:8000, or the port set by `RESONANCE_PORT`.
+Models are loaded on first use, so initial STT/TTS requests may take longer.
+
+See `./r -h` for tasks and [frontend notes](src/web/README.md) for development details.
 
 On **macOS** you can build `Resonance.app` menu bar app via:
 
@@ -66,10 +70,13 @@ On **macOS** you can build `Resonance.app` menu bar app via:
 ./r build-macos
 ```
 
+The app is installed in `~/Applications/Resonance.app`.
+Rebuild the app if you move the repository folder.
+
 If you want to run from terminal with live logs:
 
 ```bash
-./build/Resonance.app/Contents/MacOS/Resonance
+~/Applications/Resonance.app/Contents/MacOS/Resonance
 ```
 
 ## Docker
@@ -79,25 +86,16 @@ If you want to run from terminal with live logs:
 ./r run
 ```
 
+Frontend assets are built into the image; Node is used only during the build.
+Local-file STT and System Audio require the local launcher and are unavailable in Docker.
+
 Model caches are shared with the host. On Linux, run as a non-root user.
 Enforcing SELinux may require [bind-mount label configuration](https://docs.docker.com/engine/storage/bind-mounts/#configure-the-selinux-label).
-
-## Note
-
-Open `http://localhost:${RESONANCE_PORT}` (default: http://localhost:8000)
-
-Models are loaded lazily on first real STT/TTS use. Startup does not pre-download or pre-load model weights, so the first request to a specific backend may take noticeably longer.
 
 ## Configuration
 
 `.env` in the repository is optional; existing environment variables take
 precedence. Out of the box Resonance runs with CPU defaults.
-
-Create `.env` only if you want to override defaults:
-
-```bash
-touch .env
-```
 
 - **CUDA**: set `DEVICE=cuda`, leave `PYTORCH_BACKEND=` for PyPI default or set a specific backend like `cu126`
 - **CPU**: by default lightweight CPU-only wheels
@@ -105,7 +103,7 @@ touch .env
 - **Port**: set `RESONANCE_PORT` (default `8000`)
 - **CORS**: set `RESONANCE_CORS_ORIGINS` only for custom origins; default follows `RESONANCE_PORT`
 
-See `.env.example` for all available overrides and reference values.
+See [.env.example](.env.example) for available overrides.
 
 ## API Endpoints
 

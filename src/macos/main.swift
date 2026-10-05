@@ -1,8 +1,13 @@
 import AppKit
 
-let repoRoot = Bundle.main.bundleURL.resolvingSymlinksInPath()
-    .deletingLastPathComponent()
-    .deletingLastPathComponent()
+let repoRoot: URL = {
+    guard let resource = Bundle.main.url(forResource: "RepositoryPath", withExtension: "txt"),
+          let path = try? String(contentsOf: resource, encoding: .utf8),
+          path.hasPrefix("/") else {
+        fatalError("[Resonance] Missing repository path; rebuild with ./r build-macos")
+    }
+    return URL(fileURLWithPath: path, isDirectory: true)
+}()
 
 func readEnvValue(_ key: String, fallback: String) -> String {
     let envFile = repoRoot.appendingPathComponent(".env")
@@ -81,10 +86,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func startBackend() {
-        // Keep the login shell and Homebrew PATH when launching the uv task runner.
+        // Launch the checkout backend with built web assets; no Node runtime is needed.
         backend = Process()
         backend?.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        backend?.arguments = ["-l", "-c", "export PATH=\"/opt/homebrew/bin:$HOME/.cargo/bin:$PATH\"; exec uv run --script scripts/tasks.py dev"]
+        backend?.arguments = ["-l", "-c", "export PATH=\"/opt/homebrew/bin:$HOME/.cargo/bin:$PATH\"; exec uv run --script scripts/tasks.py serve-local"]
         backend?.currentDirectoryURL = repoRoot
 
         let errorPipe = Pipe()

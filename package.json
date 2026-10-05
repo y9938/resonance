@@ -1,0 +1,21 @@
+{
+  "name": "resonance-frontend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "check": "svelte-check --tsconfig ./tsconfig.json"
+  },
+  "dependencies": {
+    "svelte": "5.57.1",
+    "tom-select": "2.6.2"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "7.3.1",
+    "@types/node": "22.19.15",
+    "svelte-check": "4.4.5",
+    "typescript": "5.9.3",
+    "vite": "8.3.2"
+  }
+}
