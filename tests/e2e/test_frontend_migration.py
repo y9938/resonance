@@ -312,6 +312,7 @@ def test_system_audio_include_microphone_and_stop(page, frontend_api):
     page.locator("#sttSysIncludeMic").check()
     page.locator("#sttMicStart").click()
     expect(page.locator("#sttMicStop")).to_be_visible()
+    expect(page.locator("#sttSysIncludeMic")).to_be_disabled()
     assert starts[0]["include_microphone"] == ["true"]
     assert starts[0]["language"] == ["en"]
     assert page.evaluate("localStorage.getItem('resonance_sttSysIncludeMic')") == "true"
@@ -382,3 +383,23 @@ def test_star_field_motion_preferences_and_resize(page, frontend_api):
         stopped = page.evaluate(snapshot)
         page.wait_for_timeout(250)
         assert page.evaluate(snapshot) == stopped
+
+
+@pytest.mark.parametrize("event", [
+    {"type": "error", "message": "Microphone unavailable"},
+    {"type": "complete"},
+    {"type": "cancelled"},
+])
+def test_system_capture_terminal_event_unlocks_controls(page, frontend_api, event):
+    page.route("**/api/system-audio/start?*", lambda route: route.fulfill(json={"job_id": "system"}))
+    frontend_api["open"]()
+    page.wait_for_selector("#sttLanguage:not([disabled])")
+    page.locator("#tabSys").click()
+    page.locator("#sttMicStart").click()
+    expect(page.locator("#sttMicStop")).to_be_visible()
+    emit(page, event)
+    expect(page.locator("#sttMicStart")).to_be_enabled()
+    expect(page.locator("#sttMicStop")).not_to_be_visible()
+    expect(page.locator("#sttSysIncludeMic")).to_be_enabled()
+    if event["type"] == "error":
+        expect(page.locator("#sttError")).to_contain_text(event["message"])

@@ -1,3 +1,4 @@
+import { finishCapture } from "./capture.svelte";
 import type { AudioInput, Job, JobEvent, Segment } from "../api/types";
 import { request, status, downloadText } from "../api/client";
 import { settings, toast } from "../settings.svelte";
@@ -77,6 +78,7 @@ export function hide() {
 }
 export function cancel() {
   const id = stt.jobId;
+  finishCapture(id);
   invalidate();
   active(null);
   reset();
@@ -87,6 +89,7 @@ export function cancel() {
   refreshHistory();
 }
 function fail(message: string) {
+  finishCapture(stt.jobId);
   stt.error = message;
   active(null);
   stream?.close();
@@ -158,6 +161,7 @@ export function applyStatus(job: Job) {
         : null;
 }
 function finish(token: number) {
+  finishCapture(stt.jobId);
   stt.complete = true;
   stt.label = "progressComplete";
   stt.busy = false;
@@ -237,6 +241,7 @@ export function subscribe(id: string, token = epoch) {
         fail(event.message || t("errProcessingFailed"));
         break;
       case "cancelled":
+        finishCapture(id);
         active(null);
         connection.close();
         stream = null;
@@ -256,6 +261,7 @@ export function subscribe(id: string, token = epoch) {
       return;
     }
     if (job.state === "cancelled") {
+      finishCapture(id);
       active(null);
       reset();
       return;

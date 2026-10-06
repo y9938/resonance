@@ -79,12 +79,12 @@
           type="checkbox"
           id="sttSysIncludeMic"
           style="cursor: pointer; width: 14px; height: 14px; accent-color: var(--accent);"
-          bind:checked={settings.includeMic}
-          onchange={() =>
-            localStorage.setItem(
-              "resonance_sttSysIncludeMic",
-              String(settings.includeMic),
-            )}
+          checked={settings.includeMic}
+          disabled={capture.starting || capture.recording || capture.stopping}
+          onchange={(event) => {
+            settings.includeMic = event.currentTarget.checked;
+            localStorage.setItem("resonance_sttSysIncludeMic", String(settings.includeMic));
+          }}
         />
         <label
           for="sttSysIncludeMic"
@@ -114,7 +114,7 @@
       type="button"
       onclick={start}
       style:display={capture.recording ? "none" : ""}
-      disabled={capture.starting}
+      disabled={capture.starting || capture.stopping}
       >{t(settings.source === "sys" ? "sttSysStart" : "sttMicStart")}</button
     >
     <button

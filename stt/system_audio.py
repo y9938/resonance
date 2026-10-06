@@ -157,6 +157,7 @@ class SoundcardSystemAudioStrategy(SystemAudioStrategy):
         self.queue = Queue()
         self.mic_queue = Queue() if include_microphone else None
         self.is_active = False
+        self.error = None
         self.samplerate = 16000
         self.blocksize = 4096
         self.sys_thread = None
@@ -183,7 +184,7 @@ class SoundcardSystemAudioStrategy(SystemAudioStrategy):
                         mono = data.mean(axis=1).astype(np.float32) if data.ndim > 1 else data.astype(np.float32)
                         self.queue.put(mono)
         except Exception as e:
-            log.warning(f"System audio capture worker failed: {e}")
+            self.error = RuntimeError(f"System audio capture failed: {e}")
         finally:
             if hr == 0:
                 try:
@@ -210,7 +211,7 @@ class SoundcardSystemAudioStrategy(SystemAudioStrategy):
                         mono = data.mean(axis=1).astype(np.float32) if data.ndim > 1 else data.astype(np.float32)
                         self.mic_queue.put(mono)
         except Exception as e:
-            log.warning(f"Microphone capture worker failed: {e}")
+            self.error = RuntimeError(f"Microphone capture failed: {e}")
         finally:
             if hr == 0:
                 try:
@@ -223,6 +224,7 @@ class SoundcardSystemAudioStrategy(SystemAudioStrategy):
             return
         import threading
 
+        self.error = None
         self.is_active = True
         while not self.queue.empty():
             self.queue.get_nowait()
@@ -256,6 +258,8 @@ class SoundcardSystemAudioStrategy(SystemAudioStrategy):
             or not self.queue.empty()
             or (self.mic_queue is not None and not self.mic_queue.empty())
         ):
+            if self.error is not None:
+                raise self.error
             sys_drained = False
             try:
                 while True:
@@ -364,8 +368,8 @@ class LinuxPulseParecStrategy(SystemAudioStrategy):
                 t_mic.start()
                 self.threads.append(t_mic)
             except Exception as e:
-                log.warning(f"Microphone capture start failed: {e}")
-                self.proc_mic = None
+                self.stop_capture()
+                raise RuntimeError(f"Microphone capture start failed: {e}") from e
 
     def stop_capture(self) -> None:
         self.is_active = False
@@ -399,6 +403,10 @@ class LinuxPulseParecStrategy(SystemAudioStrategy):
             or not self.queue.empty()
             or (self.mic_queue is not None and not self.mic_queue.empty())
         ):
+            if self.is_active:
+                for name, proc in (("System audio", self.proc_sys), ("Microphone", self.proc_mic)):
+                    if proc is not None and proc.poll() is not None:
+                        raise RuntimeError(f"{name} capture process exited (code {proc.returncode})")
             sys_drained = False
             try:
                 while True:

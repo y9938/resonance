@@ -1,4 +1,8 @@
+import sys
+from types import SimpleNamespace
+
 import numpy as np
+import pytest
 
 from stt.system_audio import (
     LinuxPulseParecStrategy,
@@ -60,3 +64,24 @@ def test_windows_wasapi_strategy_lifecycle():
 
     strat.stop_capture()
     assert strat.is_active is False
+
+
+def test_microphone_failure_reaches_capture_consumer(monkeypatch):
+    def unavailable():
+        raise RuntimeError("Microphone unavailable")
+
+    monkeypatch.setitem(sys.modules, "soundcard", SimpleNamespace(default_microphone=unavailable))
+    strategy = WindowsWasapiStrategy(include_microphone=True)
+    strategy.is_active = True
+    strategy._mic_worker()
+    with pytest.raises(RuntimeError, match="Microphone unavailable"):
+        next(strategy.get_audio_stream())
+    strategy.stop_capture()
+
+
+def test_exited_parec_does_not_leave_capture_waiting():
+    strategy = LinuxPulseParecStrategy(include_microphone=True)
+    strategy.is_active = True
+    strategy.proc_mic = SimpleNamespace(poll=lambda: 1, returncode=1)
+    with pytest.raises(RuntimeError, match="Microphone capture process exited"):
+        next(strategy.get_audio_stream())

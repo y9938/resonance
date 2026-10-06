@@ -75,7 +75,8 @@ async def test_system_audio_producer_exception_fails_and_cleans_registry(monkeyp
             raise RuntimeError("driver disconnected")
 
     monkeypatch.setattr(server.models, "get_stt_model", MagicMock(return_value=MagicMock()))
-    monkeypatch.setattr(server, "get_system_audio_capture", CrashingCapture)
+    capture = CrashingCapture()
+    monkeypatch.setattr(server, "get_system_audio_capture", lambda **kwargs: capture)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=server.app), base_url="http://localhost"
@@ -86,6 +87,7 @@ async def test_system_audio_producer_exception_fails_and_cleans_registry(monkeyp
         stopped = await client.post(f"/api/system-audio/stop?job_id={job_id}")
 
     assert stopped.status_code == 404
+    assert capture.stopped.is_set()
     assert server.active_system_captures == {}
 
 

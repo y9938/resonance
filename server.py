@@ -345,6 +345,10 @@ async def _supervise_system_capture(
             return
         active_system_captures.pop(job_id, None)
 
+    try:
+        await asyncio.to_thread(audio_engine.stop_capture)
+    except Exception:
+        log.exception("Failed to stop system audio after capture failure")
     live_session.cancel()
     jobs.update_event(
         job_id,

@@ -51,13 +51,13 @@ function stopTracks() {
   gain = null;
 }
 export function setMode(mode: "dictation" | "live") {
-  if (capture.recording || capture.starting || capture.systemId) return;
+  if (capture.recording || capture.starting || capture.stopping || capture.systemId) return;
   settings.mode = mode;
   localStorage.setItem("resonance_sttMicMode", mode);
   capture.hint = mode === "live" ? "sttMicHintLive" : "sttMicHintIdle";
 }
 export function setSource(value: "mic" | "sys") {
-  if (capture.recording || capture.starting || capture.systemId) return;
+  if (capture.recording || capture.starting || capture.stopping || capture.systemId) return;
   settings.source = value;
   capture.hint =
     value === "sys"
@@ -84,6 +84,16 @@ function failure(error: Error) {
   stt.error = error.message || t("errNetwork");
   live = null;
 }
+export function finishCapture(id: string | null) {
+  if (!id || (id !== capture.systemId && id !== live?.jobId)) return;
+  stopTracks();
+  stopTimer();
+  live?.dispose();
+  live = null;
+  capture.systemId = null;
+  capture.recording = false;
+  capture.hint = settings.source === "sys" ? "sttSysHintIdle" : "sttMicHintLive";
+}
 export function restoreSystem() {
   if (stt.liveSource !== "system_audio" || !stt.jobId) return;
   settings.source = "sys";
@@ -93,7 +103,7 @@ export function restoreSystem() {
   startTimer(stt.startedAt ? stt.startedAt * 1000 : Date.now());
 }
 export async function start() {
-  if (capture.starting || capture.recording) return;
+  if (capture.starting || capture.recording || capture.stopping) return;
   const token = ++epoch;
   capture.starting = true;
   stt.error = "";
@@ -193,11 +203,13 @@ export async function start() {
     capture.recording = true;
     startTimer();
     capture.hint = isLive ? "sttMicHintLive" : "sttMicHintRecording";
-  } catch {
+  } catch (error) {
     stopTracks();
     stopTimer();
     capture.recording = false;
-    stt.error = t("errMicPermission");
+    stt.error = error.name === "NotAllowedError"
+      ? t("errMicPermission")
+      : error.message || t("errNetwork");
     if (jobId)
       void request(`/jobs/live/${jobId}/stop`, { method: "POST" }).catch(
         () => {},
@@ -249,6 +261,10 @@ export async function stop() {
     capture.hint = "sttMicHintReady";
   } catch (error) {
     stt.error = error.message || t("errNetwork");
+    if (capture.systemId) {
+      capture.hint = "sttSysHintCapturing";
+      startTimer(started);
+    }
   } finally {
     capture.stopping = false;
   }
