@@ -25,8 +25,9 @@ def _only_job_status(registry: JobRegistry) -> dict:
     return status
 
 
-def test_live_start_model_failure_creates_no_job_or_session(monkeypatch) -> None:
+def test_live_start_model_failure_creates_no_job_or_session(monkeypatch, caplog) -> None:
     registry = _isolated_registry(monkeypatch)
+    monkeypatch.setattr(server.log, "propagate", True)
     monkeypatch.setattr(server.models, "get_stt_model", MagicMock(side_effect=RuntimeError("model unavailable")))
 
     response = TestClient(server.app).post("/api/jobs/live/start?language=ru&model=gigaam")
@@ -34,6 +35,8 @@ def test_live_start_model_failure_creates_no_job_or_session(monkeypatch) -> None
     assert response.status_code == 500
     assert registry._jobs == {}
     assert server.active_live_sessions == {}
+    assert "Traceback" in caplog.text
+    assert "RuntimeError: model unavailable" in caplog.text
 
 
 def test_live_start_session_failure_marks_job_failed_and_retry_succeeds(monkeypatch) -> None:
@@ -74,8 +77,9 @@ def test_system_audio_factory_failure_creates_no_job_or_capture(monkeypatch, loc
     assert server.active_system_captures == {}
 
 
-def test_system_audio_model_failure_creates_no_job_or_capture(monkeypatch, local_host_app) -> None:
+def test_system_audio_model_failure_creates_no_job_or_capture(monkeypatch, local_host_app, caplog) -> None:
     registry = _isolated_registry(monkeypatch)
+    monkeypatch.setattr(server.log, "propagate", True)
     monkeypatch.setattr(server.models, "get_stt_model", MagicMock(side_effect=RuntimeError("model unavailable")))
     capture_factory = MagicMock()
     monkeypatch.setattr(server, "get_system_audio_capture", capture_factory)
@@ -86,6 +90,8 @@ def test_system_audio_model_failure_creates_no_job_or_capture(monkeypatch, local
     capture_factory.assert_not_called()
     assert registry._jobs == {}
     assert server.active_system_captures == {}
+    assert "Traceback" in caplog.text
+    assert "RuntimeError: model unavailable" in caplog.text
 
 
 @pytest.mark.asyncio

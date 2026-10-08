@@ -292,10 +292,11 @@ class KokoroEnTtsBackend(TtsBackend):
                 raise RuntimeError(
                     "Kokoro dependency is not installed. Add 'kokoro' to the environment."
                 ) from exc
+            started = time.monotonic()
             device = os.getenv("DEVICE", "cpu")
             self._log.info(f"Loading TTS model (Kokoro English) on {device}...")
             self._model = KModel(repo_id="hexgrad/Kokoro-82M").to(torch.device(device)).eval()
-            self._log.info("Kokoro English model loaded")
+            self._log.info("Kokoro English loaded: device=%s; %.1fs", device, time.monotonic() - started)
         return self._model
 
     def _get_pipeline(self, lang_code: str) -> Any:
@@ -492,7 +493,7 @@ class TtsService:
         def cancel_requested() -> bool:
             if jobs.is_cancelled(job_id):
                 elapsed = time.time() - start_time
-                self._log.info(f"TTS cancelled: {elapsed:.2f}s")
+                self._log.info(f"TTS cancelled: job_id={job_id}; {elapsed:.2f}s")
                 jobs.update_event(job_id, "cancelled", {})
                 return True
             return False
@@ -539,10 +540,10 @@ class TtsService:
                 },
             )
             elapsed = time.time() - start_time
-            self._log.info(f"TTS completed: {elapsed:.2f}s")
+            self._log.info(f"TTS completed: job_id={job_id}; {elapsed:.2f}s")
         except Exception as exc:
             elapsed = time.time() - start_time
-            self._log.error(f"TTS failed: {exc} ({elapsed:.2f}s)")
+            self._log.exception(f"TTS failed: job_id={job_id}; {exc} ({elapsed:.2f}s)")
             jobs.update_event(job_id, "error", {"message": str(exc)})
 
     def sweep_stale_files(self, max_age_sec: int) -> None:

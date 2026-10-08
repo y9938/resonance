@@ -1,5 +1,6 @@
 """Behavior at the browser/API boundary after the Svelte migration."""
 
+import re
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -64,6 +65,38 @@ def frontend_api(page, base_url):
 
 def emit(page, event):
     page.evaluate("event => window.streams.at(-1).onmessage({data: JSON.stringify(event)})", event)
+
+
+@pytest.mark.parametrize('include_microphone', [False, True])
+def test_system_capture_displays_text_and_distinct_source_labels(page, frontend_api, include_microphone):
+    starts = []
+
+    def start(route):
+        starts.append(parse_qs(urlparse(route.request.url).query))
+        route.fulfill(json={'job_id': 'system', 'started_at': 100})
+
+    page.route('**/api/system-audio/start?*', start)
+    frontend_api['open']()
+    page.wait_for_selector('#sttLanguage:not([disabled])')
+    page.locator('#tabSys').click()
+    page.locator('#sttSysIncludeMic').set_checked(include_microphone)
+    page.locator('#sttMicStart').click()
+    page.wait_for_function('window.streams.length === 1')
+    assert (starts[0].get('include_microphone') == ['true']) == include_microphone
+    sources = ['mic', 'sys'] if include_microphone else ['sys']
+    for seq, source in enumerate(sources, 1):
+        prefix = f'[SOURCE:{source.upper()}]: ' if include_microphone else ''
+        emit(page, {'type': 'progress', 'seq': seq,
+                    'segment': {'start': seq - 1, 'end': seq, 'source': source,
+                                'text': prefix + f'signal-{source}'}})
+    result = page.locator('#sttResultText')
+    expect(result).to_be_visible()
+    if include_microphone:
+        expect(result).to_have_value(re.compile(r'\[🎤 Microphone\]: signal-mic'))
+        expect(result).to_have_value(re.compile(r'\[🔊 System\]: signal-sys'))
+    else:
+        expect(result).to_have_value(re.compile('signal-sys'))
+        expect(result).not_to_have_value(re.compile('Microphone|signal-mic'))
 
 
 def test_pending_batch_rows_and_focus_survive_snapshots(page, frontend_api):
@@ -137,7 +170,9 @@ def test_late_restore_cannot_replace_newer_selection(page, frontend_api):
 def test_live_f5_replay_and_preview_ownership(page, frontend_api, source):
     job = {"job_id": "live", "job_type": "stt", "state": "running", "started_at": 100,
            "progress_current": 1, "progress_total": 0, "last_event_seq": 5,
-           "result": {"source": source, "filename": "live.wav", "segments": [{"start": 0, "end": 1, "text": "durable"}]}}
+           "result": {"source": source, "filename": "live.wav",
+                      "capture_config": {"language": "en", "model": "whisper", "include_microphone": True},
+                      "segments": [{"start": 0, "end": 1, "text": "durable"}]}}
     frontend_api["jobs"] = [job]
     page.add_init_script("localStorage.setItem('resonance_stt_active_job_id','live')")
     frontend_api["open"]()
@@ -146,6 +181,8 @@ def test_live_f5_replay_and_preview_ownership(page, frontend_api, source):
     expect(page.locator("#sttProgress")).not_to_be_visible()
     if source == "system_audio":
         expect(page.locator("#sttMicStop")).to_be_visible()
+        expect(page.locator("#sttSysIncludeMic")).to_be_checked()
+        expect(page.locator("#sttSysIncludeMic")).to_be_disabled()
     else:
         expect(page.locator("#sttMicStart")).to_be_visible()
     emit(page, {"type": "transcript_preview", "seq": 6, "generation": 2, "text": "provisional"})
@@ -169,6 +206,7 @@ def test_live_f5_replay_and_preview_ownership(page, frontend_api, source):
         page.locator("#sttMicStop").click()
         expect(page.locator("#sttMicStart")).to_be_visible()
         assert frontend_api["stopped"] == ["/api/system-audio/stop"]
+        expect(page.locator("#sttSysIncludeMic")).not_to_be_checked()
 
 
 def test_tts_and_stt_error_cancel_restart(page, frontend_api):
@@ -229,6 +267,35 @@ def mock_microphone(page):
     """)
 
 
+def test_microphone_denial_reports_code_without_exposing_message_or_masking_error(page, frontend_api):
+    mock_microphone(page)
+    page.add_init_script("""
+        navigator.mediaDevices.getUserMedia = async () => {
+            throw new DOMException('private browser detail', 'NotAllowedError');
+        };
+    """)
+    reports = []
+
+    def unavailable_diagnostics(route):
+        reports.append(route.request.post_data_json)
+        route.abort()
+
+    page.route("**/api/diagnostics/capture", unavailable_diagnostics)
+    frontend_api["open"]()
+    page.wait_for_function("document.querySelector('#sttLanguage')?.disabled === false")
+    page.locator("#sttMicStart").click()
+    expect(page.locator("#sttError")).to_have_text("Microphone access was denied")
+    expect(page.locator("#sttMicStart")).to_be_enabled()
+    # Failed diagnostics delivery never replaces the user's actual error.
+    for _ in range(100):
+        if len(reports) == 2:
+            break
+        page.wait_for_timeout(20)
+    assert [report["event"] for report in reports] == ["mic-requested", "mic-failed"]
+    assert reports[-1] == {"event": "mic-failed", "stage": "permission", "mode": "dictation",
+                           "error": "NotAllowedError"}
+
+
 def start_mock_live(page, frontend_api):
     mock_microphone(page)
     page.route("**/api/jobs/live/start?*", lambda route: route.fulfill(json={"job_id": "live"}))
@@ -264,17 +331,117 @@ def test_live_transport_retries_same_sequence_before_next_chunk(page, frontend_a
     expect(page.locator("#sttError")).not_to_be_visible()
 
 
-def test_live_transport_backpressure_stops_capture_without_successful_stop(page, frontend_api):
-    held = []
-    page.route("**/api/jobs/live/live/chunk?*", lambda route: held.append(route))
+def test_live_transport_backpressure_drains_before_finishing(page, frontend_api):
+    held, sent, stopped = [], [], []
+
+    def chunk(route):
+        sequence = int(parse_qs(urlparse(route.request.url).query)["sequence"][0])
+        sent.append(sequence)
+        if sequence == 1:
+            held.append(route)
+        else:
+            route.fulfill(json={"ack_sequence": sequence})
+
+    def stop(route):
+        stopped.append(list(sent))
+        route.fulfill(json={"ok": True})
+
+    page.route("**/api/jobs/live/live/chunk?*", chunk)
+    page.route("**/api/jobs/live/live/stop", stop)
     start_mock_live(page, frontend_api)
     page.evaluate("recordSeconds(11)")
     expect(page.locator("#sttError")).to_be_visible()
-    expect(page.locator("#sttMicStart")).to_be_visible()
+    expect(page.locator("#sttMicStop")).to_be_disabled()
+    expect(page.locator("#sttMicStart")).not_to_be_visible()
     assert page.evaluate("window.stoppedTracks") == 1
+    assert not stopped
+    assert sent == [1]
+    held[0].fulfill(json={"ack_sequence": 1})
+    expect(page.locator("#sttMicStart")).to_be_enabled()
+    assert sent == list(range(1, 12))
+    assert stopped == [sent]
+
+
+@pytest.mark.parametrize("cancel_fails", [False, True])
+def test_live_transport_failure_cancels_or_keeps_session_for_retry(page, frontend_api, cancel_fails):
+    cancelled = []
+    page.route("**/api/jobs/live/live/chunk?*",
+               lambda route: route.fulfill(status=400, body="rejected"))
+
+    def cancel(route):
+        cancelled.append(route.request.url)
+        if cancel_fails and len(cancelled) == 1:
+            route.abort()
+        else:
+            route.fulfill(json={"ok": True})
+
+    page.route("**/api/jobs/live/cancel", cancel)
+    start_mock_live(page, frontend_api)
+    page.evaluate("recordSeconds(1)")
+    expect(page.locator("#sttError")).to_have_text("Some recorded audio could not be delivered")
+    assert page.evaluate("window.stoppedTracks") == 1
+    if cancel_fails:
+        expect(page.locator("#sttMicStop")).to_be_enabled()
+        expect(page.locator("#sttMicStart")).not_to_be_visible()
+        assert page.evaluate("localStorage.getItem('resonance_stt_active_job_id')") == "live"
+        page.locator("#sttMicStop").click()
+    expect(page.locator("#sttMicStart")).to_be_enabled()
+    assert len(cancelled) == (2 if cancel_fails else 1)
+
+
+def test_live_transport_drain_timeout_cancels_undelivered_audio(page, frontend_api):
+    held, stopped = [], []
+    page.clock.install()
+    page.route("**/api/jobs/live/live/chunk?*", lambda route: held.append(route))
+    page.route("**/api/jobs/live/live/stop", lambda route: stopped.append(route))
+    start_mock_live(page, frontend_api)
+    page.evaluate("recordSeconds(1)")
+    page.locator("#sttMicStop").click()
+    expect(page.locator("#sttMicStop")).to_be_disabled()
+    assert len(held) == 1
+    page.clock.fast_forward(30_001)
+    expect(page.locator("#sttMicStart")).to_be_enabled()
+    expect(page.locator("#sttError")).to_have_text("Some recorded audio could not be delivered")
+    assert frontend_api["stopped"] == ["/api/jobs/live/cancel"]
+    assert not stopped
+
+
+def test_system_capture_connection_loss_preserves_session_and_recovers(page, frontend_api):
+    offline = [True]
+    job = {"job_id": "system", "job_type": "stt", "state": "running",
+           "progress_current": 0, "progress_total": 0, "last_event_seq": 1,
+           "result": {"source": "system_audio", "segments": [
+               {"start": 0, "end": 1, "text": "confirmed"}]}}
+    page.route("**/api/system-audio/start?*",
+               lambda route: route.fulfill(json={"job_id": "system"}))
+
+    def status(route):
+        if offline[0]:
+            route.abort()
+        else:
+            route.fulfill(json=job)
+
+    page.route("**/api/jobs/system", status)
+    frontend_api["open"]()
+    page.wait_for_selector("#sttLanguage:not([disabled])")
+    page.locator("#tabSys").click()
+    page.locator("#sttMicStart").click()
+    expect(page.locator("#sttMicStop")).to_be_visible()
+    emit(page, {"type": "progress", "seq": 1, "segment": job["result"]["segments"][0]})
+    page.evaluate("window.streams.at(-1).onerror()")
+    expect(page.locator("#sttError")).to_have_text("Network error")
+    expect(page.locator("#sttMicStop")).to_be_enabled()
+    expect(page.locator("#sttMicStart")).not_to_be_visible()
+    expect(page.locator("#sttSysIncludeMic")).to_be_disabled()
+    expect(page.locator("#sttResultText")).to_have_value("[00:00-00:01] confirmed")
+    assert page.evaluate("localStorage.getItem('resonance_stt_active_job_id')") == "system"
     assert not frontend_api["stopped"]
-    for route in held:
-        route.abort()
+    offline[0] = False
+    page.wait_for_function("window.streams.length === 2")
+    expect(page.locator("#sttError")).not_to_be_visible()
+    expect(page.locator("#sttMicStop")).to_be_enabled()
+    emit(page, {"type": "complete", "seq": 2})
+    expect(page.locator("#sttMicStart")).to_be_enabled()
 
 
 def test_dictation_preview_can_be_discarded_and_sent_as_batch_audio(page, frontend_api):
@@ -298,27 +465,37 @@ def test_dictation_preview_can_be_discarded_and_sent_as_batch_audio(page, fronte
     assert len(frontend_api["jobs"]) == 1
 
 
-def test_system_audio_include_microphone_and_stop(page, frontend_api):
-    starts = []
+def test_system_capture_configuration_is_frozen_until_stop_acknowledged(page, frontend_api):
+    starts, pending_start, pending_stop = [], [], []
 
     def start(route):
         starts.append(parse_qs(urlparse(route.request.url).query))
-        route.fulfill(json={"job_id": "system", "started_at": 100})
+        pending_start.append(route)
 
     page.route("**/api/system-audio/start?*", start)
+    page.route("**/api/system-audio/stop?*", lambda route: pending_stop.append(route))
     frontend_api["open"]()
     page.wait_for_selector("#sttLanguage:not([disabled])")
     page.locator("#tabSys").click()
-    page.locator("#sttSysIncludeMic").check()
+    microphone = page.locator("#sttSysIncludeMic")
+    microphone.check()
     page.locator("#sttMicStart").click()
-    expect(page.locator("#sttMicStop")).to_be_visible()
-    expect(page.locator("#sttSysIncludeMic")).to_be_disabled()
+    expect(microphone).to_be_disabled()
+    expect(page.locator("#sttMicStart")).to_be_disabled()
+    expect(page.locator("#sttMicStop")).not_to_be_visible()
+    assert len(pending_start) == 1
     assert starts[0]["include_microphone"] == ["true"]
-    assert starts[0]["language"] == ["en"]
-    assert page.evaluate("localStorage.getItem('resonance_sttSysIncludeMic')") == "true"
+    pending_start.pop().fulfill(json={"job_id": "system", "started_at": 100})
+    expect(page.locator("#sttMicStop")).to_be_visible()
+    expect(microphone).to_be_disabled()
     page.locator("#sttMicStop").click()
-    expect(page.locator("#sttMicStart")).to_be_visible()
-    assert frontend_api["stopped"] == ["/api/system-audio/stop"]
+    expect(page.locator("#sttMicStop")).to_be_disabled()
+    expect(microphone).to_be_disabled()
+    assert len(pending_stop) == 1
+    pending_stop.pop().fulfill(json={"ok": True})
+    expect(page.locator("#sttMicStart")).to_be_enabled()
+    expect(microphone).to_be_enabled()
+    expect(microphone).to_be_checked()
 
 
 def test_star_field_preserves_geometry_and_interactions(page, frontend_api):
@@ -397,7 +574,12 @@ def test_system_capture_terminal_event_unlocks_controls(page, frontend_api, even
     page.locator("#tabSys").click()
     page.locator("#sttMicStart").click()
     expect(page.locator("#sttMicStop")).to_be_visible()
+    emit(page, {"type": "progress", "current": 1, "total": 0,
+                "segment": {"start": 0, "end": 1, "text": "confirmed"}})
+    emit(page, {"type": "transcript_preview", "generation": 1, "text": "provisional"})
+    expect(page.locator("#sttResultText")).to_have_value("[00:00-00:01] confirmed\n\nprovisional")
     emit(page, event)
+    expect(page.locator("#sttResultText")).to_have_value("[00:00-00:01] confirmed" if event["type"] == "complete" else "")
     expect(page.locator("#sttMicStart")).to_be_enabled()
     expect(page.locator("#sttMicStop")).not_to_be_visible()
     expect(page.locator("#sttSysIncludeMic")).to_be_enabled()

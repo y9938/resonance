@@ -14,26 +14,35 @@ Unified Speech-to-Text (STT) and Text-to-Speech (TTS) API Server.
 
 ## Local
 
-### Deps
+Models are loaded on first use, so initial STT/TTS requests may take longer.
 
-- [**FFmpeg**](https://ffmpeg.org) — audio decoding and streaming backend
-- [**Node.js 22.12+**](https://nodejs.org/) and npm — frontend development and build
-- [**uv**](https://docs.astral.sh/uv/) — fast Python package and project manager
-
-#### macOS
+### macOS
 
 Install Homebrew first: [Apple Silicon](https://brew.sh/) or
 [Intel](tools/macos-intel/README.md#homebrew-on-intel).
 
+Then run these commands from the repository folder:
+
 ```bash
 ./scripts/install-macos.sh
+./r build-macos
+open ~/Applications/Resonance.app
 ```
 
-This creates `.env` if missing, configures the device and installs development dependencies.
-On Intel Macs it installs the tested CPU stack, including Node and FFmpeg, into
-`.deps/macos-intel`; `./r` and the menu bar app select it automatically.
-On Apple Silicon, `dev-deps` rebuilds PyAV against Homebrew FFmpeg so it shares
-libraries with TorchCodec; this requires Xcode Command Line Tools and `pkg-config`.
+The installer creates `.env` if missing and installs dependencies for your Mac.
+The build installs `~/Applications/Resonance.app`, including the frontend.
+Choose **Open in Browser** from Resonance's menu bar icon.
+Rebuild the app if you move the repository folder.
+
+System Audio uses Core Audio taps on macOS 14.2 and later, and ScreenCaptureKit on macOS 13–14.1.
+
+### Linux and Windows
+
+Install these dependencies:
+
+- [**FFmpeg**](https://ffmpeg.org) — audio decoding and streaming backend
+- [**Node.js 22.12+**](https://nodejs.org/) and npm — frontend development and build
+- [**uv**](https://docs.astral.sh/uv/) — fast Python package and project manager
 
 #### Linux
 
@@ -53,9 +62,9 @@ powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | ie
 winget install Microsoft.VCRedist.2015+.x64 -e
 ```
 
-### Run
+#### Run
 
-Use `./r` on Linux/macOS or `.\r` in Windows PowerShell.
+Use `./r` on Linux or `.\r` in Windows PowerShell.
 
 ```bash
 ./r dev-deps
@@ -63,28 +72,13 @@ Use `./r` on Linux/macOS or `.\r` in Windows PowerShell.
 ./r serve-local
 ```
 
-Run `dev-deps` again when dependencies change, and `build-web` after frontend changes.
-For development with automatic reload, use `./r dev`.
-
 Open http://localhost:8000, or the port set by `RESONANCE_PORT`.
-Models are loaded on first use, so initial STT/TTS requests may take longer.
+Run `dev-deps` again when dependencies change, and `build-web` after frontend changes.
 
+### Development
+
+For development with automatic reload, use `./r dev` on macOS/Linux or `.\r dev` on Windows.
 See `./r -h` for tasks and [frontend notes](src/web/README.md) for development details.
-
-On **macOS** you can build `Resonance.app` menu bar app via:
-
-```bash
-./r build-macos
-```
-
-This builds the frontend and installs `~/Applications/Resonance.app`.
-Rebuild the app if you move the repository folder.
-
-If you want to run from terminal with live logs:
-
-```bash
-~/Applications/Resonance.app/Contents/MacOS/Resonance
-```
 
 ## Docker
 

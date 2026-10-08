@@ -242,7 +242,7 @@ def run_stt_job(
             if not cancelled_logged:
                 cancelled_logged = True
                 elapsed = time.time() - start_time
-                log.info(f"STT cancelled: {elapsed:.2f}s")
+                log.info(f"STT cancelled: job_id={job_id}; {elapsed:.2f}s")
                 jobs.update_event(job_id, "cancelled", {})
             return True
         return False
@@ -426,7 +426,7 @@ def run_stt_job(
         )
         jobs.update_event(job_id, "complete", {"duration": completed_duration_sec})
         elapsed = time.time() - start_time
-        log.info(f"STT completed: {elapsed:.2f}s")
+        log.info(f"STT completed: job_id={job_id}; {elapsed:.2f}s")
     except Exception as exc:
         if cancel_requested():
             return
@@ -436,7 +436,10 @@ def run_stt_job(
             if isinstance(exc, DecodedSampleLimitExceeded)
             else str(exc)
         )
-        log.error(f"STT failed: {message} ({elapsed:.2f}s)")
+        if isinstance(exc, (DecodedSampleLimitExceeded, EmptyDecodedAudioError)):
+            log.warning(f"STT input rejected: job_id={job_id}; {message}")
+        else:
+            log.exception(f"STT failed: job_id={job_id}; {message} ({elapsed:.2f}s)")
         jobs.update_event(job_id, "error", {"message": message})
     finally:
         if chunks is not None:

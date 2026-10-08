@@ -1,4 +1,14 @@
 import AppKit
+import Darwin
+import UniformTypeIdentifiers
+
+func logNative(_ message: String, level: String = "INFO") {
+    let time = DateFormatter()
+    time.locale = Locale(identifier: "en_US_POSIX")
+    time.dateFormat = "HH:mm:ss"
+    fputs("\(time.string(from: Date())) \(level) macos: \(message)\n", stderr)
+    fflush(stderr)
+}
 
 let repoRoot: URL = {
     guard let resource = Bundle.main.url(forResource: "RepositoryPath", withExtension: "txt"),
@@ -32,6 +42,7 @@ func readEnvValue(_ key: String, fallback: String) -> String {
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     var backend: Process?
+    private var backendLogURL: URL?
     var port = "8000"
     var isQuitting = false
     var captureEngine: CaptureEngine?
@@ -46,10 +57,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         port = readEnvValue("RESONANCE_PORT", fallback: "8000")
 
-        setupStatusItem()
         startBackend()
+        setupStatusItem()
 
-        // Initialize SCK and IPC
+        // Initialize native audio capture and IPC.
         captureEngine = CaptureEngine()
     }
 
@@ -76,8 +87,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem.separator())
 
         menu.addItem(createMenuItem(title: "Settings", action: #selector(openSettings), key: ",", symbolName: "gearshape"))
-        menu.addItem(createMenuItem(title: "Show Logs", action: #selector(showLogs), key: "l", symbolName: "doc.text"))
-        menu.addItem(createMenuItem(title: "Restart Backend", action: #selector(restartBackend), key: "r", symbolName: "arrow.clockwise"))
+        menu.addItem(createMenuItem(title: "Save Diagnostics…", action: #selector(saveDiagnostics(_:)), key: "", symbolName: "square.and.arrow.down"))
 
         menu.addItem(NSMenuItem.separator())
         menu.addItem(createMenuItem(title: "Quit", action: #selector(quit), key: "q", symbolName: "power"))
@@ -91,35 +101,68 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         backend?.executableURL = URL(fileURLWithPath: "/bin/zsh")
         backend?.arguments = ["-l", "-c", "export PATH=\"/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH\"; exec ./r serve-local"]
         backend?.currentDirectoryURL = repoRoot
-
-        let errorPipe = Pipe()
-        backend?.standardError = errorPipe
-
-        backend?.terminationHandler = { [weak self] process in
-            guard let self = self, !self.isQuitting else { return }
-            if process.terminationStatus != 0 {
-                let errorData = (try? errorPipe.fileHandleForReading.readToEnd()) ?? Data()
-                let errorMessage = String(data: errorData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "No stderr output"
-
-                DispatchQueue.main.async {
-                    let alert = NSAlert()
-                    alert.messageText = "Backend Process Failed (Code \(process.terminationStatus))"
-                    alert.informativeText = "Details:\n\(errorMessage.isEmpty ? "Unknown error (check logs)" : errorMessage)"
-                    alert.alertStyle = .critical
-                    alert.addButton(withTitle: "Quit Resonance")
-
-                    NSApp.activate(ignoringOtherApps: true)
-                    alert.runModal()
-                    NSApp.terminate(nil)
-                }
-            }
-        }
+        var environment = ProcessInfo.processInfo.environment
+        // Swift owns the complete backend log; avoid a second Python file logger.
+        // Empty values also prevent dotenv from restoring file logging from .env.
+        environment["RESONANCE_LOG_TO_FILE"] = "0"
+        environment["RESONANCE_LOG_FILE"] = ""
+        environment["PYTHONUNBUFFERED"] = "1"
+        backend?.environment = environment
 
         do {
+            let logURL = try createBackendLog()
+            let output = try FileHandle(forWritingTo: logURL)
+            defer { try? output.close() }
+            _ = try output.seekToEnd()
+            backendLogURL = logURL
+            // Include native capture diagnostics in the same launch log.
+            fflush(stdout)
+            fflush(stderr)
+            guard dup2(output.fileDescriptor, STDOUT_FILENO) != -1,
+                  dup2(output.fileDescriptor, STDERR_FILENO) != -1 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            let revisionURL = Bundle.main.url(forResource: "BuildRevision", withExtension: "txt")
+            let revision = revisionURL.flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? "unavailable"
+            let started = ISO8601DateFormatter()
+            started.timeZone = .current
+            fputs("# Native session: pid=\(getpid()); started=\(started.string(from: Date())); app_revision=\(revision)\n", stderr)
+            fflush(stderr)
+            // Model downloads write progress to stderr. An unread pipe can fill
+            // and block the backend; inherited stdout can outlive its reader.
+            backend?.standardOutput = output
+            backend?.standardError = output
+
+            backend?.terminationHandler = { [weak self] process in
+                guard process.terminationStatus != 0 else { return }
+                DispatchQueue.main.async {
+                    guard let self = self, self.backend === process, !self.isQuitting else { return }
+                    self.showBackendFailure(
+                        title: "Resonance Service Stopped",
+                        details: "Backend exited with code \(process.terminationStatus), reason \(process.terminationReason.rawValue)."
+                    )
+                }
+            }
             try backend?.run()
         } catch {
-            NSLog("[Resonance] Failed to start backend: \(error)")
+            showBackendFailure(title: "Backend Failed to Start", details: String(describing: error))
         }
+    }
+
+    private func showBackendFailure(title: String, details: String) {
+        logNative("\(title): \(details)", level: "ERROR")
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = backendLogURL == nil ? details :
+            "Save diagnostics and send the ZIP file with a short description of what went wrong. To restart Resonance, choose Quit from the menu, then open the app again."
+        alert.alertStyle = .critical
+        if backendLogURL != nil { alert.addButton(withTitle: "Save Diagnostics…") }
+        alert.addButton(withTitle: "Close")
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn, backendLogURL != nil {
+            saveDiagnostics(nil)
+        }
+        // Keep the menu available for diagnostics and quitting after a startup failure.
     }
 
     @objc func openBrowser() {
@@ -135,19 +178,65 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         try? task.run()
     }
 
-    @objc func showLogs() {
-        let customLogFile = readEnvValue("RESONANCE_LOG_FILE", fallback: "")
-        if !customLogFile.isEmpty {
-            let expandedPath = (customLogFile as NSString).expandingTildeInPath
-            let logURL = URL(fileURLWithPath: expandedPath)
-            let logDir = logURL.deletingLastPathComponent()
-            try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
-            NSWorkspace.shared.open(logDir)
-        } else {
-            let logDir = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent("Library/Logs/Resonance")
-            try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
-            NSWorkspace.shared.open(logDir)
+    private func diagnosticsTool(_ arguments: [String]) -> Process {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = ["-l", "-c", "export PATH=\"/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH\"; exec ./r diagnostics \"$@\"", "resonance-diagnostics"] + arguments
+        process.currentDirectoryURL = repoRoot
+        process.standardInput = FileHandle.nullDevice
+        return process
+    }
+
+    private func createBackendLog() throws -> URL {
+        let process = diagnosticsTool(["--prepare-log"])
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = output
+        try process.run()
+        let data = try output.fileHandleForReading.readToEnd() ?? Data()
+        process.waitUntilExit()
+        let details = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        let path = details.components(separatedBy: .newlines).last ?? ""
+        guard process.terminationStatus == 0, path.hasPrefix("/") else {
+            throw NSError(domain: "Resonance", code: Int(process.terminationStatus),
+                          userInfo: [NSLocalizedDescriptionKey: "Could not prepare the session log.\n\(details.suffix(32_768))"])
+        }
+        return URL(fileURLWithPath: path)
+    }
+
+    @objc func saveDiagnostics(_ sender: NSMenuItem?) {
+        guard let log = backendLogURL else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.zip]
+        panel.nameFieldStringValue = "Resonance Diagnostics.zip"
+        panel.message = "Send the saved ZIP file with what you clicked, what you expected, and what happened."
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        let process = diagnosticsTool(["--log-file", log.path, "--output", destination.path])
+        sender?.isEnabled = false
+        DispatchQueue.global(qos: .utility).async {
+            var failure: String?
+            do {
+                try process.run()
+                process.waitUntilExit()
+                if process.terminationStatus != 0 {
+                    failure = "Could not save diagnostics. Check the current session log for details."
+                }
+            } catch {
+                failure = error.localizedDescription
+            }
+            let message = failure
+            DispatchQueue.main.async {
+                sender?.isEnabled = true
+                if let message {
+                    let alert = NSAlert()
+                    alert.messageText = "Diagnostics Export Failed"
+                    alert.informativeText = message
+                    alert.runModal()
+                } else {
+                    NSWorkspace.shared.activateFileViewerSelecting([destination])
+                }
+            }
         }
     }
 
@@ -169,23 +258,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if process.isRunning {
             kill(-pid, SIGKILL)
             kill(pid, SIGKILL)
-        }
-    }
-
-    @objc func restartBackend() {
-        DispatchQueue.global().async {
-            // Workaround: Mutate state before termination so terminationHandler ignores the exit code
-            self.isQuitting = true
-
-            if let process = self.backend, process.isRunning {
-                self.terminateProcessGroup(process)
-            }
-
-            DispatchQueue.main.async {
-                self.isQuitting = false
-                self.port = readEnvValue("RESONANCE_PORT", fallback: "8000")
-                self.startBackend()
-            }
         }
     }
 

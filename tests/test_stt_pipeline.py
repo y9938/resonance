@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -46,7 +47,10 @@ class FakeLog:
     def info(self, message: str) -> None:
         self.messages.append(message)
 
-    def error(self, message: str) -> None:
+    def exception(self, message: str) -> None:
+        self.messages.append(message)
+
+    def warning(self, message: str) -> None:
         self.messages.append(message)
 
 
@@ -96,18 +100,21 @@ def test_encoded_unknown_duration_progress_has_unknown_total(monkeypatch) -> Non
 
 
 @pytest.mark.parametrize("hint", [None, 0.5])
-def test_encoded_actual_samples_override_duration_hint(monkeypatch, hint) -> None:
+def test_encoded_actual_samples_override_duration_hint(monkeypatch, hint, caplog) -> None:
     monkeypatch.setattr(pipeline, "media_duration", lambda media: hint)
     monkeypatch.setattr(pipeline, "get_sequence_vad_engine", lambda: SilentVAD())
     jobs = FakeJobs()
     run_stt_job(
         job_id="over-limit", input_paths=silent_wav(16001), jobs=jobs,
-        model=FakeModel(), log=FakeLog(), sample_rate=16000,
+        model=FakeModel(), log=logging.getLogger("test_stt_input"), sample_rate=16000,
         chunk_sec=20, max_duration_sec=1,
     )
 
     assert jobs.events[-1] == ("error", {"message": "Audio too long (max 1s)"})
     assert all(event != "complete" for event, _ in jobs.events)
+    assert caplog.records[-1].levelno == logging.WARNING
+    assert caplog.records[-1].exc_info is None
+    assert "over-limit" in caplog.records[-1].message
 
 
 def test_encoded_known_over_limit_fails_before_decode(monkeypatch) -> None:

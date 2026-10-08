@@ -63,7 +63,7 @@ class StatelessSileroVAD:
 def get_shared_vad_engine() -> StatelessSileroVAD:
     global _SHARED_VAD_ENGINE
     if _SHARED_VAD_ENGINE is None:
-        logger.info("Initializing Stateless Silero VAD (ONNX)...")
+        logger.debug("Initializing Stateless Silero VAD (ONNX)...")
         onnx_path = metadata.distribution("silero-vad").locate_file(
             "silero_vad/data/silero_vad.onnx"
         )

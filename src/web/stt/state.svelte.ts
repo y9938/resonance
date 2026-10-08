@@ -1,5 +1,5 @@
 import { finishCapture } from "./capture.svelte";
-import type { AudioInput, Job, JobEvent, Segment } from "../api/types";
+import type { AudioInput, CaptureConfig, Job, JobEvent, Segment } from "../api/types";
 import { request, status, downloadText } from "../api/client";
 import { settings, toast } from "../settings.svelte";
 import { t } from "../i18n/state.svelte";
@@ -30,6 +30,7 @@ export const stt = $state({
   busy: false,
   error: "",
   liveSource: "" as string,
+  captureConfig: null as CaptureConfig | null,
   startedAt: 0,
   view:
     localStorage.getItem("resonance_stt_view_mode") === "continuous"
@@ -41,6 +42,7 @@ export const stt = $state({
 let epoch = 0;
 let stream: EventSource | null = null;
 let finishTimer: ReturnType<typeof setTimeout> | undefined;
+let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 let batchEpoch = 0;
 export function invalidate() {
@@ -48,6 +50,7 @@ export function invalidate() {
   stream?.close();
   stream = null;
   clearTimeout(finishTimer);
+  clearTimeout(reconnectTimer);
 }
 function active(id: string | null) {
   stt.jobId = id;
@@ -68,6 +71,7 @@ export function reset(keepResult = false) {
     stt.closed = {};
     stt.filename = "";
     stt.liveSource = "";
+    stt.captureConfig = null;
   }
 }
 export function hide() {
@@ -76,26 +80,30 @@ export function hide() {
   reset(true);
   refreshHistory();
 }
+// Terminal jobs release capture and discard provisional text; segments stay durable.
+function releaseJob() {
+  clearTimeout(reconnectTimer);
+  finishCapture(stt.jobId);
+  stream?.close();
+  stream = null;
+  active(null);
+  stt.previews = {};
+  refreshHistory();
+}
 export function cancel() {
   const id = stt.jobId;
-  finishCapture(id);
   invalidate();
-  active(null);
+  releaseJob();
   reset();
   if (id)
     void request(`/jobs/${encodeURIComponent(id)}/cancel`, {
       method: "POST",
     }).catch(() => {});
-  refreshHistory();
 }
 function fail(message: string) {
-  finishCapture(stt.jobId);
   stt.error = message;
-  active(null);
-  stream?.close();
-  stream = null;
+  releaseJob();
   reset();
-  refreshHistory();
 }
 export function copyText(segments = stt.segments) {
   return formatLocalizedSpeakerTags(
@@ -147,6 +155,7 @@ export function applyStatus(job: Job) {
   stt.current = Number(job.progress_current) || 0;
   stt.total = Number(job.progress_total) || 0;
   stt.liveSource = job.result?.source || "";
+  stt.captureConfig = job.result?.capture_config || null;
   stt.startedAt = job.started_at || 0;
   stt.result = true;
   stt.progress = !stt.liveSource;
@@ -161,19 +170,16 @@ export function applyStatus(job: Job) {
         : null;
 }
 function finish(token: number) {
-  finishCapture(stt.jobId);
+  releaseJob();
   stt.complete = true;
   stt.label = "progressComplete";
   stt.busy = false;
-  stream?.close();
-  stream = null;
-  active(null);
-  refreshHistory();
   finishTimer = setTimeout(() => {
     if (token === epoch) reset(true);
   }, 800);
 }
 export function subscribe(id: string, token = epoch) {
+  clearTimeout(reconnectTimer);
   stream?.close();
   const connection = new EventSource(
     `/api/jobs/${encodeURIComponent(id)}/events?after=${stt.lastSeq}`,
@@ -241,28 +247,26 @@ export function subscribe(id: string, token = epoch) {
         fail(event.message || t("errProcessingFailed"));
         break;
       case "cancelled":
-        finishCapture(id);
-        active(null);
-        connection.close();
-        stream = null;
+        releaseJob();
         reset();
-        refreshHistory();
         break;
     }
   };
-  connection.onerror = async () => {
-    if (token !== epoch || stream !== connection) return;
-    connection.close();
-    stream = null;
+  async function reconnect() {
     const job = await status(id, "stt", true);
-    if (token !== epoch) return;
-    if (!job || job.state === "failed") {
-      fail(job?.error || t("errNetwork"));
+    if (token !== epoch || stt.jobId !== id) return;
+    if (!job) {
+      stt.error = t("errNetwork");
+      reconnectTimer = setTimeout(reconnect, 1500);
       return;
     }
+    if (job.state === "failed") {
+      fail(job.error || t("errNetwork"));
+      return;
+    }
+    if (stt.error === t("errNetwork")) stt.error = "";
     if (job.state === "cancelled") {
-      finishCapture(id);
-      active(null);
+      releaseJob();
       reset();
       return;
     }
@@ -270,6 +274,12 @@ export function subscribe(id: string, token = epoch) {
     applyStatus(job);
     if (job.state === "completed") finish(token);
     else subscribe(id, token);
+  }
+  connection.onerror = () => {
+    if (token !== epoch || stream !== connection) return;
+    connection.close();
+    stream = null;
+    void reconnect();
   };
 }
 export async function restore(id: string, recovering = false) {
@@ -309,11 +319,13 @@ export function attachLive(
   source: string,
   filename: string,
   startedAt = Date.now() / 1000,
+  captureConfig: CaptureConfig | null = null,
 ) {
   invalidate();
   reset();
   stt.lastSeq = 0;
   stt.liveSource = source;
+  stt.captureConfig = captureConfig;
   stt.filename = filename;
   stt.startedAt = startedAt;
   stt.result = true;

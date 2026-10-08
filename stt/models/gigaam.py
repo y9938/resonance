@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Any
 
 import numpy as np
@@ -51,6 +52,7 @@ class GigaAMAdapter(STTModelAdapter):
 
 
 def load_gigaam(device: str | None = None) -> GigaAMAdapter:
+    started = time.monotonic()
     log.info("Loading STT model (GigaAM-v3)...")
     import gigaam
 
@@ -62,6 +64,5 @@ def load_gigaam(device: str | None = None) -> GigaAMAdapter:
     model = gigaam.load_model(
         "v3_e2e_ctc", device=target_device, download_root=download_root
     )
-    params = sum(p.numel() for p in model.parameters()) / 1e6
-    log.info(f"STT model loaded: {params:.1f}M parameters")
+    log.info("GigaAM-v3 loaded: device=%s; %.1fs", target_device, time.monotonic() - started)
     return GigaAMAdapter(model)

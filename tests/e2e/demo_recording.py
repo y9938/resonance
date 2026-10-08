@@ -131,7 +131,13 @@ def test_demo_flow(page: Page, base_url: str):
     page.wait_for_timeout(1200)
 
     # Demonstrate F5 refresh and restore previous job from the job list
-    page.evaluate("showToast('F5')")
+    # This recording-only cue uses the app's styling without relying on globals.
+    page.evaluate("""() => {
+        const cue = document.createElement('div');
+        cue.className = 'toast';
+        cue.textContent = 'F5';
+        document.body.appendChild(cue);
+    }""")
     page.wait_for_timeout(1200)
     page.reload(wait_until="domcontentloaded")
     page.evaluate("document.body.style.zoom = '1.2'")
@@ -156,4 +162,4 @@ def test_demo_flow(page: Page, base_url: str):
     # Restore latest job
     page.locator("#jobsList button").first.click()
     page.wait_for_selector("#ttsResult.active")
-    page.wait_for_timeout(1500)
+    page.wait_for_timeout(1000)

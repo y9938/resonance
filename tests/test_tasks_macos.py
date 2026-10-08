@@ -73,6 +73,7 @@ def macos_build(tmp_path, monkeypatch):
     monkeypatch.setattr(tasks.sys, "platform", "darwin")
     monkeypatch.setattr(Path, "home", lambda: home)
     monkeypatch.setattr(tasks, "frontend", lambda *args: None)
+    monkeypatch.setattr(tasks, "macos_sdk_env", lambda env: {**env, "SDKROOT": "/test/sdk"})
     (repo / "build").mkdir()
     (repo / "build/AppIcon.icns").write_bytes(b"icon")
     (repo / "build/StatusBarIcon.png").write_bytes(b"status")
@@ -82,6 +83,7 @@ def macos_build(tmp_path, monkeypatch):
 
     def execute(command, env):
         if command[0] == "swiftc":
+            assert command[1:3] == ["-sdk", env["SDKROOT"]]
             Path(command[-1]).write_bytes(b"compiled launcher")
         elif command[0] == "codesign":
             app = Path(command[-1])
@@ -158,3 +160,48 @@ def test_macos_does_not_replace_unrelated_app(macos_build):
     with pytest.raises(FileExistsError):
         tasks.build_macos({})
     assert (destination / "old-version").is_file()
+
+
+def test_sdk_falls_back_and_deduplicates_symlinks(tmp_path, monkeypatch):
+    newest = tmp_path / "MacOSX27.0.sdk"
+    older = tmp_path / "MacOSX26.5.sdk"
+    newest.mkdir()
+    older.mkdir()
+    (tmp_path / "MacOSX.sdk").symlink_to(older)
+    probes = []
+
+    def run(command, **kwargs):
+        if command[0] == "xcrun":
+            return subprocess.CompletedProcess(command, 0, str(newest), "")
+        sdk = kwargs["env"]["SDKROOT"]
+        probes.append(sdk)
+        return subprocess.CompletedProcess(command, int(sdk == str(newest)), "", "incompatible")
+
+    monkeypatch.setattr(tasks.subprocess, "run", run)
+    original = {"PATH": "/usr/bin"}
+    assert tasks.macos_sdk_env(original)["SDKROOT"] == str(older)
+    assert probes == [str(newest), str(older)]
+    assert original == {"PATH": "/usr/bin"}
+
+
+def test_explicit_sdk_failure_is_not_overridden(tmp_path, monkeypatch):
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 1, "", "SDK unsupported")
+
+    monkeypatch.setattr(tasks.subprocess, "run", run)
+    with pytest.raises(RuntimeError, match="explicit SDKROOT"):
+        tasks.macos_sdk_env({"SDKROOT": str(tmp_path)})
+    assert len(calls) == 1
+    assert calls[0][0] == "swiftc"
+
+
+def test_macos_bundle_records_revision_at_build_time(macos_build, monkeypatch):
+    _, destination = macos_build
+    monkeypatch.setattr(tasks.subprocess, "run", lambda command, **kwargs:
+                        subprocess.CompletedProcess(command, 0, "build-revision-dirty\n", ""))
+    tasks.build_macos({})
+    revision = destination / "Contents/Resources/BuildRevision.txt"
+    assert revision.read_text() == "build-revision-dirty"

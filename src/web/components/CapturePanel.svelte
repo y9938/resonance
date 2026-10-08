@@ -7,12 +7,14 @@
     discard,
     setMode,
     setSource,
+    setIncludeMicrophone,
+    canConfigureCapture,
   } from "../stt/capture.svelte";
   import { settings } from "../settings.svelte";
   import { t, helpers } from "../i18n/state.svelte";
 </script>
 
-<div class="mic-box" id="sttMicBox" class:mic-recording={capture.recording}>
+<div class="mic-box" id="sttMicBox" class:mic-recording={capture.active}>
   <div class="mic-header">
     <div
       class="capture-source-tabs"
@@ -60,6 +62,7 @@
           id="sttMicModeDictation"
           type="button"
           class:active={settings.mode === "dictation"}
+          disabled={!canConfigureCapture()}
           onclick={() => setMode("dictation")}>{t("sttModeDictation")}</button
         >
         <button
@@ -67,6 +70,7 @@
           id="sttMicModeLive"
           type="button"
           class:active={settings.mode === "live"}
+          disabled={!canConfigureCapture()}
           onclick={() => setMode("live")}>{t("sttModeLive")}</button
         >
       </div>
@@ -79,11 +83,10 @@
           type="checkbox"
           id="sttSysIncludeMic"
           style="cursor: pointer; width: 14px; height: 14px; accent-color: var(--accent);"
-          checked={settings.includeMic}
-          disabled={capture.starting || capture.recording || capture.stopping}
+          checked={capture.config?.include_microphone ?? settings.includeMic}
+          disabled={!canConfigureCapture()}
           onchange={(event) => {
-            settings.includeMic = event.currentTarget.checked;
-            localStorage.setItem("resonance_sttSysIncludeMic", String(settings.includeMic));
+            setIncludeMicrophone(event.currentTarget.checked);
           }}
         />
         <label
@@ -113,8 +116,8 @@
       id="sttMicStart"
       type="button"
       onclick={start}
-      style:display={capture.recording ? "none" : ""}
-      disabled={capture.starting || capture.stopping}
+      style:display={capture.active ? "none" : ""}
+      disabled={capture.state === "starting" || capture.state === "stopping"}
       >{t(settings.source === "sys" ? "sttSysStart" : "sttMicStart")}</button
     >
     <button
@@ -123,8 +126,8 @@
       type="button"
       style="display: none;"
       onclick={stop}
-      style:display={capture.recording ? "" : "none"}
-      disabled={capture.stopping}>{t("sttMicStop")}</button
+      style:display={capture.active ? "" : "none"}
+      disabled={capture.state === "stopping"}>{t("sttMicStop")}</button
     >
     <button
       class="btn btn-primary"

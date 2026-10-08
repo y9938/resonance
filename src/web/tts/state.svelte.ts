@@ -151,22 +151,24 @@ function reset(keep = false) {
     tts.url = "";
   }
 }
+function releaseJob() {
+  stream?.close();
+  stream = null;
+  active(null);
+  refreshHistory();
+}
 export function cancel() {
   const id = tts.jobId;
   invalidate();
-  active(null);
+  releaseJob();
   reset();
   if (id)
     void request(`/jobs/${id}/cancel`, { method: "POST" }).catch(() => {});
-  refreshHistory();
 }
 function fail(message: string) {
   tts.error = message;
-  active(null);
-  stream?.close();
-  stream = null;
+  releaseJob();
   reset();
-  refreshHistory();
 }
 function apply(job: Job) {
   tts.current = job.progress_current || 0;
@@ -187,10 +189,7 @@ function finish(token: number) {
   tts.busy = false;
   tts.complete = true;
   tts.label = "progressComplete";
-  active(null);
-  stream?.close();
-  stream = null;
-  refreshHistory();
+  releaseJob();
   timer = setTimeout(() => {
     if (token === epoch) reset(true);
   }, 800);
@@ -233,11 +232,8 @@ function subscribe(id: string, token: number, after = 0) {
         fail(event.message || t("errProcessingFailed"));
         break;
       case "cancelled":
-        active(null);
-        connection.close();
-        stream = null;
+        releaseJob();
         reset();
-        refreshHistory();
         break;
     }
   };
@@ -252,7 +248,7 @@ function subscribe(id: string, token: number, after = 0) {
       return;
     }
     if (job.state === "cancelled") {
-      active(null);
+      releaseJob();
       reset();
       return;
     }

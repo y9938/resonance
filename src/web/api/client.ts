@@ -20,7 +20,9 @@ export async function status(
   for (const delay of retries ? [0, 250, 750] : [0]) {
     if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
     try {
-      const job = await request<Job>("/jobs/" + encodeURIComponent(id));
+      const job = await request<Job>("/jobs/" + encodeURIComponent(id), {
+        signal: AbortSignal.timeout(10_000),
+      });
       if (job.job_type === type) return job;
     } catch {
       /* A bounded retry restores live jobs after transient reload failures. */

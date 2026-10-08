@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from functools import lru_cache
 from typing import Any
 
@@ -67,6 +68,7 @@ class WhisperAdapter(STTModelAdapter):
 
 
 def load_whisper(device: str | None = None) -> WhisperAdapter:
+    started = time.monotonic()
     log.info("Loading STT model (Whisper Turbo)...")
     import whisper
 
@@ -74,5 +76,5 @@ def load_whisper(device: str | None = None) -> WhisperAdapter:
     model = whisper.load_model("turbo", device=target_device).eval()
     if model.num_languages != WHISPER_NUM_LANGUAGES:
         raise RuntimeError("Whisper Turbo language vocabulary does not match the configured checkpoint")
-    log.info("Whisper Turbo loaded: device=%s", model.device)
+    log.info("Whisper Turbo loaded: device=%s; %.1fs", model.device, time.monotonic() - started)
     return WhisperAdapter(model)

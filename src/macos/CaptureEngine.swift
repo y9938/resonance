@@ -4,11 +4,11 @@ import CoreMedia
 import AVFoundation
 import Darwin
 
-// Invariant: Layout is mirrored byte-for-byte in Python's _HEADER_FMT ('<4sIIIIIQIIi20x').
+// Invariant: Layout is mirrored byte-for-byte in Python's _HEADER_FMT ('<4sIIIIIQIIiII12x').
 // Any field change here requires a matching change in stt/system_audio.py.
 public struct IPCHeader {
     var magic: UInt32 = 0x5245534F       // "RESO"
-    var version: UInt32 = 1
+    var version: UInt32 = 2
     var sampleRate: UInt32 = 16000
     var channels: UInt32 = 1             // 1=System only, 2=System + Microphone
     var framesPerSlot: UInt32 = 4096
@@ -17,10 +17,12 @@ public struct IPCHeader {
     var command: UInt32 = 0              // 0=IDLE, 1=START_SYS, 2=STOP, 3=START_SYS_MIC
     var status: UInt32 = 0               // 0=IDLE, 1=STARTING, 2=CAPTURING, 3=FAILED
     var errorCode: Int32 = 0
-    var padding: (UInt32, UInt32, UInt32, UInt32, UInt32) = (0, 0, 0, 0, 0)
+    var requestID: UInt32 = 0            // Published by Python after command
+    var responseID: UInt32 = 0           // Published by Swift after status/errorCode
+    var padding: (UInt32, UInt32, UInt32) = (0, 0, 0)
 }
 
-class CaptureEngine: NSObject, SCStreamOutput {
+class CaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate {
     private var shmFd: Int32 = -1
     private var shmPointer: UnsafeMutableRawPointer!
     private let shmTotalSize: Int
@@ -36,10 +38,14 @@ class CaptureEngine: NSObject, SCStreamOutput {
     private var header: UnsafeMutablePointer<IPCHeader>!
     private var audioSlots: UnsafeMutablePointer<Float32>!
 
+    private let stateQueue = DispatchQueue(label: "com.resonance.capture")
+    private var activeRequestID: UInt32?
     private let audioLock = NSLock()
     private var internalBuffer: [Float32] = []
     private var micBuffer: [Float32] = []
     private var stream: SCStream?
+    private var stopAudioTap: (() -> Void)?
+    private var audioRequest: UInt32?
     private var audioEngine: AVAudioEngine?
 
     override init() {
@@ -87,7 +93,11 @@ class CaptureEngine: NSObject, SCStreamOutput {
             fatalError("[Resonance] sem_open failed: \(String(cString: strerror(errno)))")
         }
 
-        NSLog("[Resonance] IPC ready — %@", shmPath)
+        if #available(macOS 14.2, *) {
+            logNative("Native capture initialized: backend=Core Audio taps")
+        } else {
+            logNative("Native capture initialized: backend=ScreenCaptureKit")
+        }
     }
 
     private func startCommandListener() {
@@ -95,101 +105,194 @@ class CaptureEngine: NSObject, SCStreamOutput {
             guard let self else { return }
             while true {
                 sem_wait(self.cmdSemaphore)
-                switch self.header.pointee.command {
-                case 1: self.startCapture(includeMicrophone: false)
-                case 2: self.stopCapture()
-                case 3: self.startCapture(includeMicrophone: true)
-                default: break
+                self.stateQueue.async {
+                    let request = self.header.pointee.requestID
+                    guard request != self.activeRequestID else { return }
+                    self.activeRequestID = request
+                    switch self.header.pointee.command {
+                    case 1: self.startCapture(includeMicrophone: false, request: request)
+                    case 2:
+                        self.stopResources()
+                        self.respond(status: 0, request: request)
+                        sem_post(self.dataSemaphore)
+                        logNative("System capture stopped: request=\(request)")
+                    case 3: self.startCapture(includeMicrophone: true, request: request)
+                    default: break
+                    }
                 }
             }
         }
     }
 
-    private func startCapture(includeMicrophone: Bool) {
-        header.pointee.status    = 1  // STARTING
-        header.pointee.errorCode = 0
-        header.pointee.channels  = includeMicrophone ? 2 : 1
+    // Lifecycle methods and asynchronous completions run on stateQueue.
+    // A newer request invalidates a callback immediately, before its command is handled.
+    private func isCurrent(_ request: UInt32) -> Bool {
+        activeRequestID == request && header.pointee.requestID == request
+    }
 
-        // Do NOT gate on CGPreflightScreenCaptureAccess() — it always returns false
-        // for ad-hoc / unsigned dev builds on macOS Sonoma/Sequoia (Cap issue #1722).
-        // SCShareableContent will surface the TCC error (-3801) in its completionHandler.
+    private func respond(status: UInt32, error: Int32 = 0, request: UInt32) {
+        guard isCurrent(request) else { return }
+        header.pointee.errorCode = error
+        header.pointee.status = status
+        header.pointee.responseID = request
+    }
+
+    private func failCapture(_ error: NSError, request: UInt32) {
+        guard isCurrent(request) else { return }
+        stopResources()
+        respond(status: 3, error: Int32(error.code), request: request)
+        sem_post(dataSemaphore)
+        logNative("System capture failed: request=\(request); \(error)", level: "ERROR")
+    }
+
+    private func startCapture(includeMicrophone: Bool, request: UInt32) {
+        guard isCurrent(request) else { return }
+        stopResources()
+        header.pointee.status = 1  // STARTING; responseID remains the previous response.
+        header.pointee.errorCode = 0
+        header.pointee.channels = includeMicrophone ? 2 : 1
+        header.pointee.writeIndex = 0
+
+        audioLock.lock()
+        audioRequest = request
+        audioLock.unlock()
+
+        if includeMicrophone {
+            // Permission dialogs must not block STOP or a newer capture request.
+            AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
+                guard let self else { return }
+                self.stateQueue.async {
+                    guard self.isCurrent(request) else { return }
+                    guard granted else {
+                        self.failCapture(NSError(domain: "ResonanceCapture", code: -2,
+                                                 userInfo: [NSLocalizedDescriptionKey: "Microphone permission required"]),
+                                         request: request)
+                        return
+                    }
+                    do {
+                        try self.startMicrophoneCapture(request: request)
+                        self.startSystemCapture(request: request)
+                    } catch {
+                        self.failCapture(NSError(domain: "ResonanceCapture", code: -3,
+                                                 userInfo: [NSLocalizedDescriptionKey: "Microphone start failed",
+                                                            NSUnderlyingErrorKey: error]), request: request)
+                    }
+                }
+            }
+        } else {
+            startSystemCapture(request: request)
+        }
+    }
+
+    private func startSystemCapture(request: UInt32) {
+        // Selection is based only on API availability; errors never switch permission systems.
+        if #available(macOS 14.2, *) {
+            let tap = CoreAudioTap(onAudio: { [weak self] frames in
+                guard let self else { return }
+                self.stateQueue.async {
+                    guard self.isCurrent(request) else { return }
+                    self.audioLock.lock()
+                    if self.audioRequest == request && self.header.pointee.status == 2 {
+                        self.internalBuffer.append(contentsOf: frames)
+                        self.processSlotsLocked()
+                    }
+                    self.audioLock.unlock()
+                }
+            }, onStarted: { [weak self] in
+                guard let self else { return }
+                self.stateQueue.async {
+                    guard self.isCurrent(request) else { return }
+                    // An idle tap may emit no buffers until another process plays audio.
+                    self.respond(status: 2, request: request)
+                    logNative("System capture started: request=\(request); channels=\(self.header.pointee.channels)")
+                }
+            }, onError: { [weak self] error in
+                guard let self else { return }
+                self.stateQueue.async { self.failCapture(error, request: request) }
+            })
+            stopAudioTap = { tap.stop() }
+            tap.start()
+            return
+        }
+
+        // Let ScreenCaptureKit request permission and report its own TCC error.
         SCShareableContent.getExcludingDesktopWindows(false, onScreenWindowsOnly: true) { [weak self] content, error in
             guard let self else { return }
-
-            if let error {
-                NSLog("[Resonance] SCShareableContent failed: %@", error.localizedDescription)
-                self.header.pointee.status    = 3  // FAILED
-                self.header.pointee.errorCode = Int32((error as NSError).code)
-                self.header.pointee.command   = 0
-                return
-            }
-            guard let display = content?.displays.first else {
-                NSLog("[Resonance] No displays found")
-                self.header.pointee.status    = 3
-                self.header.pointee.errorCode = -1
-                self.header.pointee.command   = 0
-                return
-            }
-
-            let filter = SCContentFilter(display: display, excludingWindows: [])
-
-            let config = SCStreamConfiguration()
-            config.capturesAudio            = true
-            config.excludesCurrentProcessAudio = true
-            config.sampleRate               = 16000
-            config.channelCount             = 1
-            // Minimize GPU/CPU cost: SCK requires a video stream, so use the smallest
-            // possible frame (2×2 px, 1 fps) to avoid rasterizing the full display.
-            config.width                    = 2
-            config.height                   = 2
-            config.minimumFrameInterval     = CMTime(value: 1, timescale: 1)
-            config.queueDepth               = 1
-            config.showsCursor              = false
-
-            let newStream = SCStream(filter: filter, configuration: config, delegate: nil)
-            do {
-                try newStream.addStreamOutput(self, type: .audio,
-                                              sampleHandlerQueue: DispatchQueue(label: "com.resonance.audio",
-                                                                                qos: .userInteractive))
-            } catch {
-                NSLog("[Resonance] addStreamOutput failed: %@", error.localizedDescription)
-                self.header.pointee.status    = 3
-                self.header.pointee.errorCode = Int32((error as NSError).code)
-                self.header.pointee.command   = 0
-                return
-            }
-
-            if includeMicrophone {
-                self.startMicrophoneCapture()
-            }
-
-            newStream.startCapture { [weak self] error in
-                guard let self else { return }
+            self.stateQueue.async {
+                guard self.isCurrent(request) else { return }
                 if let error {
-                    NSLog("[Resonance] startCapture failed: %@", error.localizedDescription)
-                    self.header.pointee.status    = 3
-                    self.header.pointee.errorCode = Int32((error as NSError).code)
-                    self.header.pointee.command   = 0
-                    self.stopMicrophoneCapture()
+                    self.failCapture(error as NSError, request: request)
+                    return
+                }
+                guard let display = content?.displays.first else {
+                    self.failCapture(NSError(domain: "ResonanceCapture", code: -1,
+                                             userInfo: [NSLocalizedDescriptionKey: "No displays found"]), request: request)
+                    return
+                }
+                self.prepareStream(display: display, request: request)
+            }
+        }
+    }
+
+    private func prepareStream(display: SCDisplay, request: UInt32) {
+        let filter = SCContentFilter(display: display, excludingWindows: [])
+        let config = SCStreamConfiguration()
+        config.capturesAudio = true
+        config.excludesCurrentProcessAudio = true
+        config.sampleRate = 16000
+        config.channelCount = 1
+        config.width = 2
+        config.height = 2
+        config.minimumFrameInterval = CMTime(value: 1, timescale: 1)
+        config.queueDepth = 1
+        config.showsCursor = false
+
+        let newStream = SCStream(filter: filter, configuration: config, delegate: self)
+        do {
+            try newStream.addStreamOutput(self, type: .audio,
+                                          sampleHandlerQueue: DispatchQueue(label: "com.resonance.audio",
+                                                                            qos: .userInteractive))
+        } catch {
+            failCapture(error as NSError, request: request)
+            return
+        }
+        audioLock.lock()
+        stream = newStream
+        audioLock.unlock()
+
+        startStream(newStream, request: request)
+    }
+
+    private func startStream(_ newStream: SCStream, request: UInt32) {
+        guard isCurrent(request) else { return }
+        newStream.startCapture { [weak self] error in
+            guard let self else { return }
+            self.stateQueue.async {
+                guard self.isCurrent(request) else {
+                    // A cancelled start may still succeed inside ScreenCaptureKit.
+                    if error == nil { newStream.stopCapture { _ in } }
+                    return
+                }
+                if let error {
+                    self.failCapture(error as NSError, request: request)
                 } else {
-                    self.stream = newStream
-                    self.header.pointee.status  = 2  // CAPTURING
-                    self.header.pointee.command = 0
-                    NSLog("[Resonance] SCK System Audio Capture Started (channels: %d)", self.header.pointee.channels)
+                    self.respond(status: 2, request: request)
+                    logNative("System capture started: request=\(request); channels=\(self.header.pointee.channels)")
                 }
             }
         }
     }
 
-    private func startMicrophoneCapture() {
+    private func startMicrophoneCapture(request: UInt32) throws {
         let engine = AVAudioEngine()
         let inputNode = engine.inputNode
         let inputFormat = inputNode.inputFormat(forBus: 0)
 
-        guard let targetFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false),
+        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0,
+              let targetFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false),
               let converter = AVAudioConverter(from: inputFormat, to: targetFormat) else {
-            NSLog("[Resonance] Failed to create AVAudioConverter for microphone")
-            return
+            throw NSError(domain: "ResonanceCapture", code: -3,
+                          userInfo: [NSLocalizedDescriptionKey: "Microphone audio format unavailable"])
         }
 
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
@@ -211,39 +314,40 @@ class CaptureEngine: NSObject, SCStreamOutput {
             if let floatChannelData = convertedBuffer.floatChannelData {
                 let frames = UnsafeBufferPointer(start: floatChannelData[0], count: Int(convertedBuffer.frameLength))
                 self.audioLock.lock()
-                self.micBuffer.append(contentsOf: frames)
-                self.processSlotsLocked()
+                if self.audioRequest == request && self.header.pointee.requestID == request && self.header.pointee.status == 2 {
+                    self.micBuffer.append(contentsOf: frames)
+                    self.processSlotsLocked()
+                }
                 self.audioLock.unlock()
             }
         }
 
-        do {
-            try engine.start()
-            self.audioEngine = engine
-        } catch {
-            NSLog("[Resonance] Failed to start AVAudioEngine: %@", error.localizedDescription)
-        }
+        audioEngine = engine  // Retain it before start so failure cleanup also removes the tap.
+        try engine.start()
     }
 
-    private func stopMicrophoneCapture() {
+    private func stopResources() {
+        audioLock.lock()
+        let previousStream = stream
+        stream = nil
+        audioRequest = nil
+        internalBuffer.removeAll()
+        micBuffer.removeAll()
+        audioLock.unlock()
+        stopAudioTap?()
+        stopAudioTap = nil
+        previousStream?.stopCapture { _ in }
+        // Audio callbacks use audioLock; do not hold it while waiting for the engine to stop.
         audioEngine?.stop()
         audioEngine?.inputNode.removeTap(onBus: 0)
         audioEngine = nil
-        micBuffer.removeAll()
     }
 
-    private func stopCapture() {
-        audioLock.lock()
-        stream?.stopCapture { _ in }
-        stream = nil
-        stopMicrophoneCapture()
-        internalBuffer.removeAll()
-        header.pointee.status  = 0  // IDLE
-        header.pointee.command = 0
-        audioLock.unlock()
-        // Unblock Python reader that is blocked on data_sem.acquire().
-        sem_post(dataSemaphore)
-        NSLog("[Resonance] SCK System Audio Capture Stopped")
+    func stream(_ stream: SCStream, didStopWithError error: Error) {
+        stateQueue.async {
+            guard self.stream === stream, let request = self.activeRequestID else { return }
+            self.failCapture(error as NSError, request: request)
+        }
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
@@ -266,58 +370,29 @@ class CaptureEngine: NSObject, SCStreamOutput {
             let frames = UnsafeBufferPointer(start: mData.bindMemory(to: Float32.self, capacity: frameCount),
                                              count: frameCount)
             audioLock.lock()
-            internalBuffer.append(contentsOf: frames)
-            processSlotsLocked()
+            if self.stream === stream && header.pointee.status == 2 &&
+                header.pointee.requestID == header.pointee.responseID {
+                internalBuffer.append(contentsOf: frames)
+                processSlotsLocked()
+            }
             audioLock.unlock()
         }
     }
 
     // Assumes: audioLock is held by caller.
     // Invariant: Interleaved 2-channel slot layout: [sys_0, mic_0, sys_1, mic_1, ...].
-    // Non-blocking sync: If micBuffer is behind sysChunk, pad remainder with zeros so system audio never stalls.
+    // With microphone included, its clock keeps recording through system-audio silence.
     private func processSlotsLocked() {
         let framesPerSlot = Int(header.pointee.framesPerSlot)
         let channels = Int(header.pointee.channels)
-
-        if channels == 1 {
-            while internalBuffer.count >= framesPerSlot {
-                let slotIndex   = Int(header.pointee.writeIndex % UInt64(header.pointee.slotCount))
-                let destination = audioSlots.advanced(by: slotIndex * framesPerSlot)
-                internalBuffer.withUnsafeBufferPointer { src in
-                    destination.update(from: src.baseAddress!, count: framesPerSlot)
-                }
-                internalBuffer.removeFirst(framesPerSlot)
-                header.pointee.writeIndex += 1
-                sem_post(dataSemaphore)
-            }
-        } else if channels == 2 {
-            while internalBuffer.count >= framesPerSlot {
-                let slotIndex   = Int(header.pointee.writeIndex % UInt64(header.pointee.slotCount))
-                let destination = audioSlots.advanced(by: slotIndex * framesPerSlot * 2)
-
-                let sysChunk = Array(internalBuffer.prefix(framesPerSlot))
-                internalBuffer.removeFirst(framesPerSlot)
-
-                var micChunk: [Float32]
-                if micBuffer.count >= framesPerSlot {
-                    micChunk = Array(micBuffer.prefix(framesPerSlot))
-                    micBuffer.removeFirst(framesPerSlot)
-                } else {
-                    micChunk = Array(micBuffer)
-                    micBuffer.removeAll()
-                    if micChunk.count < framesPerSlot {
-                        micChunk.append(contentsOf: [Float32](repeating: 0.0, count: framesPerSlot - micChunk.count))
-                    }
-                }
-
-                for i in 0..<framesPerSlot {
-                    destination[i * 2]     = sysChunk[i]
-                    destination[i * 2 + 1] = micChunk[i]
-                }
-
-                header.pointee.writeIndex += 1
-                sem_post(dataSemaphore)
-            }
+        drainCaptureBuffers(system: &internalBuffer, microphone: &micBuffer,
+                            channels: channels, framesPerSlot: framesPerSlot,
+                            slotCount: Int(header.pointee.slotCount)) { slot in
+            let slotIndex = Int(header.pointee.writeIndex % UInt64(header.pointee.slotCount))
+            let destination = audioSlots.advanced(by: slotIndex * framesPerSlot * channels)
+            destination.update(from: slot.baseAddress!, count: slot.count)
+            header.pointee.writeIndex += 1
+            sem_post(dataSemaphore)
         }
     }
 }

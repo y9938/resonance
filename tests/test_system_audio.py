@@ -7,13 +7,7 @@ import pytest
 from stt.system_audio import (
     LinuxPulseParecStrategy,
     WindowsWasapiStrategy,
-    get_system_audio_capture,
 )
-
-
-def test_system_audio_factory():
-    strategy = get_system_audio_capture(include_microphone=True)
-    assert strategy is not None
 
 
 def test_dual_stream_mixer_logic():

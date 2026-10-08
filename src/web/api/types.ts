@@ -8,7 +8,13 @@ export interface Segment {
   source?: string;
   generation?: number;
 }
+export interface CaptureConfig {
+  language: string;
+  model: string;
+  include_microphone: boolean;
+}
 export interface Result {
+  capture_config?: CaptureConfig;
   filename?: string;
   source?: "mic_live" | "system_audio";
   segments?: Segment[];

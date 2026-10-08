@@ -13,6 +13,7 @@ export class LiveTransport {
   private pendingDuration = 0;
   private sequence = 1;
   private queue: Promise<void> | null = null;
+  private controller = new AbortController();
   failed = false;
   backpressure = false;
   constructor(
@@ -51,32 +52,43 @@ export class LiveTransport {
     });
     return this.queue;
   }
+  async drain(): Promise<void> {
+    const timeout = setTimeout(() => {
+      this.failed = true;
+      this.controller.abort();
+      this.onFailure(new Error("Live audio drain timed out"));
+    }, 30_000);
+    try {
+      await this.flush();
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
   private async send(
     item: Pending,
   ): Promise<{ retry?: boolean; error?: Error }> {
     const body = new FormData();
     body.append("file", item.blob, "chunk.wav");
-    let response: Response;
+    let response: Response | undefined;
+    const signal = AbortSignal.any([
+      this.controller.signal, AbortSignal.timeout(10_000),
+    ]);
     try {
       response = await fetch(
         `/api/jobs/live/${encodeURIComponent(this.jobId)}/chunk?sequence=${item.sequence}`,
-        { method: "POST", body },
+        { method: "POST", body, signal },
       );
-    } catch (error) {
-      return { retry: true, error: error as Error };
-    }
-    if (!response.ok)
-      return {
-        retry: response.status >= 500,
-        error: new Error(await response.text()),
-      };
-    try {
+      if (!response.ok)
+        return {
+          retry: response.status >= 500,
+          error: new Error(await response.text()),
+        };
       const payload = await response.json();
       if (payload.ack_sequence !== item.sequence)
         throw new Error("Live audio sequence acknowledgement mismatch");
       return {};
     } catch (error) {
-      return { error: error as Error };
+      return { retry: !response || signal.aborted, error: error as Error };
     }
   }
   private async pump() {
@@ -90,6 +102,7 @@ export class LiveTransport {
         if (this.failed) return;
         result = await this.send(item);
       } while (result.retry && item.attempts < 4 && !this.failed);
+      if (this.failed) return;
       if (result.error) {
         this.failed = true;
         this.onFailure(result.error);
@@ -104,5 +117,6 @@ export class LiveTransport {
   }
   dispose() {
     this.failed = true;
+    this.controller.abort();
   }
 }

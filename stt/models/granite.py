@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Any
 
 import numpy as np
@@ -70,6 +71,7 @@ class GraniteAdapter(STTModelAdapter):
 
 
 def load_granite(device: str | None = None) -> GraniteAdapter:
+    started = time.monotonic()
     log.info("Loading STT model (IBM Granite Speech 4.1 Plus)...")
     import torch
     from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
@@ -89,5 +91,5 @@ def load_granite(device: str | None = None) -> GraniteAdapter:
         dtype=torch_dtype,
     ).to(target_device)
 
-    log.info(f"Granite model loaded: device={target_device}, dtype={torch_dtype}")
+    log.info("Granite loaded: device=%s, dtype=%s; %.1fs", target_device, torch_dtype, time.monotonic() - started)
     return GraniteAdapter(model, processor, target_device)

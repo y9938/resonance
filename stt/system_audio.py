@@ -7,6 +7,7 @@ import os
 import shutil
 import struct
 import sys
+import threading
 import time
 from collections.abc import Generator
 from typing import Any
@@ -31,6 +32,7 @@ class SystemAudioStrategy(abc.ABC):
 
 
 class MacOSSharedMemoryStrategy(SystemAudioStrategy):
+    _COMMAND_LOCK = threading.RLock()
     # Semaphore names must match Swift exactly and stay ≤ 30 chars (Darwin PSHMNAMLEN).
     _SHM_PATH     = "/tmp/res_audio_shm"
     _DATA_SEM     = "/res_aud_data"
@@ -39,13 +41,15 @@ class MacOSSharedMemoryStrategy(SystemAudioStrategy):
 
     # Invariants: Must exactly match IPCHeader memory layout compiled in Swift.
     # Fields: magic(4s) version(I) sampleRate(I) channels(I) framesPerSlot(I)
-    #         slotCount(I) writeIndex(Q) command(I) status(I) errorCode(i) padding(5×UInt32=20x)
-    # Total: 44 data bytes + 20 padding = 64 bytes (one ARM64 cache line).
-    _HEADER_FMT  = '<4sIIIIIQIIi20x'
+    #         slotCount(I) writeIndex(Q) command(I) status(I) errorCode(i)
+    #         requestID(I) responseID(I) padding(3×UInt32=12x)
+    _HEADER_FMT  = '<4sIIIIIQIIiII12x'
     _HEADER_SIZE = 64
     _CMD_OFFSET    = 32
     _STATUS_OFFSET = 36
     _ERROR_OFFSET  = 40
+    _REQUEST_OFFSET = 44
+    _RESPONSE_OFFSET = 48
 
     _STATUS_IDLE     = 0
     _STATUS_STARTING = 1
@@ -56,6 +60,8 @@ class MacOSSharedMemoryStrategy(SystemAudioStrategy):
         import posix_ipc
 
         self.include_microphone = include_microphone
+        self._stopped = threading.Event()
+        self._request_id: int | None = None
 
         try:
             fd = os.open(self._SHM_PATH, os.O_RDWR)
@@ -70,49 +76,83 @@ class MacOSSharedMemoryStrategy(SystemAudioStrategy):
         except posix_ipc.ExistentialError:
             raise RuntimeError("System capture app is not running (semaphores not found).")
 
-        (_, _, self.rate, self.channels, self.frames_per_slot, self.slot_count,
-         _, _, _, _) = struct.unpack(self._HEADER_FMT, bytes(self.shm[:self._HEADER_SIZE]))
-        self.bytes_per_slot = self.frames_per_slot * (self.channels or 1) * 4
+        (_, version, self.rate, self.channels, self.frames_per_slot, self.slot_count,
+         _, _, _, _, _, _) = struct.unpack(self._HEADER_FMT, bytes(self.shm[:self._HEADER_SIZE]))
+        if version != 2:
+            self.shm.close()
+            self.data_sem.close()
+            self.cmd_sem.close()
+            raise RuntimeError("System capture protocol changed. Rebuild and reopen Resonance.app.")
         self.read_idx = 0
 
+    def _send_command(self, command: int) -> int:
+        with self._COMMAND_LOCK:
+            request_id = (struct.unpack_from('<I', self.shm, self._REQUEST_OFFSET)[0] + 1) & 0xFFFFFFFF
+            struct.pack_into('<I', self.shm, self._CMD_OFFSET, command)
+            struct.pack_into('<I', self.shm, self._REQUEST_OFFSET, request_id)
+            self._request_id = request_id
+            self.cmd_sem.release()
+            return request_id
+
+    def _raise_capture_error(self, error_code: int) -> None:
+        if error_code == -3801:
+            raise RuntimeError(
+                "Screen & System Audio Recording permission is required. "
+                "Grant it in System Settings → Privacy & Security, then reopen Resonance if macOS requests it."
+            )
+        if error_code == -2:
+            raise RuntimeError("Microphone permission is required for Resonance in System Settings → Privacy & Security.")
+        if error_code == -3:
+            raise RuntimeError("The requested microphone is unavailable or its audio format is unsupported.")
+        raise RuntimeError(f"System audio capture failed (code {error_code}).")
+
     def start_capture(self) -> None:
-        # Caller obligation: Swift must update header.status within _START_TIMEOUT seconds.
-        cmd_val = 3 if self.include_microphone else 1
-        struct.pack_into('<I', self.shm, self._CMD_OFFSET, cmd_val)
-        self.cmd_sem.release()
-
-        deadline = time.monotonic() + self._START_TIMEOUT
-        while time.monotonic() < deadline:
-            status = struct.unpack_from('<I', self.shm, self._STATUS_OFFSET)[0]
-            if status == self._STATUS_CAPTURING:
-                return
-            if status == self._STATUS_FAILED:
-                error_code = struct.unpack_from('<i', self.shm, self._ERROR_OFFSET)[0]
-                if error_code == -3801:
-                    raise RuntimeError(
-                        "Screen & System Audio Recording permission is required. "
-                        "Grant it in System Settings → Privacy & Security, then restart Resonance."
-                    )
-                raise RuntimeError(f"System audio capture failed in ScreenCaptureKit (code {error_code}).")
-            time.sleep(0.05)
-
-        raise RuntimeError(f"System capture app did not confirm start within {self._START_TIMEOUT:.0f}s.")
+        self._stopped.clear()
+        request_id = self._send_command(3 if self.include_microphone else 1)
+        try:
+            deadline = time.monotonic() + self._START_TIMEOUT
+            while time.monotonic() < deadline:
+                if struct.unpack_from('<I', self.shm, self._REQUEST_OFFSET)[0] != request_id:
+                    raise RuntimeError("System capture start was superseded by another request.")
+                response_id = struct.unpack_from('<I', self.shm, self._RESPONSE_OFFSET)[0]
+                if response_id == request_id:
+                    status = struct.unpack_from('<I', self.shm, self._STATUS_OFFSET)[0]
+                    if status == self._STATUS_CAPTURING:
+                        self.read_idx = 0
+                        return
+                    if status == self._STATUS_FAILED:
+                        self._raise_capture_error(struct.unpack_from('<i', self.shm, self._ERROR_OFFSET)[0])
+                time.sleep(0.05)
+            raise RuntimeError(f"System capture app did not confirm start within {self._START_TIMEOUT:.0f}s.")
+        except Exception:
+            # Invalidate pending native callbacks even when start never returned successfully.
+            self.stop_capture()
+            raise
 
     def stop_capture(self) -> None:
-        struct.pack_into('<I', self.shm, self._CMD_OFFSET, 2)
-        self.cmd_sem.release()
+        self._stopped.set()
+        with self._COMMAND_LOCK:
+            # Cleanup of an old session must not stop a newer session's stream.
+            if self._request_id == struct.unpack_from('<I', self.shm, self._REQUEST_OFFSET)[0]:
+                self._send_command(2)
         # Unblock the reader thread blocked on data_sem.acquire().
         self.data_sem.release()
 
     def get_audio_stream(self) -> Generator[tuple[str, np.ndarray], None, None]:
-        while True:
+        while not self._stopped.is_set():
             self.data_sem.acquire()
 
             (_, _, _, channels, frames_per_slot, slot_count, current_write_idx,
-             current_cmd, _, _) = struct.unpack(self._HEADER_FMT, bytes(self.shm[:self._HEADER_SIZE]))
+             current_cmd, status, error_code, request_id, _) = struct.unpack(self._HEADER_FMT, bytes(self.shm[:self._HEADER_SIZE]))
 
-            if current_cmd == 2:
+            if self._stopped.is_set() or current_cmd == 2 or status == self._STATUS_IDLE:
                 break
+            if self._request_id is not None and request_id != self._request_id:
+                break
+            if status == self._STATUS_FAILED:
+                self._raise_capture_error(error_code)
+            if self.read_idx >= current_write_idx:
+                continue
 
             # Tail-drop mitigation: STT inference is slower than real-time capture.
             if current_write_idx > self.read_idx + slot_count:
@@ -136,13 +176,13 @@ class MacOSSharedMemoryStrategy(SystemAudioStrategy):
                 yield ("sys", sys_chunk)
                 yield ("mic", mic_chunk)
             else:
-                # Zero-copy invariant: offset must map to a contiguous SHM block.
+                # The producer can reuse this slot while STT is still processing it.
                 audio_chunk = np.ndarray(
                     (frames_per_slot,),
                     dtype=np.float32,
                     buffer=self.shm,
                     offset=offset,
-                )
+                ).copy()
                 self.read_idx += 1
                 yield ("sys", audio_chunk)
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -15,6 +16,7 @@ log = logging.getLogger("resonance.server")
 
 
 def load_silero_tts(device: str | None = None) -> Any:
+    started = time.monotonic()
     log.info("Loading TTS model (Silero v5_cis_base)...")
     import torch
 
@@ -27,7 +29,7 @@ def load_silero_tts(device: str | None = None) -> Any:
         trust_repo=True,
     )
     model.to(torch.device(target_device))
-    log.info("TTS model loaded")
+    log.info("Silero TTS loaded: device=%s; %.1fs", target_device, time.monotonic() - started)
     return model
 
 

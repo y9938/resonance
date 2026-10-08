@@ -134,7 +134,7 @@ class UnixSocketIPCServer:
         except OSError:
             pass
 
-        log.info(f"UNIX domain socket IPC listening on {self.socket_path}")
+        log.debug(f"UNIX domain socket IPC listening on {self.socket_path}")
 
     async def stop(self) -> None:
         if self._server is not None:
@@ -146,7 +146,7 @@ class UnixSocketIPCServer:
                 os.unlink(self.socket_path)
             except OSError:
                 pass
-        log.info("UNIX domain socket IPC server stopped")
+        log.debug("UNIX domain socket IPC server stopped")
 
 
 class WindowsNamedPipeIPCServer:
@@ -189,7 +189,7 @@ class WindowsNamedPipeIPCServer:
         # Assumes: Running on Windows ProactorEventLoop with IOCP named pipe support
         if hasattr(loop, "start_serving_pipe"):
             self._servers = await loop.start_serving_pipe(protocol_factory, self.pipe_name)
-            log.info(f"Windows Named Pipe IPC listening on {self.pipe_name}")
+            log.debug(f"Windows Named Pipe IPC listening on {self.pipe_name}")
         else:
             log.warning("Current event loop does not support Windows named pipes (requires ProactorEventLoop)")
 
@@ -198,7 +198,7 @@ class WindowsNamedPipeIPCServer:
             with suppress(Exception):
                 s.close()
         self._servers.clear()
-        log.info("Windows Named Pipe IPC server stopped")
+        log.debug("Windows Named Pipe IPC server stopped")
 
 
 def create_local_ipc_server(

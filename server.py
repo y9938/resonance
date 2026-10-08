@@ -15,16 +15,26 @@ import json
 import logging
 import os
 import secrets
+import shlex
+import sys
 import tempfile
 import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Configure progress before libraries import tqdm and Hugging Face constants.
+# Desktop stderr is a file; terminal animations add no diagnostic information.
+if not sys.stderr.isatty():
+    os.environ["TQDM_DISABLE"] = "1"
+    # PyTorch explicitly enables some bars; delay also prevents their rendering.
+    os.environ["TQDM_DELAY"] = "inf"
+    os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 
 from fastapi import (
     Body,
@@ -94,13 +104,6 @@ class Config:
     LIVE_STT_IDLE_TIMEOUT_SEC: float = float(
         os.getenv("RESONANCE_LIVE_STT_IDLE_TIMEOUT_SEC", "15")
     )
-    LOG_LEVEL: str = os.getenv(
-        "RESONANCE_LOG_LEVEL", os.getenv("LOG_LEVEL", "INFO")
-    ).upper()
-    LOG_TO_FILE: bool = os.getenv(
-        "RESONANCE_LOG_TO_FILE", "0"
-    ).lower() in {"1", "true", "yes"}
-    LOG_FILE: str | None = os.getenv("RESONANCE_LOG_FILE")
 TTS_OUTPUT_DIR = Path(tempfile.gettempdir()) / "resonance-tts"
 if Config.LIVE_STT_IDLE_TIMEOUT_SEC < 0:
     raise ValueError("RESONANCE_LIVE_STT_IDLE_TIMEOUT_SEC must be non-negative")
@@ -161,11 +164,8 @@ def get_or_set_session_id(request: Request, response: Response) -> str:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    device = os.getenv("DEVICE", "cpu")
-    log.info(f"Using device: {device}")
-
     tts_service.output_dir.mkdir(parents=True, exist_ok=True)
-    log.info(
+    log.debug(
         f"TTS output dir: {tts_service.output_dir} "
         f"(TTL {Config.TTS_FILE_TTL_SEC}s, sweep every {Config.TTS_SWEEP_INTERVAL_SEC}s)"
     )
@@ -187,7 +187,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         log.warning(f"Failed to start local IPC server: {exc}")
         ipc_server = None
 
-    log.info("Server ready.")
     try:
         yield
     finally:
@@ -209,7 +208,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         sweep_task.cancel()
         with suppress(asyncio.CancelledError):
             await sweep_task
-        log.info("Shutting down...")
 
 
 app = FastAPI(
@@ -251,6 +249,28 @@ def local_host_allowed(request: Request) -> bool:
 # -----------------------------------------------------------------------------
 # API Endpoints
 # -----------------------------------------------------------------------------
+
+@app.post("/api/diagnostics/capture", status_code=204)
+async def capture_diagnostic(
+    request: Request,
+    event: Literal["mic-requested", "mic-started", "mic-failed"] = Body(),
+    mode: Literal["live", "dictation"] = Body(),
+    stage: Literal["unsupported", "model", "permission", "audio"] = Body(),
+    error: Literal["NotAllowedError", "NotFoundError", "NotReadableError", "AbortError",
+                   "SecurityError", "InvalidStateError", "TypeError", "UnknownError"] | None = Body(default=None),
+) -> Response:
+    # Fixed, bounded fields only: never accept arbitrary messages, audio or transcripts.
+    if not local_host_allowed(request):
+        raise HTTPException(status_code=403, detail="Diagnostics require the local launcher.")
+    details = f"mode={mode}"
+    if event == "mic-failed":
+        details += f", stage={stage}, error={error or 'UnknownError'}"
+        browser = json.dumps(request.headers.get("user-agent", "unknown")[:256], ensure_ascii=True)
+        details += f", browser={browser}"
+    log.log(logging.WARNING if event == "mic-failed" else logging.INFO,
+            "Browser %s: %s", event.replace("-", " "), details)
+    return Response(status_code=204)
+
 
 @app.get("/api/health")
 async def health() -> PlainTextResponse:
@@ -393,6 +413,10 @@ async def start_system_audio(
         if active_system_captures:
             active_job_id = next(iter(active_system_captures))
             active_capture = active_system_captures[active_job_id]
+            if active_capture["session_id"] != session_id:
+                raise HTTPException(status_code=409, detail="System audio capture is active in another browser session")
+            if active_capture["stop_requested"]:
+                raise HTTPException(status_code=409, detail="System audio capture is stopping")
             if active_capture["config"] != capture_config:
                 raise HTTPException(
                     status_code=409,
@@ -404,19 +428,24 @@ async def start_system_audio(
                 "job_id": active_job_id,
                 "resumed": True,
                 "started_at": existing_status["started_at"] if existing_status else None,
+                "capture_config": existing_status["result"]["capture_config"] if existing_status else None,
             }
 
+        log.info("System capture requested: model=%s, language=%s, microphone=%s",
+                 model_name, resolved_language, include_microphone)
         try:
             resolved_model = models.get_stt_model(model_name)
             audio_engine = get_system_audio_capture(include_microphone=include_microphone)
         except Exception as exc:
-            log.error(f"System Audio Capture setup failed: {exc}")
+            log.exception("System Audio Capture setup failed")
             raise HTTPException(status_code=500, detail=f"Capture setup failed: {exc}") from exc
 
         rec = jobs.create(
             "stt",
             session_id,
-            {"filename": "System Audio Capture.wav", "source": "system_audio"},
+            {"filename": "System Audio Capture.wav", "source": "system_audio",
+             "capture_config": {"language": resolved_language, "model": model_name,
+                                "include_microphone": include_microphone}},
             language=resolved_language,
             model=model_name,
         )
@@ -460,11 +489,13 @@ async def start_system_audio(
                 except Exception as stop_exc:
                     log.warning(f"Failed to stop rolled-back capture: {stop_exc}")
             jobs.update_event(job_id, "error", {"message": f"Capture start failed: {exc}"})
+            log.exception("System Audio Capture start failed: job_id=%s", job_id)
             raise HTTPException(status_code=500, detail=f"Capture start failed: {exc}") from exc
 
     log.info(f"System Audio Live Capture started: job_id={job_id}")
     status = jobs.get_status(job_id)
-    return {"job_id": job_id, "started_at": status["started_at"] if status else None}
+    return {"job_id": job_id, "started_at": status["started_at"] if status else None,
+            "capture_config": status["result"]["capture_config"] if status else None}
 
 
 @app.post("/api/system-audio/stop")
@@ -483,6 +514,9 @@ async def stop_system_audio(
         if job_id not in active_system_captures:
             raise HTTPException(status_code=404, detail="Job ID not found or already stopped")
         capture = active_system_captures[job_id]
+        session_id = get_or_set_session_id(request, response)
+        if capture["session_id"] != session_id:
+            raise HTTPException(status_code=404, detail="Job ID not found or already stopped")
         capture["stop_requested"] = True
 
     engine = capture["engine"]
@@ -537,10 +571,11 @@ async def start_live_job(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    log.info("Live microphone job requested: model=%s, language=%s", model_name, resolved_language)
     try:
         resolved_model = models.get_stt_model(model_name)
     except Exception as exc:
-        log.error(f"Live STT model setup failed: {exc}")
+        log.exception("Live STT model setup failed")
         raise HTTPException(status_code=500, detail=f"Live STT setup failed: {exc}") from exc
 
     session_id = get_or_set_session_id(request, response)
@@ -572,6 +607,7 @@ async def start_live_job(
     except Exception as exc:
         active_live_sessions.pop(job_id, None)
         jobs.update_event(job_id, "error", {"message": f"Live STT start failed: {exc}"})
+        log.exception("Live STT start failed: job_id=%s", job_id)
         raise HTTPException(status_code=500, detail=f"Live STT start failed: {exc}") from exc
 
     log.info(f"Live STT job started: job_id={job_id}")
@@ -716,6 +752,27 @@ async def start_stt_job(
     )
 
 
+def local_media_path(value: str) -> Path:
+    text = value.strip()
+    unquoted = text
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        unquoted = text[1:-1]
+    source = Path(unquoted).expanduser()
+    # Prefer literal filenames; Terminal's POSIX escaping is only a fallback.
+    # Windows backslashes are path separators, not shell escapes.
+    if os.name != "nt" and not source.exists():
+        for copied in (text, unquoted):
+            try:
+                parts = shlex.split(copied)
+            except ValueError:
+                continue
+            if len(parts) == 1:
+                candidate = Path(parts[0]).expanduser()
+                if candidate.exists():
+                    return candidate
+    return source
+
+
 @app.post("/api/jobs/stt/local")
 async def start_local_stt_job(
     request: Request,
@@ -734,7 +791,7 @@ async def start_local_stt_job(
     if request.headers.get("content-type", "").split(";", 1)[0] != "application/json":
         raise HTTPException(415, "Use application/json")
     try:
-        source = Path(path).expanduser()
+        source = local_media_path(path)
         if not source.is_absolute():
             raise ValueError()
     except (OSError, ValueError, RuntimeError) as exc:
@@ -765,7 +822,6 @@ def submit_stt_job(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     resolved_model = models.get_stt_model(model_name)
-    log.info(f"STT started: {filename or 'unknown'}")
 
     session_id = get_or_set_session_id(request, response)
     initial_result: dict[str, Any] = {"filename": filename or None}
@@ -785,6 +841,8 @@ def submit_stt_job(
         model=model_name,
     )
 
+    log.info("STT started: job_id=%s, model=%s, language=%s, diarization=%s",
+             rec.job_id, model_name, resolved_language, diarization)
     asyncio.create_task(
         asyncio.to_thread(
             run_stt_worker,
@@ -823,12 +881,9 @@ async def start_tts_job(
     resolved_language = language or tts_service.get_voice_or_400(resolved_voice_id).language
     tts_service.validate_language_voice(resolved_language, resolved_voice_id)
 
-    log.info(
-        f"TTS started: {len(text)} chars, language={resolved_language}, voice_id={resolved_voice_id}"
-    )
-
     session_id = get_or_set_session_id(request, response)
     rec = jobs.create("tts", session_id, {"filename": filename})
+    log.info("TTS started: job_id=%s, language=%s, voice=%s", rec.job_id, resolved_language, resolved_voice_id)
     asyncio.create_task(
         asyncio.to_thread(
             tts_service.run_job,

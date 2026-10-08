@@ -67,6 +67,38 @@ async def test_system_audio_cooperative_stop_flushes_then_completes(monkeypatch,
 
 
 @pytest.mark.asyncio
+async def test_system_audio_cannot_reattach_while_stopping(monkeypatch, local_host_app) -> None:
+    _isolated_system_registry(monkeypatch)
+
+    class DelayedCapture(CooperativeCapture):
+        def __init__(self):
+            super().__init__()
+            self.release = threading.Event()
+
+        def get_audio_stream(self):
+            self.release.wait()
+            if False:
+                yield ("sys", None)
+
+    capture = DelayedCapture()
+    monkeypatch.setattr(server.models, "get_stt_model", MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr(server, "get_system_audio_capture", lambda **kwargs: capture)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=server.app), base_url="http://localhost"
+    ) as client:
+        started = await client.post("/api/system-audio/start?language=ru&model=gigaam")
+        stop = asyncio.create_task(client.post(f"/api/system-audio/stop?job_id={started.json()['job_id']}"))
+        try:
+            assert await asyncio.to_thread(capture.stopped.wait, 1)
+            resumed = await client.post("/api/system-audio/start?language=ru&model=gigaam")
+            assert resumed.status_code == 409
+        finally:
+            capture.release.set()
+            stopped = await stop
+        assert stopped.status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_system_audio_producer_exception_fails_and_cleans_registry(monkeypatch, local_host_app) -> None:
     registry = _isolated_system_registry(monkeypatch)
 
@@ -149,6 +181,36 @@ async def test_system_audio_cancel_keeps_cancelled_terminal_and_cleans_registry(
 
 
 @pytest.mark.asyncio
+async def test_system_audio_cannot_return_or_stop_another_sessions_capture(monkeypatch, local_host_app) -> None:
+    registry = _isolated_system_registry(monkeypatch)
+    capture = CooperativeCapture()
+    monkeypatch.setattr(server.models, "get_stt_model", MagicMock(return_value=MagicMock()))
+    factory = MagicMock(return_value=capture)
+    monkeypatch.setattr(server, "get_system_audio_capture", factory)
+
+    transport = httpx.ASGITransport(app=server.app)
+    async with (
+        httpx.AsyncClient(transport=transport, base_url="http://localhost") as owner,
+        httpx.AsyncClient(transport=transport, base_url="http://localhost") as other,
+    ):
+        started = await owner.post("/api/system-audio/start?language=ru&model=gigaam")
+        job_id = started.json()["job_id"]
+        try:
+            response = await other.post("/api/system-audio/start?language=ru&model=gigaam")
+            assert response.status_code == 409
+            assert "job_id" not in response.json()
+            assert (await other.get(f"/api/jobs/{job_id}")).status_code == 404
+            assert (await other.post(f"/api/system-audio/stop?job_id={job_id}")).status_code == 404
+            assert not capture.stopped.is_set()
+            factory.assert_called_once()
+            assert registry.get_status(job_id)["state"] == "running"
+            resumed = await owner.post("/api/system-audio/start?language=ru&model=gigaam")
+            assert resumed.json()["job_id"] == job_id
+        finally:
+            assert (await owner.post(f"/api/system-audio/stop?job_id={job_id}")).status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_system_audio_reattach_requires_identical_config(monkeypatch, local_host_app) -> None:
     _isolated_system_registry(monkeypatch)
     capture = CooperativeCapture()
@@ -160,9 +222,15 @@ async def test_system_audio_reattach_requires_identical_config(monkeypatch, loca
     ) as client:
         started = await client.post("/api/system-audio/start?language=ru&model=gigaam")
         job_id = started.json()["job_id"]
-        resumed = await client.post("/api/system-audio/start?language=ru&model=gigaam")
-        different = await client.post("/api/system-audio/start?language=ru&model=gigaam&include_microphone=true")
-        stopped = await client.post(f"/api/system-audio/stop?job_id={job_id}")
+        try:
+            resumed = await client.post("/api/system-audio/start?language=ru&model=gigaam")
+            different = await client.post("/api/system-audio/start?language=ru&model=gigaam&include_microphone=true")
+            snapshot = (await client.get(f"/api/jobs/{job_id}")).json()
+            assert snapshot["result"]["capture_config"] == started.json()["capture_config"]
+            assert resumed.json()["capture_config"] == {"language": "ru", "model": "gigaam",
+                                                       "include_microphone": False}
+        finally:
+            stopped = await client.post(f"/api/system-audio/stop?job_id={job_id}")
 
     assert resumed.status_code == 200
     assert resumed.json()["job_id"] == job_id

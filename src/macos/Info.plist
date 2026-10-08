@@ -14,9 +14,13 @@
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
     <string>0.1.0</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
     <key>LSUIElement</key>
     <true/>
-    <!-- Required by TCC: macOS will crash the process on first SCK call without these keys -->
+    <!-- Permission descriptions for both system-audio backends and the optional microphone. -->
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>Resonance captures system audio for speech-to-text transcription.</string>
     <key>NSScreenCaptureUsageDescription</key>
     <string>Resonance captures system audio to transcribe meeting content.</string>
     <key>NSMicrophoneUsageDescription</key>

@@ -14,6 +14,7 @@ import json
 import os
 import platform
 import plistlib
+import re
 import shutil
 import signal
 import socket
@@ -167,8 +168,8 @@ def dev(env: dict[str, str]) -> None:
         "RESONANCE_VITE_ORIGIN": f"http://127.0.0.1:{port}",
     }
     commands = [
-        [npm_command(env), "--silent", "run", "dev", "--", "--logLevel", "warn"],
-        local_server_command(env, reload=True),
+        ([npm_command(env), "--silent", "run", "dev", "--", "--logLevel", "warn"], child_env),
+        (local_server_command(env, reload=True), backend_environment(child_env)),
     ]
     processes = []
     previous_term = signal.getsignal(signal.SIGTERM)
@@ -178,14 +179,14 @@ def dev(env: dict[str, str]) -> None:
 
     signal.signal(signal.SIGTERM, interrupted)
     try:
-        for cmd in commands:
+        for cmd, process_env in commands:
             processes.append(subprocess.Popen(
-                cmd, cwd=ROOT, env=child_env,
+                cmd, cwd=ROOT, env=process_env,
                 start_new_session=os.name != "nt",
                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
             ))
         while True:
-            for proc, cmd in zip(processes, commands):
+            for proc, (cmd, _) in zip(processes, commands):
                 code = proc.poll()
                 if code is not None:
                     print(f"tasks: required dev process exited ({code}): {cmd}", file=sys.stderr)
@@ -233,6 +234,11 @@ def serve_local(env: dict[str, str]) -> None:
         raise FileNotFoundError("Frontend build missing; run ./r build-web first")
     clean_env = backend_environment({k: v for k, v in env.items() if k != "RESONANCE_FRONTEND_DEV"})
     execute(local_server_command(clean_env), clean_env)
+
+
+def diagnostics(env: dict[str, str], args: list[str]) -> None:
+    """Save local logs and available macOS diagnostics in one ZIP."""
+    execute([*project_python_command(), "-m", "scripts.diagnostics", *args], backend_environment(env))
 
 
 def npm_command(env: dict[str, str]) -> str:
@@ -378,11 +384,52 @@ def icons(env: dict[str, str]) -> None:
     print("Web icons generated with pixel-perfect resvg vector rendering.")
 
 
+def macos_sdk_env(env: dict[str, str]) -> dict[str, str]:
+    """Check SDK imports with the actual compiler; only auto-select when unset."""
+    explicit = env.get("SDKROOT")
+    if explicit:
+        candidates = [Path(explicit)]
+    else:
+        selected = subprocess.run(
+            ["xcrun", "--no-cache", "--show-sdk-path"],
+            env=env, check=True, capture_output=True, text=True,
+        )
+        default = Path(selected.stdout.strip())
+        installed = sorted(
+            default.parent.glob("MacOSX*.sdk"),
+            key=lambda path: tuple(int(n) for n in re.findall(r"\d+", path.name)),
+            reverse=True,
+        )
+        candidates = [default, *installed]
+
+    seen = set()
+    diagnostics = []
+    for sdk in candidates:
+        resolved = sdk.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        child_env = {**env, "SDKROOT": str(resolved)}
+        probe = subprocess.run(
+            ["swiftc", "-sdk", str(resolved), "-typecheck", "-"],
+            input="import AppKit\nimport ScreenCaptureKit\nimport CoreMedia\nimport AVFoundation\nimport CoreAudio\nimport Darwin\nimport UniformTypeIdentifiers\nif #available(macOS 14.2, *) { _ = AudioHardwareCreateProcessTap }\n",
+            cwd=ROOT, env=child_env, check=False, capture_output=True, text=True,
+        )
+        if probe.returncode == 0:
+            print(f"macOS SDK: {resolved}")
+            return child_env
+        diagnostics.append(f"{resolved}:\n{probe.stderr}")
+
+    hint = "Check the explicit SDKROOT." if explicit else "Install a compatible Command Line Tools package."
+    raise RuntimeError(f"No usable macOS SDK for swiftc. {hint}\n" + "\n".join(diagnostics))
+
+
 def build_macos(env: dict[str, str]) -> None:
     """Build and install the macOS menu bar app."""
     if sys.platform != "darwin":
         raise OSError("build-macos is only available on macOS")
 
+    env = macos_sdk_env(env)
     build_web(env)
     execute(["bash", "scripts/build-icns.sh"], env)
     applications = Path.home() / "Applications"
@@ -411,9 +458,21 @@ def build_macos(env: dict[str, str]) -> None:
         for icon in status_icons:
             shutil.copy(icon, resources)
         (resources / "RepositoryPath.txt").write_text(str(ROOT.resolve()), encoding="utf-8")
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(ROOT), "describe", "--always", "--dirty", "--abbrev=40"],
+                capture_output=True, text=True, timeout=3, check=False,
+            )
+            revision = result.stdout.strip() if result.returncode == 0 else "unavailable"
+        except (OSError, subprocess.TimeoutExpired):
+            revision = "unavailable"
+        (resources / "BuildRevision.txt").write_text(revision, encoding="utf-8")
         execute(
             [
-                "swiftc", "-O", "src/macos/main.swift", "src/macos/CaptureEngine.swift",
+                "swiftc", "-sdk", env["SDKROOT"],
+                "-target", f"{platform.machine()}-apple-macosx13.0", "-O",
+                "src/macos/main.swift", "src/macos/CaptureEngine.swift", "src/macos/CoreAudioTap.swift",
+                "src/macos/CaptureBuffer.swift",
                 "-o", str(macos / "Resonance"),
             ],
             env,
@@ -580,6 +639,7 @@ def main() -> int:
         "dev": (dev, False),
         "build-web": (build_web, False),
         "serve-local": (serve_local, False),
+        "diagnostics": (diagnostics, True),
         "test": (run_tests, True),
         "check": (check, True),
         "build": (build_image, True),
