@@ -35,6 +35,34 @@ def test_macos_backend_receives_ffmpeg_path_without_changing_parent_env(tmp_path
     assert original == {"DYLD_LIBRARY_PATH": "/custom/lib", "RESONANCE_FRONTEND_DEV": "1"}
 
 
+def test_arm_dependencies_and_backend_share_ffmpeg(tmp_path, monkeypatch):
+    prefix = tmp_path / "homebrew with spaces/ffmpeg"
+    (prefix / "lib").mkdir(parents=True)
+    (tmp_path / ".venv").mkdir()
+    monkeypatch.setattr(tasks, "ROOT", tmp_path)
+    monkeypatch.setattr(tasks.sys, "platform", "darwin")
+    monkeypatch.setattr(tasks.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(tasks.shutil, "which", lambda name, **kwargs: f"/test/{name}")
+    monkeypatch.setattr(tasks, "frontend", lambda *args: None)
+    installed = []
+    monkeypatch.setattr(tasks, "execute", lambda command, env: installed.append((command, env)))
+
+    def run(command, **kwargs):
+        output = str(prefix) if command[0] == "/test/brew" else "18.1.0"
+        return subprocess.CompletedProcess(command, 0, output + "\n", "")
+
+    monkeypatch.setattr(tasks.subprocess, "run", run)
+    original = {"PATH": "/usr/bin", "PKG_CONFIG_PATH": "/custom/pkgconfig"}
+    tasks.dev_deps(original)
+    backend_env = tasks.backend_environment(original)
+
+    command, build_env = installed[-1]
+    assert "--no-binary" in command and "--reinstall-package" in command
+    assert "--no-cache" in command and command[-1] == "av==18.1.0"
+    assert build_env["PKG_CONFIG_PATH"].split(":")[0] == f"{backend_env['DYLD_LIBRARY_PATH']}/pkgconfig"
+    assert original == {"PATH": "/usr/bin", "PKG_CONFIG_PATH": "/custom/pkgconfig"}
+
+
 @pytest.fixture
 def macos_build(tmp_path, monkeypatch):
     repo = tmp_path / "repo with spaces"

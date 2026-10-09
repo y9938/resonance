@@ -32,6 +32,8 @@ Install Homebrew first: [Apple Silicon](https://brew.sh/) or
 This creates `.env` if missing, configures the device and installs development dependencies.
 On Intel Macs it installs the tested CPU stack, including Node and FFmpeg, into
 `.deps/macos-intel`; `./r` and the menu bar app select it automatically.
+On Apple Silicon, `dev-deps` rebuilds PyAV against Homebrew FFmpeg so it shares
+libraries with TorchCodec; this requires Xcode Command Line Tools and `pkg-config`.
 
 #### Linux
 

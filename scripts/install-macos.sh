@@ -16,7 +16,7 @@ command -v brew >/dev/null 2>&1 || {
 if [ "$(uname -m)" = "x86_64" ]; then
   brew install uv micromamba
 else
-  brew install uv node ffmpeg resvg imagemagick
+  brew install uv node ffmpeg pkg-config resvg imagemagick
 fi
 
 if [ ! -f .env ]; then

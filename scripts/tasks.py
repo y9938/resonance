@@ -100,7 +100,43 @@ def dev_deps(env: dict[str, str]) -> None:
     if backend:
         cmd.append(f"--torch-backend={backend}")
     execute(cmd, env)
+    if sys.platform == "darwin":
+        install_macos_pyav(venv, env)
     frontend(["ci"], env)
+
+
+def homebrew_ffmpeg_libraries(env: dict[str, str]) -> Path | None:
+    brew = shutil.which("brew", path=env.get("PATH"))
+    if not brew:
+        return None
+    prefix = subprocess.run(
+        [brew, "--prefix", "ffmpeg"], env=env,
+        check=False, capture_output=True, text=True,
+    )
+    if prefix.returncode != 0 or not prefix.stdout.strip():
+        return None
+    libraries = Path(prefix.stdout.strip()) / "lib"
+    return libraries if libraries.is_dir() else None
+
+
+def install_macos_pyav(venv: Path, env: dict[str, str]) -> None:
+    """Share Homebrew FFmpeg with TorchCodec instead of loading a second copy."""
+    libraries = homebrew_ffmpeg_libraries(env)
+    if libraries is None or not shutil.which("pkg-config", path=env.get("PATH")):
+        raise FileNotFoundError("Building macOS PyAV requires brew install ffmpeg pkg-config")
+    build_env = {**env, "PKG_CONFIG_PATH": os.pathsep.join(filter(None, (
+        str(libraries / "pkgconfig"), env.get("PKG_CONFIG_PATH", ""),
+    )))}
+    version = subprocess.run(
+        [str(venv / "bin/python"), "-c", "from importlib.metadata import version; print(version('av'))"],
+        env=env, check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    # Preserve the resolver's version, but always replace an existing PyPI wheel.
+    # Avoid a cached source wheel linked against a previous FFmpeg installation.
+    execute([
+        "uv", "pip", "install", "--python", str(venv), "--no-deps",
+        "--no-binary", "av", "--reinstall-package", "av", "--no-cache", f"av=={version}",
+    ], build_env)
 
 
 def backend_environment(env: dict[str, str]) -> dict[str, str]:
@@ -111,17 +147,8 @@ def backend_environment(env: dict[str, str]) -> dict[str, str]:
         return {**env, "PATH": os.pathsep.join((str(intel_environment() / "bin"), env.get("PATH", "")))}
     if sys.platform != "darwin":
         return env
-    brew = shutil.which("brew", path=env.get("PATH"))
-    if not brew:
-        return env
-    prefix = subprocess.run(
-        [brew, "--prefix", "ffmpeg"], env=env,
-        check=False, capture_output=True, text=True,
-    )
-    if prefix.returncode != 0 or not prefix.stdout.strip():
-        return env
-    libraries = Path(prefix.stdout.strip()) / "lib"
-    if not libraries.is_dir():
+    libraries = homebrew_ffmpeg_libraries(env)
+    if libraries is None:
         return env
     existing = env.get("DYLD_LIBRARY_PATH", "")
     if str(libraries) in existing.split(os.pathsep):
