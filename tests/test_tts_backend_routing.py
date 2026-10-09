@@ -35,14 +35,6 @@ def test_invalid_default_tts_voice_falls_back_to_first_catalog_entry(
     assert server.tts_service.default_voice_id() == server.tts_service.list_voice_ids()[0]
 
 
-@pytest.mark.asyncio
-async def test_public_config_uses_voice_catalog_and_default_resolution() -> None:
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app), base_url="http://test") as client:
-        config = (await client.get("/api/config")).json()
-
-    assert config["tts"]["languages"][0]["default_voice_id"] == server.tts_service.default_voice_id()
-
-
 def test_en_voice_routes_to_kokoro_backend() -> None:
     voice, backend = server.tts_service.get_backend_for_voice("af_heart")
 

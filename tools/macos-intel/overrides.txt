@@ -1,0 +1,4 @@
+# The Intel conda-forge build replaces the project's ARM64/PyPI torch pin.
+torch==2.13.0
+# Keep the upstream revision used by the Intel validation.
+gigaam @ git+https://github.com/salute-developers/GigaAM.git@7447938d791c4f3e643386ee22c33777004293a5

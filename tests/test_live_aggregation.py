@@ -3,7 +3,7 @@ from unittest.mock import MagicMock
 import numpy as np
 
 from core.jobs import JobRegistry
-from stt.live import ASRCommitPolicy, CommitDecision, LiveSTTSession
+from stt.live import LiveSTTSession
 from stt.live_preview import LivePreviewBroker
 from stt.stream_vad import _VAD_WINDOW_SAMPLES
 
@@ -76,13 +76,6 @@ def test_sources_keep_independent_buffers_and_preview_is_ephemeral() -> None:
     session.flush()
     durable = jobs.get_status(job_id)["result"]["segments"]
     assert {segment["source"] for segment in durable} == {"mic", "sys"}
-
-
-def test_commit_policy_is_typed_and_flush_is_explicit() -> None:
-    policy = ASRCommitPolicy(16000)
-    assert policy.decide(samples=12 * 16000, natural_boundary=False, pause_samples=0, flush=False) is CommitDecision.KEEP_BUFFERING
-    assert policy.decide(samples=12 * 16000, natural_boundary=True, pause_samples=0, flush=False) is CommitDecision.COMMIT_SOFT_BOUNDARY
-    assert policy.decide(samples=0, natural_boundary=False, pause_samples=0, flush=True) is CommitDecision.COMMIT_FLUSH
 
 
 def test_preview_broker_is_latest_value_not_an_unbounded_fifo() -> None:

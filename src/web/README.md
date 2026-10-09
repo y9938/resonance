@@ -29,7 +29,7 @@ FastAPI. HTML/static source files revalidate; hashed `/assets/` files are immuta
 Root-level `dist` and `node_modules` are ignored. `src/web/public` contains source
 icons and manifest. Vite collects bundled dependencies' license texts in
 `dist/web/third-party/licenses.md` using Vite's built-in `build.license` support.
-`npm run build` builds these assets for `./r serve-local`; Node is only needed for setup/builds.
+`./r build-web` builds these assets for `./r serve-local`; Node is only needed for setup/builds.
 Docker and the macOS launcher use these built assets.
 
 The existing global CSS is retained to preserve the visual design. `StarField`

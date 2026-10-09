@@ -4,7 +4,20 @@ set -eu
 REPO_DIR="${${(%):-%x}:A:h:h}"
 cd "$REPO_DIR"
 
-brew install uv node ffmpeg resvg imagemagick
+command -v brew >/dev/null 2>&1 || {
+  if [ "$(uname -m)" = "x86_64" ]; then
+    print -u2 "Homebrew is required; see tools/macos-intel/README.md#homebrew-on-intel"
+  else
+    print -u2 "Homebrew is required: https://brew.sh/"
+  fi
+  exit 1
+}
+
+if [ "$(uname -m)" = "x86_64" ]; then
+  brew install uv micromamba
+else
+  brew install uv node ffmpeg resvg imagemagick
+fi
 
 if [ ! -f .env ]; then
   if [ "$(uname -m)" = "arm64" ]; then
@@ -15,11 +28,14 @@ RESONANCE_LOG_TO_FILE=1
 EOF
   else
     cat << 'EOF' > .env
+DEVICE=cpu
 RESONANCE_LOG_TO_FILE=1
 EOF
   fi
 fi
 
-uv venv --python 3.12
+if [ "$(uname -m)" != "x86_64" ]; then
+  uv venv --python 3.12
+fi
 
 uv run --script scripts/tasks.py dev-deps

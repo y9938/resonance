@@ -9,6 +9,32 @@ import pytest
 from scripts import tasks
 
 
+def test_macos_backend_receives_ffmpeg_path_without_changing_parent_env(tmp_path, monkeypatch):
+    (tmp_path / "dist/web").mkdir(parents=True)
+    (tmp_path / "dist/web/index.html").touch()
+    prefix = tmp_path / "homebrew with spaces/ffmpeg"
+    (prefix / "lib").mkdir(parents=True)
+    monkeypatch.setattr(tasks, "ROOT", tmp_path)
+    monkeypatch.setattr(tasks.sys, "platform", "darwin")
+    monkeypatch.setattr(tasks.shutil, "which", lambda *args, **kwargs: "/test/brew")
+    launched = []
+
+    def run(command, **kwargs):
+        if command[0] == "/test/brew":
+            return subprocess.CompletedProcess(command, 0, str(prefix) + "\n", "")
+        launched.append((command, kwargs["env"]))
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(tasks.subprocess, "run", run)
+    original = {"DYLD_LIBRARY_PATH": "/custom/lib", "RESONANCE_FRONTEND_DEV": "1"}
+    tasks.serve_local(original)
+
+    _, child_env = launched[0]
+    assert child_env["DYLD_LIBRARY_PATH"] == f"/custom/lib:{prefix}/lib"
+    assert "RESONANCE_FRONTEND_DEV" not in child_env
+    assert original == {"DYLD_LIBRARY_PATH": "/custom/lib", "RESONANCE_FRONTEND_DEV": "1"}
+
+
 @pytest.fixture
 def macos_build(tmp_path, monkeypatch):
     repo = tmp_path / "repo with spaces"

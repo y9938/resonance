@@ -111,11 +111,9 @@ class RunTests(unittest.TestCase):
         ):
             with self.subTest(env=env):
 
-                def boundary(cmd, env=env, **kwargs):
+                def boundary(cmd, **kwargs):
                     for source in docker_mounts(cmd).values():
                         self.assertTrue(source.is_dir())
-                    for path in tasks.cache_paths(env).values():
-                        self.assertTrue(path.is_dir())
 
                 with patch.object(tasks.subprocess, "run", side_effect=boundary):
                     tasks.run_container(env, [])

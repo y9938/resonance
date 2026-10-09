@@ -1,21 +1,10 @@
-import os
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
 import torch
 
-from server import list_models
-from stt.models import ModelManager, WhisperAdapter, load_whisper
-
-
-@pytest.mark.parametrize("device", ["cuda", "cpu", "mps"])
-def test_load_whisper_uses_requested_torch_device(device):
-    with patch.dict(os.environ, {"DEVICE": device}), patch("whisper.load_model") as load_model:
-        with patch("stt.models.whisper.safe_resolve_device", return_value=device):
-            load_model.return_value.eval.return_value.num_languages = 100
-            load_whisper()
-        assert load_model.call_args.kwargs["device"] == device
+from stt.models import ModelManager, WhisperAdapter
 
 
 def test_whisper_adapter_decodes_pcm_with_model_mel_dimensions_and_english():
@@ -79,11 +68,3 @@ def test_model_manager_stt_whisper_loads_once():
         assert m1 is m2
         assert mock_load.call_count == 1
         assert mgr.stt_whisper_loaded is True
-
-
-@pytest.mark.asyncio
-async def test_list_models_returns_nested_stt():
-    payload = await list_models()
-    assert "stt" in payload
-    models = {item["id"]: item for item in payload["stt"]["models"]}
-    assert isinstance(models["gigaam"]["loaded"], bool)

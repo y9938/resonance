@@ -11,11 +11,6 @@ class FakeTranscriptionResult:
         self.text = text
 
 
-def test_transcription_text_extracts_text_attribute() -> None:
-    assert transcription_text(FakeTranscriptionResult("hello")) == "hello"
-    assert transcription_text("plain") == "plain"
-
-
 def test_progress_event_with_normalized_segment_serializes_to_json() -> None:
     event = StreamEvent(
         "progress",

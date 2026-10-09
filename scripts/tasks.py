@@ -10,7 +10,9 @@ import argparse
 import csv
 import gzip
 import io
+import json
 import os
+import platform
 import plistlib
 import shutil
 import signal
@@ -27,8 +29,64 @@ ROOT = Path(__file__).resolve().parent.parent
 CONTAINER_CACHE_ROOT = "/home/resonance/.cache"
 
 
+def intel_macos() -> bool:
+    return sys.platform == "darwin" and platform.machine() == "x86_64"
+
+
+def intel_environment() -> Path:
+    return ROOT / ".deps/macos-intel"
+
+
+def project_python_command() -> list[str]:
+    """Use the Intel native stack directly, without uv syncing PyPI wheels."""
+    python = intel_environment() / "bin/python"
+    if intel_macos() and python.is_file():
+        return [str(python)]
+    return ["uv", "run", "--no-sync", "python"]
+
+
+def install_intel_dependencies(env: dict[str, str]) -> dict[str, str]:
+    profile = ROOT / "tools/macos-intel"
+    prefix = intel_environment()
+    lock = profile / "conda-osx-64.lock"
+    if not intel_native_packages_installed(prefix, lock):
+        manager = shutil.which("micromamba", path=env.get("PATH"))
+        if not manager:
+            raise FileNotFoundError("Intel macOS requires micromamba; run scripts/install-macos.sh")
+        action = "install" if (prefix / "conda-meta").is_dir() else "create"
+        execute([
+            manager, action, "--yes", "--prefix", str(prefix), "--file", str(lock),
+        ], env)
+    env = {**env, "PATH": os.pathsep.join((str(prefix / "bin"), env.get("PATH", "")))}
+    execute([
+        "uv", "pip", "install", "--python", str(prefix / "bin/python"),
+        "-r", "pyproject.toml", "--group", "dev",
+        "--override", str(profile / "overrides.txt"),
+        "--constraint", str(profile / "python-versions.txt"),
+    ], env)
+    return env
+
+
+def intel_native_packages_installed(prefix: Path, lock: Path) -> bool:
+    # micromamba's explicit installer relinks even unchanged packages. Avoid
+    # replacing loaded native libraries during routine Python dependency updates.
+    try:
+        required = {line.strip() for line in lock.read_text().splitlines() if line.startswith("https://")}
+        installed = set()
+        for metadata in (prefix / "conda-meta").glob("*.json"):
+            package = json.loads(metadata.read_text())
+            installed.add(f"{package['url']}#{package['md5']}")
+        return bool(required) and required <= installed
+    except (OSError, ValueError, KeyError):
+        return False
+
+
 def dev_deps(env: dict[str, str]) -> None:
     """Install Python and frontend dependencies."""
+    if intel_macos():
+        env = install_intel_dependencies(env)
+        frontend(["ci"], env)
+        return
     venv = ROOT / ".venv"
     if not venv.exists():
         execute(["uv", "venv", str(venv)], env)
@@ -43,6 +101,33 @@ def dev_deps(env: dict[str, str]) -> None:
         cmd.append(f"--torch-backend={backend}")
     execute(cmd, env)
     frontend(["ci"], env)
+
+
+def backend_environment(env: dict[str, str]) -> dict[str, str]:
+    """Select the native Intel stack or expose Homebrew FFmpeg on Apple Silicon."""
+    if intel_macos() and (intel_environment() / "bin/python").is_file():
+        # conda-forge PyAV and TorchCodec share FFmpeg from this prefix.
+        # A Homebrew DYLD override would substitute a different native stack.
+        return {**env, "PATH": os.pathsep.join((str(intel_environment() / "bin"), env.get("PATH", "")))}
+    if sys.platform != "darwin":
+        return env
+    brew = shutil.which("brew", path=env.get("PATH"))
+    if not brew:
+        return env
+    prefix = subprocess.run(
+        [brew, "--prefix", "ffmpeg"], env=env,
+        check=False, capture_output=True, text=True,
+    )
+    if prefix.returncode != 0 or not prefix.stdout.strip():
+        return env
+    libraries = Path(prefix.stdout.strip()) / "lib"
+    if not libraries.is_dir():
+        return env
+    existing = env.get("DYLD_LIBRARY_PATH", "")
+    if str(libraries) in existing.split(os.pathsep):
+        return env
+    search_path = os.pathsep.join(filter(None, (existing, str(libraries))))
+    return {**env, "DYLD_LIBRARY_PATH": search_path}
 
 
 def dev(env: dict[str, str]) -> None:
@@ -103,7 +188,7 @@ def dev(env: dict[str, str]) -> None:
 def local_server_command(env: dict[str, str], reload: bool = False) -> list[str]:
     port = env.get("RESONANCE_PORT", "8000")
     cmd = [
-        "uv", "run", "--no-sync", "python", "-m", "uvicorn",
+        *project_python_command(), "-m", "uvicorn",
         "server:create_local_app", "--factory",
         "--host", "127.0.0.1", "--no-proxy-headers",
     ]
@@ -118,8 +203,8 @@ def local_server_command(env: dict[str, str], reload: bool = False) -> list[str]
 def serve_local(env: dict[str, str]) -> None:
     """Run the built app locally, without Node.js."""
     if not (ROOT / "dist/web/index.html").exists():
-        raise FileNotFoundError("Frontend build missing; run npm run build first")
-    clean_env = {k: v for k, v in env.items() if k != "RESONANCE_FRONTEND_DEV"}
+        raise FileNotFoundError("Frontend build missing; run ./r build-web first")
+    clean_env = backend_environment({k: v for k, v in env.items() if k != "RESONANCE_FRONTEND_DEV"})
     execute(local_server_command(clean_env), clean_env)
 
 
@@ -134,12 +219,18 @@ def frontend(args: list[str], env: dict[str, str]) -> None:
     execute([npm_command(env), *args], env)
 
 
+def build_web(env: dict[str, str]) -> None:
+    """Build the frontend assets."""
+    frontend(["run", "build"], env)
+
+
 def run_tests(env: dict[str, str], args: list[str]) -> None:
     """Build the frontend and run pytest; browser tests need a running server."""
-    frontend(["run", "build"], env)
+    build_web(env)
+    env = backend_environment(env)
     port = env.get("RESONANCE_PORT", "8000")
     cmd = [
-        "uv", "run", "--no-sync", "python", "-m", "pytest", "tests/",
+        *project_python_command(), "-m", "pytest", "tests/",
         "--base-url", f"http://localhost:{port}",
         *args,
     ]
@@ -150,7 +241,7 @@ def check(env: dict[str, str], args: list[str]) -> None:
     """Check Svelte, TypeScript and Python code."""
     frontend(["run", "check"], env)
     cmd = [
-        "uv", "run", "--no-sync", "python", "-m", "ruff", "check",
+        *project_python_command(), "-m", "ruff", "check",
         "server.py", "core/", "stt/", "tts/", "tests/", "scripts/",
         *args,
     ]
@@ -265,7 +356,7 @@ def build_macos(env: dict[str, str]) -> None:
     if sys.platform != "darwin":
         raise OSError("build-macos is only available on macOS")
 
-    frontend(["run", "build"], env)
+    build_web(env)
     execute(["bash", "scripts/build-icns.sh"], env)
     applications = Path.home() / "Applications"
     applications.mkdir(parents=True, exist_ok=True)
@@ -445,6 +536,8 @@ def task_environment() -> dict[str, str]:
     # the project's virtual environment.
     env.pop("VIRTUAL_ENV", None)
     env.pop("CONDA_PREFIX", None)
+    if intel_macos() and (intel_environment() / "bin/python").is_file():
+        env = backend_environment(env)
     return env
 
 
@@ -458,6 +551,7 @@ def main() -> int:
     tasks = {
         "dev-deps": (dev_deps, False),
         "dev": (dev, False),
+        "build-web": (build_web, False),
         "serve-local": (serve_local, False),
         "test": (run_tests, True),
         "check": (check, True),

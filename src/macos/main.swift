@@ -89,7 +89,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Launch the checkout backend with built web assets; no Node runtime is needed.
         backend = Process()
         backend?.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        backend?.arguments = ["-l", "-c", "export PATH=\"/opt/homebrew/bin:$HOME/.cargo/bin:$PATH\"; exec uv run --script scripts/tasks.py serve-local"]
+        backend?.arguments = ["-l", "-c", "export PATH=\"/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.cargo/bin:$PATH\"; exec ./r serve-local"]
         backend?.currentDirectoryURL = repoRoot
 
         let errorPipe = Pipe()

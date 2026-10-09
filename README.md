@@ -22,11 +22,16 @@ Unified Speech-to-Text (STT) and Text-to-Speech (TTS) API Server.
 
 #### macOS
 
+Install Homebrew first: [Apple Silicon](https://brew.sh/) or
+[Intel](tools/macos-intel/README.md#homebrew-on-intel).
+
 ```bash
 ./scripts/install-macos.sh
 ```
 
 This creates `.env` if missing, configures the device and installs development dependencies.
+On Intel Macs it installs the tested CPU stack, including Node and FFmpeg, into
+`.deps/macos-intel`; `./r` and the menu bar app select it automatically.
 
 #### Linux
 
@@ -52,11 +57,11 @@ Use `./r` on Linux/macOS or `.\r` in Windows PowerShell.
 
 ```bash
 ./r dev-deps
-npm run build
+./r build-web
 ./r serve-local
 ```
 
-Run `dev-deps` again when dependencies change, and `npm run build` after frontend changes.
+Run `dev-deps` again when dependencies change, and `build-web` after frontend changes.
 For development with automatic reload, use `./r dev`.
 
 Open http://localhost:8000, or the port set by `RESONANCE_PORT`.
@@ -70,7 +75,7 @@ On **macOS** you can build `Resonance.app` menu bar app via:
 ./r build-macos
 ```
 
-The app is installed in `~/Applications/Resonance.app`.
+This builds the frontend and installs `~/Applications/Resonance.app`.
 Rebuild the app if you move the repository folder.
 
 If you want to run from terminal with live logs:

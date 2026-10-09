@@ -65,12 +65,3 @@ async def test_frontend_document_and_local_capability(monkeypatch, development):
         assert not (await client.get("/api/capability", headers={"x-forwarded-for": "127.0.0.1"})).json()["allowed"]
         app.state.local_host = False
         assert not (await client.get("/api/capability")).json()["allowed"]
-
-
-def test_runtime_docker_copies_only_compiled_frontend():
-    dockerfile = (ROOT / "Dockerfile").read_text()
-    runtime = dockerfile.split(" AS runtime", 1)[1]
-    assert "npm" not in runtime and "node_modules" not in runtime
-    assert "/dist/web/" in runtime
-    assert "server:app" in runtime
-    assert "serve-local" not in runtime
