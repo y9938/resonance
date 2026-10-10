@@ -212,9 +212,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(
     title="Resonance API",
-    version="1.0.0",
+    version="0.1.0",
+    description="Experimental API. Endpoints and schemas may change without backward compatibility.",
     lifespan=lifespan,
-    docs_url=None,
     redoc_url=None,
 )
 

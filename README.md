@@ -6,15 +6,15 @@ Unified Speech-to-Text (STT) and Text-to-Speech (TTS) API Server.
 
 - **STT**: GigaAM-v3 (RU), Whisper Turbo (EN), and IBM Granite (with speaker diarization) (EN)
 - **TTS**: Russian Silero v5 voices and English Kokoro voices
-- **i18n**: Interface available in English, Russian, Chinese
+- **Interface languages**: English, Russian, and Chinese
+
+Models are loaded on first use, so initial STT/TTS requests may take longer.
 
 ## Demo
 
 ![Demo](https://raw.githubusercontent.com/y9938/assets/main/resonance/demo.gif)
 
 ## Local
-
-Models are loaded on first use, so initial STT/TTS requests may take longer.
 
 ### macOS
 
@@ -106,24 +106,8 @@ precedence. Out of the box Resonance runs with CPU defaults.
 
 See [.env.example](.env.example) for available overrides.
 
-## API Endpoints
+## API
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/health` | GET | Health check |
-| `/api/config` | GET | Public configuration including TTS `language -> voice` catalog |
-| `/api/models` | GET | List backend/model status plus TTS catalog |
-| `/api/context/tail` | GET | Get recent recognized conversation context for active session |
-| `/api/jobs` | GET | List current session jobs (compact DTO); query `limit` (default 60), `offset`; JSON includes `has_more`, `next_offset` |
-| `/api/jobs/stt` | POST | Start STT job, returns `job_id` |
-| `/api/jobs/stt/local` | POST | Local launcher only: JSON `{"path":"/absolute/media.wav"}`, same STT query options and job lifecycle |
-| `/api/jobs/live/start` | POST | Start session-scoped microphone live STT, returns `job_id` |
-| `/api/jobs/live/{job_id}/chunk` | POST | Append one ordered audio chunk to a live microphone job |
-| `/api/jobs/live/{job_id}/stop` | POST | Flush buffered microphone speech and complete a live job |
-| `/api/jobs/tts` | POST | Start TTS job with `text`, `language`, `voice_id`; returns `job_id` |
-| `/api/jobs/{job_id}` | GET | Get job status/result (session-scoped) |
-| `/api/jobs/{job_id}/events` | GET | Stream job events (SSE, session-scoped) |
-| `/api/jobs/{job_id}/cancel` | POST | Cancel active job (session-scoped) |
-| `/api/stream/download` | GET | Download TTS audio |
-| `/api/system-audio/start` | POST | Local launcher only: start host-wide system-audio capture, optionally including the microphone |
-| `/api/system-audio/stop` | POST | Local launcher only: stop capture, flush recognized speech, and complete the same job |
+For interactive API documentation, open `/docs` on your server
+(default locally: http://localhost:8000/docs). The OpenAPI schema is available at `/openapi.json`.
+The API is experimental and may change without backward compatibility.
