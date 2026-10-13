@@ -15,6 +15,7 @@ import os
 import platform
 import plistlib
 import re
+import shlex
 import shutil
 import signal
 import socket
@@ -125,7 +126,7 @@ def install_macos_pyav(venv: Path, env: dict[str, str]) -> None:
     libraries = homebrew_ffmpeg_libraries(env)
     if libraries is None or not shutil.which("pkg-config", path=env.get("PATH")):
         raise FileNotFoundError("Building macOS PyAV requires brew install ffmpeg pkg-config")
-    build_env = {**env, "PKG_CONFIG_PATH": os.pathsep.join(filter(None, (
+    build_env = {**macos_sdk_env(env, compiler="cc"), "CC": env.get("CC", "cc"), "PKG_CONFIG_PATH": os.pathsep.join(filter(None, (
         str(libraries / "pkgconfig"), env.get("PKG_CONFIG_PATH", ""),
     )))}
     version = subprocess.run(
@@ -384,8 +385,8 @@ def icons(env: dict[str, str]) -> None:
     print("Web icons generated with pixel-perfect resvg vector rendering.")
 
 
-def macos_sdk_env(env: dict[str, str]) -> dict[str, str]:
-    """Check SDK imports with the actual compiler; only auto-select when unset."""
+def macos_sdk_env(env: dict[str, str], *, compiler: str = "swiftc") -> dict[str, str]:
+    """Probe the build compiler with each SDK; only auto-select when unset."""
     explicit = env.get("SDKROOT")
     if explicit:
         candidates = [Path(explicit)]
@@ -410,18 +411,28 @@ def macos_sdk_env(env: dict[str, str]) -> dict[str, str]:
             continue
         seen.add(resolved)
         child_env = {**env, "SDKROOT": str(resolved)}
-        probe = subprocess.run(
-            ["swiftc", "-sdk", str(resolved), "-typecheck", "-"],
-            input="import AppKit\nimport ScreenCaptureKit\nimport CoreMedia\nimport AVFoundation\nimport CoreAudio\nimport Darwin\nimport UniformTypeIdentifiers\nif #available(macOS 14.2, *) { _ = AudioHardwareCreateProcessTap }\n",
-            cwd=ROOT, env=child_env, check=False, capture_output=True, text=True,
-        )
+        if compiler == "cc":
+            # Typechecking cannot detect an SDK's unsupported linker stub format.
+            with tempfile.TemporaryDirectory(prefix="resonance-sdk-") as directory:
+                probe = subprocess.run(
+                    [*shlex.split(env.get("CC", "cc")), "-isysroot", str(resolved),
+                     "-x", "c", "-", "-o", str(Path(directory) / "probe")],
+                    input='#include <stdlib.h>\nint main(void) { return getenv("PATH") == NULL; }\n',
+                    cwd=ROOT, env=child_env, check=False, capture_output=True, text=True,
+                )
+        else:
+            probe = subprocess.run(
+                ["swiftc", "-sdk", str(resolved), "-typecheck", "-"],
+                input="import AppKit\nimport ScreenCaptureKit\nimport CoreMedia\nimport AVFoundation\nimport CoreAudio\nimport Darwin\nimport UniformTypeIdentifiers\nif #available(macOS 14.2, *) { _ = AudioHardwareCreateProcessTap }\n",
+                cwd=ROOT, env=child_env, check=False, capture_output=True, text=True,
+            )
         if probe.returncode == 0:
             print(f"macOS SDK: {resolved}")
             return child_env
         diagnostics.append(f"{resolved}:\n{probe.stderr}")
 
     hint = "Check the explicit SDKROOT." if explicit else "Install a compatible Command Line Tools package."
-    raise RuntimeError(f"No usable macOS SDK for swiftc. {hint}\n" + "\n".join(diagnostics))
+    raise RuntimeError(f"No usable macOS SDK for {compiler}. {hint}\n" + "\n".join(diagnostics))
 
 
 def build_macos(env: dict[str, str]) -> None:

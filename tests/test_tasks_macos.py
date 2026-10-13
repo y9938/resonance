@@ -47,7 +47,21 @@ def test_arm_dependencies_and_backend_share_ffmpeg(tmp_path, monkeypatch):
     installed = []
     monkeypatch.setattr(tasks, "execute", lambda command, env: installed.append((command, env)))
 
+    newest = tmp_path / "MacOSX27.0.sdk"
+    older = tmp_path / "MacOSX26.5.sdk"
+    newest.mkdir()
+    older.mkdir()
+    probes = []
+
     def run(command, **kwargs):
+        if command[0] == "xcrun":
+            return subprocess.CompletedProcess(command, 0, str(newest), "")
+        if command[0] == "cc":
+            assert "-c" not in command  # Exercise the linker, not only compilation.
+            assert "-isysroot" in command and "-o" in command
+            sdk = kwargs["env"]["SDKROOT"]
+            probes.append(sdk)
+            return subprocess.CompletedProcess(command, int(sdk == str(newest)), "", "unknown architecture")
         output = str(prefix) if command[0] == "/test/brew" else "18.1.0"
         return subprocess.CompletedProcess(command, 0, output + "\n", "")
 
@@ -59,6 +73,9 @@ def test_arm_dependencies_and_backend_share_ffmpeg(tmp_path, monkeypatch):
     command, build_env = installed[-1]
     assert "--no-binary" in command and "--reinstall-package" in command
     assert "--no-cache" in command and command[-1] == "av==18.1.0"
+    assert build_env["SDKROOT"] == str(older)
+    assert probes == [str(newest), str(older)]
+    assert build_env["CC"] == "cc"
     assert build_env["PKG_CONFIG_PATH"].split(":")[0] == f"{backend_env['DYLD_LIBRARY_PATH']}/pkgconfig"
     assert original == {"PATH": "/usr/bin", "PKG_CONFIG_PATH": "/custom/pkgconfig"}
 
@@ -184,7 +201,8 @@ def test_sdk_falls_back_and_deduplicates_symlinks(tmp_path, monkeypatch):
     assert original == {"PATH": "/usr/bin"}
 
 
-def test_explicit_sdk_failure_is_not_overridden(tmp_path, monkeypatch):
+@pytest.mark.parametrize("compiler", ["swiftc", "cc"])
+def test_explicit_sdk_failure_is_not_overridden(tmp_path, monkeypatch, compiler):
     calls = []
 
     def run(command, **kwargs):
@@ -193,9 +211,9 @@ def test_explicit_sdk_failure_is_not_overridden(tmp_path, monkeypatch):
 
     monkeypatch.setattr(tasks.subprocess, "run", run)
     with pytest.raises(RuntimeError, match="explicit SDKROOT"):
-        tasks.macos_sdk_env({"SDKROOT": str(tmp_path)})
+        tasks.macos_sdk_env({"SDKROOT": str(tmp_path)}, compiler=compiler)
     assert len(calls) == 1
-    assert calls[0][0] == "swiftc"
+    assert calls[0][0] == compiler
 
 
 def test_macos_bundle_records_revision_at_build_time(macos_build, monkeypatch):
