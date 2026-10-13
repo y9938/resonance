@@ -2,6 +2,9 @@
   "name": "resonance-frontend",
   "private": true,
   "type": "module",
+  "allowScripts": {
+    "fsevents": false
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",

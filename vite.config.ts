@@ -10,7 +10,7 @@ export default defineConfig({
     emptyOutDir: true,
     license: { fileName: "third-party/licenses.md" },
   },
-  plugins: [svelte()],
+  plugins: [svelte({ configFile: false })],
   server: {
     host: "127.0.0.1",
     port: Number(new URL(origin).port),

@@ -30,7 +30,7 @@ open ~/Applications/Resonance.app
 ```
 
 The installer creates `.env` if missing and installs dependencies for your Mac.
-The build installs `~/Applications/Resonance.app`, including the frontend.
+The build includes the frontend.
 Choose **Open in Browser** from Resonance's menu bar icon.
 Rebuild the app if you move the repository folder.
 
