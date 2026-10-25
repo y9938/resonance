@@ -131,6 +131,7 @@ tts_service = TtsService(
     config=Config,
     get_model=models.tts,
     is_model_loaded=lambda: models.tts_loaded,
+    is_model_loading=lambda: models.tts_loading,
     log=log,
     output_dir=TTS_OUTPUT_DIR,
 )
@@ -286,19 +287,20 @@ async def list_models() -> dict[str, Any]:
     return {
         "stt": {
             "models": [
-                {"id": "gigaam", "name": "GigaAM-v3", "languages": sorted(GigaAMAdapter.supported_languages()), "loaded": models.stt_gigaam_loaded},
-                {"id": "whisper", "name": "Whisper Turbo", "languages": whisper_languages, "loaded": models.stt_whisper_loaded},
-                {"id": "granite", "name": "IBM Granite Speech 4.1 Plus", "languages": sorted(GraniteAdapter.supported_languages()), "loaded": models.stt_granite_loaded},
+                {"id": "gigaam", "name": "GigaAM-v3", "languages": sorted(GigaAMAdapter.supported_languages()), "loaded": models.stt_gigaam_loaded, "loading": models.stt_gigaam_loading},
+                {"id": "whisper", "name": "Whisper Turbo", "languages": whisper_languages, "loaded": models.stt_whisper_loaded, "loading": models.stt_whisper_loading},
+                {"id": "granite", "name": "IBM Granite Speech 4.1 Plus", "languages": sorted(GraniteAdapter.supported_languages()), "loaded": models.stt_granite_loaded, "loading": models.stt_granite_loading},
             ],
             "language_names": {code: LANGUAGES[code] for code in whisper_languages},
         },
-        "tts": {"name": primary_backend.name, "loaded": primary_backend.loaded},
+        "tts": {"name": primary_backend.name, "loaded": primary_backend.loaded, "loading": primary_backend.loading},
         "tts_catalog": tts_service.serialize_catalog(),
         "tts_backends": [
             {
                 "id": backend_id,
                 "name": backend.name,
                 "loaded": backend.loaded,
+                "loading": getattr(backend, "loading", False),
             }
             for backend_id, backend in tts_service.backends.items()
         ],
@@ -310,6 +312,7 @@ active_system_captures: dict[str, Any] = {}
 active_live_sessions: dict[str, LiveSessionHandle] = {}
 live_preview_broker = LivePreviewBroker()
 system_capture_lock = threading.Lock()
+system_capture_start_lock = asyncio.Lock()
 
 
 async def _expire_live_session(
@@ -338,6 +341,23 @@ async def _expire_live_session(
         live_preview_broker.discard(job_id)
         if active_live_sessions.get(job_id) is handle:
             active_live_sessions.pop(job_id, None)
+
+
+async def _start_system_audio_engine(audio_engine: Any) -> None:
+    start_task = asyncio.create_task(asyncio.to_thread(audio_engine.start_capture))
+    try:
+        await asyncio.shield(start_task)
+    except asyncio.CancelledError:
+        try:
+            await asyncio.shield(start_task)
+        except Exception as exc:
+            log.warning("System capture start ended during request cancellation: %s", exc)
+        else:
+            try:
+                await asyncio.to_thread(audio_engine.stop_capture)
+            except Exception as exc:
+                log.warning("Failed to stop system capture after request cancellation: %s", exc)
+        raise
 
 
 def _system_capture_live_loop(audio_engine, live_session: LiveSTTSession) -> Exception:
@@ -409,32 +429,33 @@ async def start_system_audio(
     session_id = get_or_set_session_id(request, response)
     capture_config = (resolved_language, model_name, include_microphone)
 
-    with system_capture_lock:
-        if active_system_captures:
-            active_job_id = next(iter(active_system_captures))
-            active_capture = active_system_captures[active_job_id]
-            if active_capture["session_id"] != session_id:
-                raise HTTPException(status_code=409, detail="System audio capture is active in another browser session")
-            if active_capture["stop_requested"]:
-                raise HTTPException(status_code=409, detail="System audio capture is stopping")
-            if active_capture["config"] != capture_config:
-                raise HTTPException(
-                    status_code=409,
-                    detail="System audio capture is already active with a different configuration",
-                )
-            existing_status = jobs.get_status(active_job_id)
-            log.info(f"System Audio Capture already active: returning existing job_id={active_job_id}")
-            return {
-                "job_id": active_job_id,
-                "resumed": True,
-                "started_at": existing_status["started_at"] if existing_status else None,
-                "capture_config": existing_status["result"]["capture_config"] if existing_status else None,
-            }
+    async with system_capture_start_lock:
+        with system_capture_lock:
+            if active_system_captures:
+                active_job_id = next(iter(active_system_captures))
+                active_capture = active_system_captures[active_job_id]
+                if active_capture["session_id"] != session_id:
+                    raise HTTPException(status_code=409, detail="System audio capture is active in another browser session")
+                if active_capture["stop_requested"]:
+                    raise HTTPException(status_code=409, detail="System audio capture is stopping")
+                if active_capture["config"] != capture_config:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="System audio capture is already active with a different configuration",
+                    )
+                existing_status = jobs.get_status(active_job_id)
+                log.info(f"System Audio Capture already active: returning existing job_id={active_job_id}")
+                return {
+                    "job_id": active_job_id,
+                    "resumed": True,
+                    "started_at": existing_status["started_at"] if existing_status else None,
+                    "capture_config": existing_status["result"]["capture_config"] if existing_status else None,
+                }
 
         log.info("System capture requested: model=%s, language=%s, microphone=%s",
                  model_name, resolved_language, include_microphone)
         try:
-            resolved_model = models.get_stt_model(model_name)
+            resolved_model = await asyncio.to_thread(models.get_stt_model, model_name)
             audio_engine = get_system_audio_capture(include_microphone=include_microphone)
         except Exception as exc:
             log.exception("System Audio Capture setup failed")
@@ -464,7 +485,7 @@ async def start_system_audio(
                 preview_broker=live_preview_broker,
                 language=resolved_language,
             )
-            audio_engine.start_capture()
+            await _start_system_audio_engine(audio_engine)
             capture_started = True
             capture = {
                 "engine": audio_engine,
@@ -473,7 +494,8 @@ async def start_system_audio(
                 "config": capture_config,
                 "stop_requested": False,
             }
-            active_system_captures[job_id] = capture
+            with system_capture_lock:
+                active_system_captures[job_id] = capture
             supervisor = _supervise_system_capture(job_id, audio_engine, live_session)
             try:
                 capture["task"] = asyncio.create_task(supervisor)
@@ -482,10 +504,11 @@ async def start_system_audio(
                 raise
             jobs.update_event(job_id, "start", {"stage": "capturing", "total": 0})
         except Exception as exc:
-            active_system_captures.pop(job_id, None)
+            with system_capture_lock:
+                active_system_captures.pop(job_id, None)
             if capture_started:
                 try:
-                    audio_engine.stop_capture()
+                    await asyncio.to_thread(audio_engine.stop_capture)
                 except Exception as stop_exc:
                     log.warning(f"Failed to stop rolled-back capture: {stop_exc}")
             jobs.update_event(job_id, "error", {"message": f"Capture start failed: {exc}"})
@@ -573,7 +596,7 @@ async def start_live_job(
 
     log.info("Live microphone job requested: model=%s, language=%s", model_name, resolved_language)
     try:
-        resolved_model = models.get_stt_model(model_name)
+        resolved_model = await asyncio.to_thread(models.get_stt_model, model_name)
     except Exception as exc:
         log.exception("Live STT model setup failed")
         raise HTTPException(status_code=500, detail=f"Live STT setup failed: {exc}") from exc
@@ -744,7 +767,7 @@ async def start_stt_job(
     except Exception as exc:
         raise HTTPException(400, f"Failed to read audio file: {exc}") from exc
 
-    return submit_stt_job(
+    return await submit_stt_job(
         request, response, media, file.filename,
         language=language, model=model, detect_language=detect_language,
         diarization=diarization, batch_id=batch_id,
@@ -798,7 +821,7 @@ async def start_local_stt_job(
         raise HTTPException(400, "Use an absolute filesystem path") from exc
 
     # The job borrows the file; it must remain accessible until the job ends.
-    return submit_stt_job(
+    return await submit_stt_job(
         request, response, str(source), source.name,
         language=language, model=model, detect_language=detect_language,
         diarization=diarization, batch_id=batch_id,
@@ -806,7 +829,7 @@ async def start_local_stt_job(
     )
 
 
-def submit_stt_job(
+async def submit_stt_job(
     request: Request, response: Response, media: str | EncodedMedia, filename: str | None,
     *, language: str | None, model: str | None, detect_language: bool,
     diarization: bool, batch_id: str | None, batch_index: int | None, batch_total: int | None,
@@ -821,7 +844,11 @@ def submit_stt_job(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    resolved_model = models.get_stt_model(model_name)
+    try:
+        resolved_model = await asyncio.to_thread(models.get_stt_model, model_name)
+    except Exception as exc:
+        log.exception("STT model setup failed: model=%s", model_name)
+        raise HTTPException(status_code=500, detail=f"STT model setup failed: {exc}") from exc
 
     session_id = get_or_set_session_id(request, response)
     initial_result: dict[str, Any] = {"filename": filename or None}

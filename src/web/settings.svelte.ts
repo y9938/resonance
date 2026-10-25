@@ -34,6 +34,13 @@ export function compatible() {
     model.languages.includes(settings.language),
   );
 }
+export function selectedSttModelId() {
+  if (settings.autoDetect) return "whisper";
+  if (settings.model) return settings.model;
+  if (settings.language === "ru" && settings.models.some((model) => model.id === "gigaam"))
+    return "gigaam";
+  return settings.models.find((model) => model.languages.includes(settings.language))?.id || null;
+}
 export function setLanguage(value: string) {
   settings.language = value;
   localStorage.setItem("resonance_sttLanguage", value);

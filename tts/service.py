@@ -51,6 +51,10 @@ class TtsBackend:
     def loaded(self) -> bool:
         raise NotImplementedError
 
+    @property
+    def loading(self) -> bool:
+        return False
+
     def estimate_chunks(self, text: str) -> int:
         raise NotImplementedError
 
@@ -179,17 +183,23 @@ class SileroRuTtsBackend(TtsBackend):
         *,
         get_model: Callable[[], Any],
         is_loaded: Callable[[], bool],
+        is_loading: Callable[[], bool] | None = None,
         sample_rate: int,
         max_chars: int,
     ) -> None:
         self._get_model = get_model
         self._is_loaded = is_loaded
+        self._is_loading = is_loading or (lambda: False)
         self._sample_rate = sample_rate
         self._max_chars = max_chars
 
     @property
     def loaded(self) -> bool:
         return self._is_loaded()
+
+    @property
+    def loading(self) -> bool:
+        return self._is_loading()
 
     def estimate_chunks(self, text: str) -> int:
         clean = clean_tts_text(text)
@@ -256,13 +266,21 @@ class KokoroEnTtsBackend(TtsBackend):
 
     def __init__(self, *, log: Any) -> None:
         self._lock = threading.Lock()
+        self._state_lock = threading.Lock()
         self._model: Any | None = None
+        self._loading = False
         self._pipelines: dict[str, Any] = {}
         self._log = log
 
     @property
     def loaded(self) -> bool:
-        return self._model is not None
+        with self._state_lock:
+            return self._model is not None
+
+    @property
+    def loading(self) -> bool:
+        with self._state_lock:
+            return self._loading
 
     def estimate_chunks(self, text: str) -> int:
         return 1
@@ -295,7 +313,17 @@ class KokoroEnTtsBackend(TtsBackend):
             started = time.monotonic()
             device = os.getenv("DEVICE", "cpu")
             self._log.info(f"Loading TTS model (Kokoro English) on {device}...")
-            self._model = KModel(repo_id="hexgrad/Kokoro-82M").to(torch.device(device)).eval()
+            with self._state_lock:
+                self._loading = True
+            try:
+                model = KModel(repo_id="hexgrad/Kokoro-82M").to(torch.device(device)).eval()
+            except BaseException:
+                with self._state_lock:
+                    self._loading = False
+                raise
+            with self._state_lock:
+                self._model = model
+                self._loading = False
             self._log.info("Kokoro English loaded: device=%s; %.1fs", device, time.monotonic() - started)
         return self._model
 
@@ -328,6 +356,7 @@ class TtsService:
         config: Any,
         get_model: Callable[[], Any],
         is_model_loaded: Callable[[], bool],
+        is_model_loading: Callable[[], bool],
         log: Any,
         output_dir: Path,
     ) -> None:
@@ -338,6 +367,7 @@ class TtsService:
             SileroRuTtsBackend.backend_id: SileroRuTtsBackend(
                 get_model=get_model,
                 is_loaded=is_model_loaded,
+                is_loading=is_model_loading,
                 sample_rate=config.TTS_SR,
                 max_chars=config.TTS_MAX_CHARS,
             ),

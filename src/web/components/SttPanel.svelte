@@ -18,8 +18,10 @@
     setLanguage,
     setModel,
     toast,
+    selectedSttModelId,
   } from "../settings.svelte";
   import { t, helpers } from "../i18n/state.svelte";
+  import { modelIsLoading } from "../model-loading.svelte";
   import { buildSttTimeRangesText } from "../stt/transcript";
   import { downloadText } from "../api/client";
   import LanguagePicker from "./LanguagePicker.svelte";
@@ -170,7 +172,7 @@
     </div>
 
     <div class="progress" id="sttProgress" class:active={stt.progress}>
-      <div class="progress-bar">
+      <div class="progress-bar" class:indeterminate={stt.busy && modelIsLoading(stt.loadingModelId || selectedSttModelId())}>
         <div
           class="progress-fill"
           id="sttProgressFill"

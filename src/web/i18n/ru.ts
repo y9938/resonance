@@ -47,6 +47,7 @@ const definition: LocaleDefinition = {
     progressComplete: "Готово",
     progressChunk: "Фрагмент {current} / {total}",
     progressStarting: "Запуск…",
+    progressLoadingModel: "Загружаем {model}…",
     errNetwork: "Ошибка сети",
     errLiveBackpressure: "Запись остановлена: онлайн-распознавание не успевает обрабатывать аудио",
     errLiveUndelivered: "Часть записанного аудио не удалось отправить",

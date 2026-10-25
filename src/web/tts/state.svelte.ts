@@ -3,6 +3,7 @@ import type { Job, JobEvent, Voice } from "../api/types";
 import { settings, toast } from "../settings.svelte";
 import { t, helpers, ttsLabels } from "../i18n/state.svelte";
 import { refreshHistory } from "../jobs/state.svelte";
+import { loadingModelName, modelIsLoading, watchModelLoading } from "../model-loading.svelte";
 const key = "resonance_tts_active_job_id";
 export const tts = $state({
   text: localStorage.getItem("resonance_ttsText") || "",
@@ -22,10 +23,12 @@ export const tts = $state({
   chunks: 0,
   duration: 0,
   complete: false,
+  modelId: "",
 });
 let epoch = 0;
 let stream: EventSource | null = null;
 let timer: ReturnType<typeof setTimeout>;
+let stopModelWatch: (() => void) | null = null;
 export function languages() {
   return settings.config.tts?.languages || [];
 }
@@ -115,6 +118,8 @@ export function placeholder() {
     : t("ttsPlaceholderUnlimited");
 }
 export function progressText() {
+  if (tts.busy && modelIsLoading(tts.modelId))
+    return t("progressLoadingModel", { model: loadingModelName(tts.modelId) });
   return tts.label
     ? t(tts.label)
     : t("progressChunk", { current: tts.current, total: tts.total || "~" });
@@ -124,9 +129,7 @@ export function percent() {
     ? 100
     : tts.total > 0
       ? Math.max(0, Math.min(100, (tts.current / tts.total) * 100))
-      : tts.label === "progressStarting"
-        ? 10
-        : 0;
+      : 0;
 }
 export function invalidate() {
   epoch++;
@@ -146,12 +149,15 @@ function reset(keep = false) {
   tts.current = 0;
   tts.total = 0;
   tts.label = "";
+  tts.modelId = "";
   if (!keep) {
     tts.result = false;
     tts.url = "";
   }
 }
 function releaseJob() {
+  stopModelWatch?.();
+  stopModelWatch = null;
   stream?.close();
   stream = null;
   active(null);
@@ -315,6 +321,12 @@ export async function synthesize() {
         .slice(0, -5);
   tts.sourceFilename = "";
   tts.filename = filename + ".wav";
+  tts.modelId =
+    languages()
+      .find((language) => language.id === tts.language)
+      ?.voices.find((voice) => voice.id === tts.voice)?.backend_id || "";
+  stopModelWatch?.();
+  stopModelWatch = watchModelLoading();
   try {
     const result = await request<{ job_id: string }>(
       "/jobs/tts?" +
@@ -327,6 +339,8 @@ export async function synthesize() {
       { method: "POST" },
     );
     if (token !== epoch) {
+      stopModelWatch?.();
+      stopModelWatch = null;
       void request(`/jobs/${result.job_id}/cancel`, { method: "POST" });
       return;
     }

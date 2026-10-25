@@ -15,6 +15,7 @@ export const messages: Record<string, string> = {
     progressComplete: "Complete",
     progressChunk: "Chunk {current} / {total}",
     progressStarting: "Starting…",
+    progressLoadingModel: "Loading {model}…",
     errNetwork: "Network error",
     errLiveBackpressure: "Recording stopped because live transcription cannot keep up",
     errLiveUndelivered: "Some recorded audio could not be delivered",

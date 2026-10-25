@@ -1,10 +1,11 @@
 import type { CaptureConfig } from "../api/types";
-import { settings } from "../settings.svelte";
+import { settings, selectedSttModelId } from "../settings.svelte";
 import { t } from "../i18n/state.svelte";
 import { request, status } from "../api/client";
 import { stt, attachLive, liveParams, upload } from "./state.svelte";
 import { LiveTransport } from "./live-transport";
 import { mergeMicPcmChunks, encodeMicWav } from "./pcm";
+import { watchModelLoading } from "../model-loading.svelte";
 
 type CaptureSession = Readonly<
   | { kind: "system"; jobId: string; config: Readonly<CaptureConfig> | null }
@@ -20,8 +21,10 @@ let operation = $state.raw<CaptureOperation>({ state: "idle" });
 function activeSession() {
   return "session" in operation ? operation.session : null;
 }
+let startingModelId = $state("");
 export const capture = $state({
   get state() { return operation.state; },
+  get modelId() { return startingModelId; },
   get active() { return activeSession() !== null; },
   get config() {
     const session = activeSession();
@@ -144,12 +147,20 @@ export async function start() {
   operation = { state: "starting" };
   stt.error = "";
   if (settings.source === "sys") {
+    startingModelId = selectedSttModelId() || "";
     try {
       const params = liveParams();
       if (settings.includeMic) params.set("include_microphone", "true");
-      const result = await request<{
+      const stopWatching = watchModelLoading();
+      let result: {
         job_id: string; started_at?: number; capture_config?: CaptureConfig;
-      }>("/system-audio/start?" + params, { method: "POST" });
+      };
+      try {
+        result = await request("/system-audio/start?" + params, { method: "POST" });
+      } finally {
+        stopWatching();
+        startingModelId = "";
+      }
       if (token !== epoch) {
         void request("/system-audio/stop?job_id=" + encodeURIComponent(result.job_id),
           { method: "POST" }).catch(() => {});
@@ -181,12 +192,19 @@ export async function start() {
   }
   discard();
   const isLive = settings.mode === "live";
+  if (isLive) startingModelId = selectedSttModelId() || "";
   let jobId: string | null = null;
   let stage: "model" | "permission" | "audio" = "model";
   try {
     if (isLive) {
-      const result = await request<{ job_id: string }>(
-        "/jobs/live/start?" + liveParams(), { method: "POST" });
+      const stopWatching = watchModelLoading();
+      let result: { job_id: string };
+      try {
+        result = await request("/jobs/live/start?" + liveParams(), { method: "POST" });
+      } finally {
+        stopWatching();
+        startingModelId = "";
+      }
       jobId = result.job_id;
     }
     stage = "permission";

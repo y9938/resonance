@@ -66,6 +66,8 @@ export interface Model {
   id: string;
   name: string;
   languages: string[];
+  loaded?: boolean;
+  loading?: boolean;
 }
 export interface Voice {
   id: string;

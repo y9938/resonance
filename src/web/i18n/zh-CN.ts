@@ -37,6 +37,7 @@ const definition: LocaleDefinition = {
     progressComplete: "已完成",
     progressChunk: "片段 {current} / {total}",
     progressStarting: "启动中…",
+    progressLoadingModel: "正在加载 {model}…",
     errNetwork: "网络错误",
     errLiveBackpressure: "实时转写无法跟上音频速度，录音已停止",
     errLiveUndelivered: "部分录制的音频未能发送",

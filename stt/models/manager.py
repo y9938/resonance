@@ -53,50 +53,84 @@ class ModelManager:
         self._stt_granite: GraniteAdapter | None = None
         self._tts: Any | None = None
         self._lock = threading.Lock()
+        self._state_lock = threading.Lock()
+        self._loading: set[str] = set()
 
     @property
     def stt_gigaam_loaded(self) -> bool:
-        return self._stt_gigaam is not None
+        with self._state_lock:
+            return self._stt_gigaam is not None
+
+    @property
+    def stt_gigaam_loading(self) -> bool:
+        return self._is_loading("gigaam")
 
     @property
     def stt_whisper_loaded(self) -> bool:
-        return self._stt_whisper is not None
+        with self._state_lock:
+            return self._stt_whisper is not None
+
+    @property
+    def stt_whisper_loading(self) -> bool:
+        return self._is_loading("whisper")
 
     @property
     def stt_granite_loaded(self) -> bool:
-        return self._stt_granite is not None
+        with self._state_lock:
+            return self._stt_granite is not None
+
+    @property
+    def stt_granite_loading(self) -> bool:
+        return self._is_loading("granite")
 
     @property
     def tts_loaded(self) -> bool:
-        return self._tts is not None
+        with self._state_lock:
+            return self._tts is not None
+
+    @property
+    def tts_loading(self) -> bool:
+        return self._is_loading("silero_ru")
+
+    def _is_loading(self, model_id: str) -> bool:
+        with self._state_lock:
+            return model_id in self._loading
+
+    def _get_or_load(self, model_id: str, attribute: str, loader: Callable[[], Any]) -> Any:
+        # Keep the existing serialized model initialization policy. State reads use
+        # a separate lock so the API can report a load while this lock is held.
+        with self._lock:
+            with self._state_lock:
+                model = getattr(self, attribute)
+                if model is not None:
+                    return model
+                self._loading.add(model_id)
+            try:
+                model = loader()
+            except BaseException:
+                with self._state_lock:
+                    self._loading.discard(model_id)
+                raise
+            with self._state_lock:
+                setattr(self, attribute, model)
+                self._loading.discard(model_id)
+            return model
 
     def stt_gigaam(self) -> GigaAMAdapter:
-        with self._lock:
-            if self._stt_gigaam is None:
-                loader = self._gigaam_loader or load_gigaam
-                self._stt_gigaam = loader()
-            return self._stt_gigaam
+        loader = self._gigaam_loader or load_gigaam
+        return self._get_or_load("gigaam", "_stt_gigaam", loader)
 
     def stt_whisper(self) -> WhisperAdapter:
-        with self._lock:
-            if self._stt_whisper is None:
-                loader = self._whisper_loader or load_whisper
-                self._stt_whisper = loader()
-            return self._stt_whisper
+        loader = self._whisper_loader or load_whisper
+        return self._get_or_load("whisper", "_stt_whisper", loader)
 
     def stt_granite(self) -> GraniteAdapter:
-        with self._lock:
-            if self._stt_granite is None:
-                loader = self._granite_loader or load_granite
-                self._stt_granite = loader()
-            return self._stt_granite
+        loader = self._granite_loader or load_granite
+        return self._get_or_load("granite", "_stt_granite", loader)
 
     def tts(self) -> Any:
-        with self._lock:
-            if self._tts is None:
-                loader = self._tts_loader or load_silero_tts
-                self._tts = loader()
-            return self._tts
+        loader = self._tts_loader or load_silero_tts
+        return self._get_or_load("silero_ru", "_tts", loader)
 
     def get_stt_model(self, model_name: str) -> STTModelAdapter:
         """Resolve STT adapter by model identifier."""

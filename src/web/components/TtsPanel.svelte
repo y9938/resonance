@@ -17,6 +17,7 @@
   } from "../tts/state.svelte";
   import { settings } from "../settings.svelte";
   import { t, helpers, ttsLabels } from "../i18n/state.svelte";
+  import { modelIsLoading } from "../model-loading.svelte";
   import { download } from "../api/client";
   let fileInput: HTMLInputElement;
   let dragging = $state(false);
@@ -150,7 +151,7 @@
     style="margin-top: 1rem;"
     class:active={tts.progress}
   >
-    <div class="progress-bar">
+    <div class="progress-bar" class:indeterminate={tts.busy && modelIsLoading(tts.modelId)}>
       <div
         class="progress-fill"
         id="ttsProgressFill"

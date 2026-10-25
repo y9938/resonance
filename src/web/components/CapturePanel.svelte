@@ -12,6 +12,7 @@
   } from "../stt/capture.svelte";
   import { settings } from "../settings.svelte";
   import { t, helpers } from "../i18n/state.svelte";
+  import { loadingModelName, modelIsLoading } from "../model-loading.svelte";
 </script>
 
 <div class="mic-box" id="sttMicBox" class:mic-recording={capture.active}>
@@ -106,7 +107,9 @@
     </span>
   </div>
   <div class="mic-hint" id="sttMicHint" data-mic-hint-key="sttMicHintIdle">
-    {t(capture.hint)}{capture.duration
+    {capture.state === "starting" && modelIsLoading(capture.modelId)
+      ? t("progressLoadingModel", { model: loadingModelName(capture.modelId) })
+      : t(capture.hint)}{capture.duration
       ? " · " + helpers().formatMicDuration(capture.duration)
       : ""}
   </div>

@@ -1,8 +1,9 @@
 import { finishCapture } from "./capture.svelte";
 import type { AudioInput, CaptureConfig, Job, JobEvent, Segment } from "../api/types";
 import { request, status, downloadText } from "../api/client";
-import { settings, toast } from "../settings.svelte";
+import { settings, toast, selectedSttModelId } from "../settings.svelte";
 import { t } from "../i18n/state.svelte";
+import { loadingModelName, modelIsLoading, watchModelLoading } from "../model-loading.svelte";
 import { refreshHistory, filename, sorted } from "../jobs/state.svelte";
 import {
   mergeAdjacentSttTexts,
@@ -38,6 +39,7 @@ export const stt = $state({
       : "blocks",
   batchId: null as string | null,
   jobs: [] as Job[],
+  loadingModelId: "",
 });
 let epoch = 0;
 let stream: EventSource | null = null;
@@ -64,6 +66,7 @@ export function reset(keepResult = false) {
   stt.total = 0;
   stt.label = null;
   stt.complete = false;
+  stt.loadingModelId = "";
   if (!keepResult) {
     stt.result = false;
     stt.segments = [];
@@ -126,6 +129,9 @@ export function setView(view: "blocks" | "continuous") {
   localStorage.setItem("resonance_stt_view_mode", view);
 }
 export function progressText() {
+  const modelId = stt.loadingModelId || selectedSttModelId();
+  if (stt.busy && modelIsLoading(modelId))
+    return t("progressLoadingModel", { model: loadingModelName(modelId) });
   return stt.label
     ? t(stt.label)
     : stt.total > 0
@@ -135,7 +141,7 @@ export function progressText() {
 export function percent() {
   return stt.complete
     ? 100
-    : stt.label === "progressUploading" || stt.label === "progressStarting"
+    : stt.label === "progressUploading"
       ? 5
       : stt.total > 0
         ? Math.max(0, Math.min(100, (stt.current / stt.total) * 100))
@@ -358,14 +364,20 @@ async function start(
   const local = "path" in file;
   const form = new FormData();
   if (!local) form.append("file", file);
-  const result = await request<{ job_id: string }>(
-    `/jobs/stt${local ? "/local" : ""}?${query}`,
-    {
-      method: "POST",
-      body: local ? JSON.stringify({ path: file.path }) : form,
-      headers: local ? { "Content-Type": "application/json" } : undefined,
-    },
-  );
+  const stopWatching = watchModelLoading();
+  let result: { job_id: string };
+  try {
+    result = await request<{ job_id: string }>(
+      `/jobs/stt${local ? "/local" : ""}?${query}`,
+      {
+        method: "POST",
+        body: local ? JSON.stringify({ path: file.path }) : form,
+        headers: local ? { "Content-Type": "application/json" } : undefined,
+      },
+    );
+  } finally {
+    stopWatching();
+  }
   if (!result.job_id) throw new Error(t("errNoResponseBody"));
   return result.job_id;
 }
@@ -426,6 +438,7 @@ export async function upload(files: AudioInput[]) {
   cancel();
   clearBatch();
   stt.error = "";
+  stt.loadingModelId = selectedSttModelId() || "";
   const token = epoch;
   if (files.length === 1) {
     stt.progress = true;
