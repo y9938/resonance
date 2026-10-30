@@ -25,6 +25,35 @@ class DecodeStats:
     """
 
     decoded_samples: int = 0
+    collect_signal: bool = False
+    finite_samples: int = 0
+    sum_squares: float = 0.0
+    peak_abs: float = 0.0
+    nonfinite_samples: int = 0
+
+    def add(self, samples: np.ndarray) -> None:
+        self.decoded_samples += len(samples)
+        if not self.collect_signal or not len(samples):
+            return
+        # Bound temporary masks/copies when the input is an hours-long in-memory PCM array.
+        block_samples = 1_048_576
+        for offset in range(0, len(samples), block_samples):
+            block = samples[offset : offset + block_samples]
+            finite = np.isfinite(block)
+            self.nonfinite_samples += int(len(block) - np.count_nonzero(finite))
+            if not np.any(finite):
+                continue
+            values = block[finite]
+            absolute = np.abs(values)
+            self.finite_samples += len(values)
+            self.sum_squares += float(np.dot(values, values))
+            self.peak_abs = max(self.peak_abs, float(np.max(absolute)))
+
+    @property
+    def rms(self) -> float:
+        if not self.finite_samples:
+            return 0.0
+        return (self.sum_squares / self.finite_samples) ** 0.5
 
 
 class DecodedSampleLimitExceeded(Exception):
@@ -66,7 +95,7 @@ def iter_media_pcm(
         def converted_pcm(decoded: av.AudioFrame | None) -> Iterator[np.ndarray]:
             for converted in resampler.resample(decoded):
                 samples = converted.to_ndarray().reshape(-1)
-                stats.decoded_samples += len(samples)
+                stats.add(samples)
                 if max_samples is not None and stats.decoded_samples > max_samples:
                     raise DecodedSampleLimitExceeded()
                 yield samples

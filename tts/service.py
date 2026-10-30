@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 import secrets
@@ -14,6 +15,8 @@ from typing import Any, ClassVar
 import torch
 from fastapi import HTTPException
 from scipy.io import wavfile
+
+from core.process_metrics import format_process_resources, process_snapshot
 
 
 @dataclass(frozen=True)
@@ -311,6 +314,7 @@ class KokoroEnTtsBackend(TtsBackend):
                     "Kokoro dependency is not installed. Add 'kokoro' to the environment."
                 ) from exc
             started = time.monotonic()
+            resources_before = process_snapshot() if self._log.isEnabledFor(logging.DEBUG) else None
             device = os.getenv("DEVICE", "cpu")
             self._log.info(f"Loading TTS model (Kokoro English) on {device}...")
             with self._state_lock:
@@ -320,11 +324,28 @@ class KokoroEnTtsBackend(TtsBackend):
             except BaseException:
                 with self._state_lock:
                     self._loading = False
+                if resources_before is not None:
+                    resources_after = process_snapshot()
+                    if resources_after is not None:
+                        self._log.debug(
+                            "Model load process resources: scope=process observed_during_model_id=kokoro_en "
+                            "result=failed elapsed=%.1fs %s",
+                            time.monotonic() - started,
+                            format_process_resources(resources_before, resources_after),
+                        )
                 raise
             with self._state_lock:
                 self._model = model
                 self._loading = False
             self._log.info("Kokoro English loaded: device=%s; %.1fs", device, time.monotonic() - started)
+            if resources_before is not None:
+                resources_after = process_snapshot()
+                if resources_after is not None:
+                    self._log.debug(
+                        "Model load process resources: scope=process observed_during_model_id=kokoro_en result=ready elapsed=%.1fs %s",
+                        time.monotonic() - started,
+                        format_process_resources(resources_before, resources_after),
+                    )
         return self._model
 
     def _get_pipeline(self, lang_code: str) -> Any:
@@ -518,11 +539,15 @@ class TtsService:
         jobs: Any,
         filename: str | None = None,
     ) -> None:
-        start_time = time.time()
+        start_time = time.monotonic()
+        resources_start = process_snapshot() if self._log.isEnabledFor(logging.DEBUG) else None
+        outcome = "running"
 
         def cancel_requested() -> bool:
+            nonlocal outcome
             if jobs.is_cancelled(job_id):
-                elapsed = time.time() - start_time
+                outcome = "cancelled"
+                elapsed = time.monotonic() - start_time
                 self._log.info(f"TTS cancelled: job_id={job_id}; {elapsed:.2f}s")
                 jobs.update_event(job_id, "cancelled", {})
                 return True
@@ -569,12 +594,23 @@ class TtsService:
                     "filename": filename,
                 },
             )
-            elapsed = time.time() - start_time
+            outcome = "completed"
+            elapsed = time.monotonic() - start_time
             self._log.info(f"TTS completed: job_id={job_id}; {elapsed:.2f}s")
         except Exception as exc:
-            elapsed = time.time() - start_time
+            outcome = "failed"
+            elapsed = time.monotonic() - start_time
             self._log.exception(f"TTS failed: job_id={job_id}; {exc} ({elapsed:.2f}s)")
             jobs.update_event(job_id, "error", {"message": str(exc)})
+        finally:
+            if resources_start is not None:
+                resources_end = process_snapshot()
+                if resources_end is not None:
+                    self._log.debug(
+                        "TTS process resources: scope=process observed_during_job_id=%s outcome=%s elapsed=%.1fs %s",
+                        job_id, outcome, time.monotonic() - resources_start.monotonic,
+                        format_process_resources(resources_start, resources_end),
+                    )
 
     def sweep_stale_files(self, max_age_sec: int) -> None:
         if not self.output_dir.is_dir():

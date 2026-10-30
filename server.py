@@ -19,10 +19,12 @@ import shlex
 import sys
 import tempfile
 import threading
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
+from uuid import UUID
 
 from dotenv import load_dotenv
 
@@ -53,9 +55,15 @@ from fastapi.responses import (
     PlainTextResponse,
     StreamingResponse,
 )
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from core.jobs import JobRegistry
 from core.logging import setup_logging
+from core.process_metrics import (
+    ProcessResourceSampler,
+    format_process_resources,
+    process_snapshot,
+)
 from stt.buffer import decode_media_bytes
 from stt.live import LiveSTTSession
 from stt.live_preview import LivePreviewBroker
@@ -90,6 +98,7 @@ class Config:
         os.getenv("RESONANCE_STT_MAX_CONCURRENT_JOBS", str(MAX_WORKERS))
     )
     STT_MAX_DURATION_SEC: int = int(os.getenv("RESONANCE_STT_MAX_DURATION_SEC", "0"))
+
     UPLOAD_LIMIT_MB: int = int(os.getenv("RESONANCE_UPLOAD_LIMIT_MB", "0"))
     TTS_FILE_TTL_SEC: int = int(os.getenv("RESONANCE_TTS_FILE_TTL_SEC", "5400"))
     TTS_SWEEP_INTERVAL_SEC: int = int(
@@ -104,6 +113,63 @@ class Config:
     LIVE_STT_IDLE_TIMEOUT_SEC: float = float(
         os.getenv("RESONANCE_LIVE_STT_IDLE_TIMEOUT_SEC", "15")
     )
+
+
+class DictationMetricsPayload(BaseModel):
+    """Bounded browser-side timing and buffer sizes; never contains user audio or text."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    capture_id: UUID
+    capture_wall_ms: float = Field(ge=0, le=86_400_000, allow_inf_nan=False)
+    audio_duration_s: float = Field(ge=0, le=86_400, allow_inf_nan=False)
+    sample_rate_hz: int = Field(ge=8_000, le=192_000)
+    pcm_buffer_bytes: int = Field(ge=0, le=8_589_934_592)
+    pcm_chunk_count: int = Field(ge=0, le=10_000_000)
+    merge_wall_ms: float = Field(ge=0, le=3_600_000, allow_inf_nan=False)
+    wav_encode_wall_ms: float = Field(ge=0, le=3_600_000, allow_inf_nan=False)
+    wav_bytes: int = Field(ge=0, le=8_589_934_592)
+
+
+class DictationEncodedDiagnosticPayload(DictationMetricsPayload):
+    event: Literal["encoded"]
+
+
+class DictationSubmissionDiagnosticPayload(DictationMetricsPayload):
+    event: Literal["submission-finished"]
+    job_id: str | None = Field(default=None, max_length=128, pattern=r"^[A-Za-z0-9_-]{1,128}$")
+    job_id_returned: bool
+    send_to_job_response_ms: float = Field(
+        ge=0, le=86_400_000, allow_inf_nan=False,
+    )
+
+    @model_validator(mode="after")
+    def job_id_matches_return_status(self) -> DictationSubmissionDiagnosticPayload:
+        if self.job_id_returned != (self.job_id is not None):
+            raise ValueError("job_id must match job_id_returned")
+        return self
+
+
+class MicrophoneCaptureDiagnosticPayload(BaseModel):
+    """Bounded browser microphone lifecycle event; arbitrary client text is rejected."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    event: Literal["mic-requested", "mic-started", "mic-failed"]
+    mode: Literal["live", "dictation"]
+    stage: Literal["unsupported", "model", "permission", "audio"]
+    error: Literal["NotAllowedError", "NotFoundError", "NotReadableError", "AbortError",
+                   "SecurityError", "InvalidStateError", "TypeError", "UnknownError"] | None = None
+
+
+CaptureDiagnosticPayload = Annotated[
+    MicrophoneCaptureDiagnosticPayload
+    | DictationEncodedDiagnosticPayload
+    | DictationSubmissionDiagnosticPayload,
+    Field(discriminator="event"),
+]
+
+
 TTS_OUTPUT_DIR = Path(tempfile.gettempdir()) / "resonance-tts"
 if Config.LIVE_STT_IDLE_TIMEOUT_SEC < 0:
     raise ValueError("RESONANCE_LIVE_STT_IDLE_TIMEOUT_SEC must be non-negative")
@@ -188,9 +254,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         log.warning(f"Failed to start local IPC server: {exc}")
         ipc_server = None
 
+    process_sampler = None
+    if log.isEnabledFor(logging.DEBUG):
+        process_sampler = ProcessResourceSampler(log)
+        process_sampler.start()
+
     try:
         yield
     finally:
+        if process_sampler is not None:
+            process_sampler.stop()
         if ipc_server is not None:
             try:
                 await ipc_server.stop()
@@ -254,22 +327,49 @@ def local_host_allowed(request: Request) -> bool:
 @app.post("/api/diagnostics/capture", status_code=204)
 async def capture_diagnostic(
     request: Request,
-    event: Literal["mic-requested", "mic-started", "mic-failed"] = Body(),
-    mode: Literal["live", "dictation"] = Body(),
-    stage: Literal["unsupported", "model", "permission", "audio"] = Body(),
-    error: Literal["NotAllowedError", "NotFoundError", "NotReadableError", "AbortError",
-                   "SecurityError", "InvalidStateError", "TypeError", "UnknownError"] | None = Body(default=None),
+    payload: CaptureDiagnosticPayload,
 ) -> Response:
     # Fixed, bounded fields only: never accept arbitrary messages, audio or transcripts.
     if not local_host_allowed(request):
         raise HTTPException(status_code=403, detail="Diagnostics require the local launcher.")
-    details = f"mode={mode}"
-    if event == "mic-failed":
-        details += f", stage={stage}, error={error or 'UnknownError'}"
+    if isinstance(
+        payload,
+        (DictationEncodedDiagnosticPayload, DictationSubmissionDiagnosticPayload),
+    ):
+        job_id = payload.job_id if isinstance(payload, DictationSubmissionDiagnosticPayload) else None
+        job_id_returned = (
+            payload.job_id_returned
+            if isinstance(payload, DictationSubmissionDiagnosticPayload) else None
+        )
+        send_to_job_response_ms = (
+            payload.send_to_job_response_ms
+            if isinstance(payload, DictationSubmissionDiagnosticPayload) else None
+        )
+        log.debug(
+            "Browser Dictation metrics: event=%s capture_id=%s capture_wall_ms=%.1f "
+            "audio_duration_s=%.2f sample_rate_hz=%d pcm_buffer_mib=%.2f "
+            "pcm_chunk_count=%d merge_wall_ms=%.1f wav_encode_wall_ms=%.1f wav_bytes=%d "
+            "job_id=%s job_id_returned=%s send_to_job_response_ms=%s",
+            payload.event, payload.capture_id, payload.capture_wall_ms,
+            payload.audio_duration_s, payload.sample_rate_hz,
+            payload.pcm_buffer_bytes / 1_048_576, payload.pcm_chunk_count,
+            payload.merge_wall_ms, payload.wav_encode_wall_ms, payload.wav_bytes,
+            job_id or "unavailable",
+            job_id_returned if job_id_returned is not None else "unavailable",
+            f"{send_to_job_response_ms:.1f}"
+            if send_to_job_response_ms is not None else "unavailable",
+        )
+        return Response(status_code=204)
+
+    details = f"mode={payload.mode}"
+    if payload.event == "mic-failed":
+        details += f", stage={payload.stage}, error={payload.error or 'UnknownError'}"
         browser = json.dumps(request.headers.get("user-agent", "unknown")[:256], ensure_ascii=True)
         details += f", browser={browser}"
-    log.log(logging.WARNING if event == "mic-failed" else logging.INFO,
-            "Browser %s: %s", event.replace("-", " "), details)
+    log.log(
+        logging.WARNING if payload.event == "mic-failed" else logging.INFO,
+        "Browser %s: %s", payload.event.replace("-", " "), details,
+    )
     return Response(status_code=204)
 
 
@@ -577,7 +677,19 @@ async def stop_system_audio(
             active_system_captures.pop(job_id, None)
     jobs.update_event(job_id, "complete", {"duration": live_session.duration_sec})
     live_preview_broker.discard(job_id)
-    log.debug("System live STT metrics: job_id=%s metrics=%s", job_id, live_session.inference_metrics)
+    log.debug(
+        "System live STT inference metrics: job_id=%s metrics=%s",
+        job_id, live_session.inference_metrics,
+    )
+    log.debug(
+        "System live STT process resources: scope=process observed_during_job_id=%s metrics=%s",
+        job_id, live_session.process_resource_metrics,
+    )
+    if live_session.audio_signal_metrics:
+        log.debug(
+            "System live STT audio signal: job_id=%s metrics=%s",
+            job_id, live_session.audio_signal_metrics,
+        )
     log.info(f"System Audio Live Capture stopped: job_id={job_id}")
     return {"job_id": job_id}
 
@@ -738,7 +850,19 @@ async def stop_live_job(
         if active_live_sessions.get(job_id) is handle:
             active_live_sessions.pop(job_id, None)
     log.info(f"Live STT job stopped: job_id={job_id}")
-    log.debug("Browser live STT metrics: job_id=%s metrics=%s", job_id, session.inference_metrics)
+    log.debug(
+        "Browser live STT inference metrics: job_id=%s metrics=%s",
+        job_id, session.inference_metrics,
+    )
+    log.debug(
+        "Browser live STT process resources: scope=process observed_during_job_id=%s metrics=%s",
+        job_id, session.process_resource_metrics,
+    )
+    if session.audio_signal_metrics:
+        log.debug(
+            "Browser live STT audio signal: job_id=%s metrics=%s",
+            job_id, session.audio_signal_metrics,
+        )
     return {"job_id": job_id}
 
 
@@ -755,23 +879,45 @@ async def start_stt_job(
     batch_index: int | None = Query(default=None, ge=1),
     batch_total: int | None = Query(default=None, ge=1),
 ) -> dict[str, Any]:
+    debug_metrics_enabled = log.isEnabledFor(logging.DEBUG)
+    upload_started = time.monotonic() if debug_metrics_enabled else 0.0
+    resources_before = process_snapshot() if debug_metrics_enabled else None
+    read_started = time.monotonic() if debug_metrics_enabled else 0.0
+    # FastAPI has parsed the multipart request before entering this handler; this is not wire upload time.
     max_bytes = Config.UPLOAD_LIMIT_MB * 1024 * 1024
     file_bytes = await file.read()
+    read_seconds = time.monotonic() - read_started if debug_metrics_enabled else 0.0
     if max_bytes > 0 and len(file_bytes) > max_bytes:
         raise HTTPException(413, f"File too large (max {Config.UPLOAD_LIMIT_MB}MB)")
     if not file_bytes:
         raise HTTPException(400, "Audio file is empty")
     media = EncodedMedia(file_bytes, filename=file.filename)
     try:
-        await asyncio.to_thread(media_duration, media)
+        probe_started = time.monotonic() if debug_metrics_enabled else 0.0
+        input_duration_sec = await asyncio.to_thread(media_duration, media)
+        probe_seconds = time.monotonic() - probe_started if debug_metrics_enabled else 0.0
     except Exception as exc:
         raise HTTPException(400, f"Failed to read audio file: {exc}") from exc
+    if resources_before is not None:
+        resources_after = process_snapshot()
+        if resources_after is not None:
+            log.debug(
+                "STT upload accepted: scope=process upload_payload_mib=%.1f "
+                "input_audio_duration_s=%s file_buffer_read_s=%.2f media_probe_s=%.2f "
+                "handler_pre_submit_s=%.2f %s",
+                len(file_bytes) / 1_048_576,
+                f"{input_duration_sec:.1f}" if input_duration_sec is not None else "unavailable",
+                read_seconds, probe_seconds,
+                time.monotonic() - upload_started,
+                format_process_resources(resources_before, resources_after),
+            )
 
     return await submit_stt_job(
         request, response, media, file.filename,
         language=language, model=model, detect_language=detect_language,
         diarization=diarization, batch_id=batch_id,
         batch_index=batch_index, batch_total=batch_total,
+        route_started_at=upload_started if debug_metrics_enabled else None,
     )
 
 
@@ -809,6 +955,7 @@ async def start_local_stt_job(
     batch_index: int | None = Query(default=None, ge=1),
     batch_total: int | None = Query(default=None, ge=1),
 ) -> dict[str, Any]:
+    route_started_at = time.monotonic() if log.isEnabledFor(logging.DEBUG) else None
     if not local_host_allowed(request):
         raise HTTPException(403, "Local files require a direct local connection to the dev/desktop server")
     if request.headers.get("content-type", "").split(";", 1)[0] != "application/json":
@@ -826,6 +973,7 @@ async def start_local_stt_job(
         language=language, model=model, detect_language=detect_language,
         diarization=diarization, batch_id=batch_id,
         batch_index=batch_index, batch_total=batch_total,
+        route_started_at=route_started_at,
     )
 
 
@@ -833,6 +981,7 @@ async def submit_stt_job(
     request: Request, response: Response, media: str | EncodedMedia, filename: str | None,
     *, language: str | None, model: str | None, detect_language: bool,
     diarization: bool, batch_id: str | None, batch_index: int | None, batch_total: int | None,
+    route_started_at: float | None = None,
 ) -> dict[str, Any]:
     try:
         if detect_language:
@@ -885,6 +1034,8 @@ async def submit_stt_job(
             diarization=diarization,
             language=resolved_language,
             detect_language=detect_language,
+            submitted_at=time.monotonic() if log.isEnabledFor(logging.DEBUG) else None,
+            route_started_at=route_started_at,
         )
     )
     return {"job_id": rec.job_id}

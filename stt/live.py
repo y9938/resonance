@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from dataclasses import dataclass
@@ -9,7 +10,9 @@ from typing import Any
 import numpy as np
 
 from core.context import session_context_manager
-from stt.inference import transcribe_serialized, transcription_text
+from core.process_metrics import process_resource_values, process_snapshot
+from stt.media import DecodeStats
+from stt.inference import InferenceTiming, transcribe_serialized, transcription_text
 from stt.live_preview import LivePreviewBroker
 from stt.stream_vad import _VAD_WINDOW_SAMPLES, VADStreamState, get_shared_vad_engine
 
@@ -101,7 +104,17 @@ class LiveSTTSession:
         self.sample_rate, self.source, self.dual_stream, self.preview_broker = sample_rate, source, dual_stream, preview_broker
         self._lock, self._cancelled, self._vad_engine = threading.RLock(), threading.Event(), get_shared_vad_engine()
         self._streams: dict[str, dict[str, Any]] = {}
-        self._inference_stats = {"preview_calls": 0, "final_calls": 0, "preview_ms": [], "final_ms": [], "max_buffer_samples": 0}
+        self._inference_stats = {
+            "preview_calls": 0, "final_calls": 0, "preview_ms": [], "final_ms": [],
+            "wait_seconds": 0.0, "run_seconds": 0.0, "max_buffer_samples": 0,
+        }
+        self._collect_debug_metrics = logging.getLogger("resonance.server").isEnabledFor(logging.DEBUG)
+        self._resources_start = (
+            process_snapshot()
+            if self._collect_debug_metrics
+            else None
+        )
+        self._audio_stats = DecodeStats(collect_signal=self._collect_debug_metrics)
         self._min_silence_windows = max(1, int(0.35 * sample_rate / _VAD_WINDOW_SAMPLES))
         self._lead_in_windows, self._preview_new_samples = int(0.15 * sample_rate / _VAD_WINDOW_SAMPLES), int(2.0 * sample_rate)
 
@@ -117,6 +130,7 @@ class LiveSTTSession:
             return []
         audio, src, emitted = np.asarray(pcm_chunk, dtype=np.float32).reshape(-1), source or self.source, []
         with self._lock:
+            self._audio_stats.add(audio)
             st = self._get_or_create_stream(src)
             audio = np.concatenate((st["raw_carry"], audio)) if len(st["raw_carry"]) else audio
             consumed = len(audio) // _VAD_WINDOW_SAMPLES * _VAD_WINDOW_SAMPLES
@@ -192,20 +206,66 @@ class LiveSTTSession:
     def inference_metrics(self) -> dict[str, float | int]:
         with self._lock:
             values = self._inference_stats
-            all_ms = values["preview_ms"] + values["final_ms"]
-            return {"preview_calls": values["preview_calls"], "final_calls": values["final_calls"],
-                "p50_ms": float(np.percentile(all_ms, 50)) if all_ms else 0.0,
-                "p95_ms": float(np.percentile(all_ms, 95)) if all_ms else 0.0,
-                "max_buffer_samples": values["max_buffer_samples"]}
+            preview_ms = values["preview_ms"]
+            final_ms = values["final_ms"]
+            metrics: dict[str, float | int] = {
+                "preview_calls": values["preview_calls"], "final_calls": values["final_calls"],
+                "preview_call_wall_p50_ms": (
+                    float(np.percentile(preview_ms, 50)) if preview_ms else 0.0
+                ),
+                "preview_call_wall_p95_ms": (
+                    float(np.percentile(preview_ms, 95)) if preview_ms else 0.0
+                ),
+                "final_call_wall_p50_ms": (
+                    float(np.percentile(final_ms, 50)) if final_ms else 0.0
+                ),
+                "final_call_wall_p95_ms": (
+                    float(np.percentile(final_ms, 95)) if final_ms else 0.0
+                ),
+                "max_buffer_samples": values["max_buffer_samples"],
+                "inference_gate_wait_s": values["wait_seconds"],
+                "inference_execution_wall_s": values["run_seconds"],
+            }
+        return metrics
+
+    @property
+    def audio_signal_metrics(self) -> dict[str, float | int]:
+        with self._lock:
+            if not self._audio_stats.collect_signal:
+                return {}
+            return {
+                "input_samples": self._audio_stats.decoded_samples,
+                "input_sample_rate": self.sample_rate,
+                "input_duration_s": self._audio_stats.decoded_samples / self.sample_rate,
+                "input_rms": self._audio_stats.rms,
+                "input_peak": self._audio_stats.peak_abs,
+                "input_nonfinite_samples": self._audio_stats.nonfinite_samples,
+            }
+
+    @property
+    def process_resource_metrics(self) -> dict[str, float | int | None]:
+        if self._resources_start is None:
+            return {}
+        resources_end = process_snapshot()
+        if resources_end is None:
+            return {}
+        metrics = process_resource_values(
+            self._resources_start, resources_end,
+        )
+        return metrics
 
     def _transcribe(self, pcm: np.ndarray, kind: str) -> Any:
         started = time.perf_counter()
+        timing = InferenceTiming() if self._collect_debug_metrics else None
         try:
             options = {"language": self.language} if self.language is not None else {}
-            return transcribe_serialized(self.model, pcm, **options)
+            return transcribe_serialized(self.model, pcm, timing=timing, **options)
         finally:
             self._inference_stats[f"{kind}_calls"] += 1
             self._inference_stats[f"{kind}_ms"].append((time.perf_counter() - started) * 1000)
+            if timing is not None:
+                self._inference_stats["wait_seconds"] += timing.wait_seconds
+                self._inference_stats["run_seconds"] += timing.run_seconds
 
     def _preview(self, buffer: ASRCommitBuffer, src: str) -> None:
         if self.preview_broker is None or self._cancelled.is_set():

@@ -1,3 +1,4 @@
+import logging
 import threading
 from unittest.mock import MagicMock
 
@@ -28,6 +29,7 @@ def _only_job_status(registry: JobRegistry) -> dict:
 def test_live_start_model_failure_creates_no_job_or_session(monkeypatch, caplog) -> None:
     registry = _isolated_registry(monkeypatch)
     monkeypatch.setattr(server.log, "propagate", True)
+    monkeypatch.setattr(logging.getLogger("resonance"), "propagate", True)
     monkeypatch.setattr(server.models, "get_stt_model", MagicMock(side_effect=RuntimeError("model unavailable")))
 
     response = TestClient(server.app).post("/api/jobs/live/start?language=ru&model=gigaam")
@@ -80,6 +82,7 @@ def test_system_audio_factory_failure_creates_no_job_or_capture(monkeypatch, loc
 def test_system_audio_model_failure_creates_no_job_or_capture(monkeypatch, local_host_app, caplog) -> None:
     registry = _isolated_registry(monkeypatch)
     monkeypatch.setattr(server.log, "propagate", True)
+    monkeypatch.setattr(logging.getLogger("resonance"), "propagate", True)
     monkeypatch.setattr(server.models, "get_stt_model", MagicMock(side_effect=RuntimeError("model unavailable")))
     capture_factory = MagicMock()
     monkeypatch.setattr(server, "get_system_audio_capture", capture_factory)
@@ -161,8 +164,22 @@ def test_system_audio_rolls_back_started_engine_when_task_registration_fails(mon
 
     capture = MagicMock()
     monkeypatch.setattr(server, "get_system_audio_capture", MagicMock(return_value=capture))
-    monkeypatch.setattr(server.asyncio, "to_thread", lambda *_args, **_kwargs: object())
-    monkeypatch.setattr(server.asyncio, "create_task", MagicMock(side_effect=RuntimeError("task registration failed")))
+    async def run_in_thread(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    original_create_task = server.asyncio.create_task
+    create_task_calls = 0
+
+    def fail_supervisor_registration(coroutine):
+        nonlocal create_task_calls
+        create_task_calls += 1
+        if create_task_calls == 1:
+            return original_create_task(coroutine)
+        coroutine.close()
+        raise RuntimeError("task registration failed")
+
+    monkeypatch.setattr(server.asyncio, "to_thread", run_in_thread)
+    monkeypatch.setattr(server.asyncio, "create_task", fail_supervisor_registration)
 
     response = TestClient(server.app, base_url="http://localhost", client=("127.0.0.1", 12345)).post("/api/system-audio/start?language=ru&model=gigaam")
 

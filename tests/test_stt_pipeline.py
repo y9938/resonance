@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -52,6 +53,14 @@ class FakeLog:
 
     def warning(self, message: str) -> None:
         self.messages.append(message)
+
+
+class DebugFakeLog(FakeLog):
+    def isEnabledFor(self, level: int) -> bool:
+        return level == logging.DEBUG
+
+    def debug(self, message: str, *args) -> None:
+        self.messages.append(message % args if args else message)
 
 
 class SilentVAD:
@@ -238,6 +247,49 @@ def test_run_stt_job_processes_segments_sequentially(tmp_path: Path, monkeypatch
     assert [event for event, _ in jobs.events] == ["start", "progress", "progress", "complete"]
     assert len(model.paths) == 2
     assert len(extracted) == 2
+
+
+def test_debug_metrics_count_attempted_model_input_and_label_payload_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"audio")
+    monkeypatch.setattr(
+        pipeline,
+        "probe_media",
+        lambda _path: MediaInfo(1.0, "wav", 16000, 1, 5),
+    )
+
+    def one_model_chunk(input_path, *args, **kwargs):
+        yield 0.0, 1.0, np.ones(16000, dtype=np.float32)
+
+    monkeypatch.setattr(pipeline, "stream_vad_chunks", one_model_chunk)
+
+    class FailingModel:
+        def transcribe(self, _pcm):
+            raise RuntimeError("inference failed")
+
+    log = DebugFakeLog()
+    run_stt_job(
+        job_id="failed-inference",
+        input_paths=str(input_path),
+        jobs=FakeJobs(),
+        model=FailingModel(),
+        log=log,
+        sample_rate=16000,
+        chunk_sec=20,
+        route_started_at=time.monotonic(),
+    )
+
+    metrics = next(message for message in log.messages if message.startswith("STT pipeline metrics:"))
+    assert "outcome=failed" in metrics
+    assert "input_kind=file_path" in metrics
+    assert "input_payload_mib=0.0" in metrics
+    assert "input_audio_duration_s=1.0" in metrics
+    assert "model_chunks=1" in metrics
+    assert "model_input_audio=1.0s" in metrics
+    assert "route_entry_to_job_done_s=unavailable" not in metrics
+    assert "pipeline_x_realtime=unavailable" in metrics
 
 
 def test_run_stt_job_stops_before_next_segment_when_cancelled(

@@ -12,6 +12,17 @@ type CaptureSession = Readonly<
   | { kind: "live"; jobId: string; transport: LiveTransport }
   | { kind: "dictation" }
 >;
+type DictationClientMetrics = {
+  captureId: string;
+  captureWallMs: number;
+  audioDurationSec: number;
+  sampleRateHz: number;
+  pcmBufferBytes: number;
+  pcmChunkCount: number;
+  mergeWallMs: number;
+  wavEncodeWallMs: number;
+  wavBytes: number;
+};
 type CaptureOperation =
   | { state: "idle" | "starting" | "failed" }
   | { state: "running" | "stopping" | "unknown"; session: CaptureSession };
@@ -42,6 +53,8 @@ let stream: MediaStream | null = null,
   gain: GainNode | null = null;
 let chunks: Float32Array[] = [], count = 0, rate = 0,
   file: File | null = null, started = 0;
+let dictationStartedAt = 0;
+let dictationClientMetrics: DictationClientMetrics | null = null;
 let timer: ReturnType<typeof setInterval> | undefined;
 let epoch = 0;
 function startTimer(at = Date.now()) {
@@ -91,6 +104,8 @@ export function discard() {
   file = null;
   chunks = [];
   count = 0;
+  dictationStartedAt = 0;
+  dictationClientMetrics = null;
   capture.hint = settings.mode === "live" ? "sttMicHintLive" : "sttMicHintIdle";
 }
 function finishSession(session: CaptureSession, state: "idle" | "failed" = "idle") {
@@ -138,6 +153,36 @@ function reportMicrophone(
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ event, stage, mode: settings.mode,
       error: event === "mic-failed" ? (names.includes(name) ? name : "UnknownError") : null }),
+    signal: AbortSignal.timeout?.(3000),
+  }).catch(() => {});
+}
+function reportDictationMetrics(
+  event: "encoded" | "submission-finished",
+  metrics: DictationClientMetrics,
+  submission?: { jobId: string | null; jobIdReturned: boolean; wallMs: number },
+) {
+  if (!settings.config.local_files_enabled) return;
+  const payload = {
+    event,
+    capture_id: metrics.captureId,
+    capture_wall_ms: metrics.captureWallMs,
+    audio_duration_s: metrics.audioDurationSec,
+    sample_rate_hz: metrics.sampleRateHz,
+    pcm_buffer_bytes: metrics.pcmBufferBytes,
+    pcm_chunk_count: metrics.pcmChunkCount,
+    merge_wall_ms: metrics.mergeWallMs,
+    wav_encode_wall_ms: metrics.wavEncodeWallMs,
+    wav_bytes: metrics.wavBytes,
+    ...(submission && {
+      job_id: submission.jobId,
+      job_id_returned: submission.jobIdReturned,
+      send_to_job_response_ms: submission.wallMs,
+    }),
+  };
+  // Numeric timing and buffer sizes only; diagnostics must not delay recording or send audio.
+  void fetch("/api/diagnostics/capture", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
     signal: AbortSignal.timeout?.(3000),
   }).catch(() => {});
 }
@@ -242,6 +287,7 @@ export async function start() {
     source.connect(processor);
     processor.connect(gain);
     gain.connect(context.destination);
+    if (session.kind === "dictation") dictationStartedAt = performance.now();
     operation = { state: "running", session };
     reportMicrophone("mic-started", stage);
     startTimer();
@@ -286,11 +332,32 @@ export async function stop() {
           failure(session, t("errMicEmpty"));
           return;
         }
-        const blob = encodeMicWav(mergeMicPcmChunks(chunks, count), rate);
+        const captureWallMs = dictationStartedAt
+          ? performance.now() - dictationStartedAt
+          : 0;
+        const pcmBufferBytes = count * Float32Array.BYTES_PER_ELEMENT;
+        const mergeStartedAt = performance.now();
+        const mergedPcm = mergeMicPcmChunks(chunks, count);
+        const mergeWallMs = performance.now() - mergeStartedAt;
+        const wavEncodeStartedAt = performance.now();
+        const blob = encodeMicWav(mergedPcm, rate);
+        const wavEncodeWallMs = performance.now() - wavEncodeStartedAt;
+        dictationClientMetrics = {
+          captureId: crypto.randomUUID(),
+          captureWallMs,
+          audioDurationSec: count / rate,
+          sampleRateHz: rate,
+          pcmBufferBytes,
+          pcmChunkCount: chunks.length,
+          mergeWallMs,
+          wavEncodeWallMs,
+          wavBytes: blob.size,
+        };
         file = new File([blob], "mic_" + new Date().toISOString().replace(/[:.]/g, "-") + ".wav",
           { type: "audio/wav" });
         capture.preview = URL.createObjectURL(blob);
         capture.duration = count / rate;
+        reportDictationMetrics("encoded", dictationClientMetrics);
       }
     }
     finishSession(session);
@@ -311,8 +378,17 @@ export async function stop() {
 export async function send() {
   if (!file) return;
   const audio = file;
+  const metrics = dictationClientMetrics;
+  const submitStartedAt = performance.now();
   discard();
-  await upload([audio]);
+  const jobId = await upload([audio]);
+  if (metrics) {
+    reportDictationMetrics("submission-finished", metrics, {
+      jobId,
+      jobIdReturned: jobId !== null,
+      wallMs: performance.now() - submitStartedAt,
+    });
+  }
 }
 export function dispose() {
   epoch++;
@@ -321,5 +397,7 @@ export function dispose() {
   const session = activeSession();
   if (session?.kind === "live") session.transport.dispose();
   operation = { state: "idle" };
+  dictationClientMetrics = null;
+  dictationStartedAt = 0;
   if (capture.preview) URL.revokeObjectURL(capture.preview);
 }

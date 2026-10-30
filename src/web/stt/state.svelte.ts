@@ -433,8 +433,8 @@ export async function restoreBatch() {
       await restore(selected, true);
   }
 }
-export async function upload(files: AudioInput[]) {
-  if (!files.length) return;
+export async function upload(files: AudioInput[]): Promise<string | null> {
+  if (!files.length) return null;
   cancel();
   clearBatch();
   stt.error = "";
@@ -449,17 +449,18 @@ export async function upload(files: AudioInput[]) {
       const id = await start(files[0]);
       if (token !== epoch) {
         void request(`/jobs/${id}/cancel`, { method: "POST" });
-        return;
+        return null;
       }
       active(id);
       stt.result = true;
       stt.lastSeq = 0;
       subscribe(id, token);
       refreshHistory();
+      return id;
     } catch (error) {
       if (token === epoch) fail(error.message || t("errNetwork"));
+      return null;
     }
-    return;
   }
   const id = "stt_" + crypto.randomUUID();
   const batchToken = batchEpoch;
@@ -497,11 +498,12 @@ export async function upload(files: AudioInput[]) {
       }
     }),
   );
-  if (batchToken !== batchEpoch) return;
+  if (batchToken !== batchEpoch) return null;
   const first = stt.jobs.find((job) => job.job_id);
   if (first?.job_id) await restore(first.job_id);
   await refreshBatch();
   if (stt.batchId) pollBatch();
+  return null;
 }
 export async function cancelBatch(onlySelected = false) {
   const targets = stt.jobs.filter(

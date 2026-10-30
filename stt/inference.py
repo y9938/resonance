@@ -8,7 +8,15 @@ the blocking work in their respective worker threads.
 from __future__ import annotations
 
 import threading
+import time
+from dataclasses import dataclass
 from typing import Any
+
+
+@dataclass
+class InferenceTiming:
+    wait_seconds: float = 0.0
+    run_seconds: float = 0.0
 
 
 class InferenceGate:
@@ -19,7 +27,8 @@ class InferenceGate:
         self._active = False
         self._live_waiters = 0
 
-    def call(self, fn: Any, *, live: bool) -> Any:
+    def call(self, fn: Any, *, live: bool, timing: InferenceTiming | None = None) -> Any:
+        wait_started = time.perf_counter() if timing is not None else None
         with self._condition:
             if live:
                 self._live_waiters += 1
@@ -32,9 +41,15 @@ class InferenceGate:
             finally:
                 if live:
                     self._live_waiters -= 1
+        run_started = time.perf_counter() if timing is not None else None
+        if timing is not None:
+            assert wait_started is not None and run_started is not None
+            timing.wait_seconds += run_started - wait_started
         try:
             return fn()
         finally:
+            if timing is not None and run_started is not None:
+                timing.run_seconds += time.perf_counter() - run_started
             with self._condition:
                 self._active = False
                 self._condition.notify_all()
@@ -53,11 +68,18 @@ def transcription_text(result: Any) -> str:
     return str(result)
 
 
-def transcribe_serialized(model: Any, audio: Any, **kwargs: Any) -> Any:
-    return _INFERENCE_GATE.call(lambda: model.transcribe(audio, **kwargs), live=True)
+def transcribe_serialized(
+    model: Any, audio: Any, *, timing: InferenceTiming | None = None, **kwargs: Any,
+) -> Any:
+    return _INFERENCE_GATE.call(
+        lambda: model.transcribe(audio, **kwargs), live=True, timing=timing,
+    )
 
 
-def transcribe_batch_serialized(model: Any, chunks: tuple[Any, ...], **kwargs: Any) -> list[str]:
+def transcribe_batch_serialized(
+    model: Any, chunks: tuple[Any, ...], *, timing: InferenceTiming | None = None,
+    **kwargs: Any,
+) -> list[str]:
     if not chunks:
         raise ValueError("Inference batch must not be empty")
     if len(chunks) > 1 and getattr(model, "supports_native_batching", False) is not True:
@@ -72,10 +94,12 @@ def transcribe_batch_serialized(model: Any, chunks: tuple[Any, ...], **kwargs: A
             raise RuntimeError("Model returned an incorrect number of transcripts")
         return result
 
-    return _INFERENCE_GATE.call(run, live=False)
+    return _INFERENCE_GATE.call(run, live=False, timing=timing)
 
 
-def transcribe_and_detect_language_serialized(model: Any, audio: Any) -> tuple[str, str]:
+def transcribe_and_detect_language_serialized(
+    model: Any, audio: Any, *, timing: InferenceTiming | None = None,
+) -> tuple[str, str]:
     return _INFERENCE_GATE.call(
-        lambda: model.transcribe_and_detect_language(audio), live=False
+        lambda: model.transcribe_and_detect_language(audio), live=False, timing=timing,
     )

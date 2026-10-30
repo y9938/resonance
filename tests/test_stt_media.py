@@ -62,6 +62,17 @@ def test_sample_budget_counts_resampler_flush_before_yield() -> None:
     assert stats.decoded_samples == 16001
 
 
+def test_signal_stats_report_rms_peak_and_nonfinite_samples() -> None:
+    stats = DecodeStats(collect_signal=True)
+    stats.add(np.array([0.0, 0.5, -1.0, 1.2, np.nan], dtype=np.float32))
+
+    assert stats.decoded_samples == 5
+    assert stats.finite_samples == 4
+    assert stats.nonfinite_samples == 1
+    assert stats.peak_abs == pytest.approx(1.2)
+    assert stats.rms == pytest.approx(((0.0 + 0.25 + 1.0 + 1.44) / 4) ** 0.5)
+
+
 def test_zero_metadata_duration_is_unknown() -> None:
     media = silent_wav(0)
     assert media_duration(media) is None

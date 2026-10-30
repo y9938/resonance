@@ -7,6 +7,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+from core.process_metrics import format_process_resources, process_snapshot
 from stt.models.base import STTModelAdapter
 from stt.models.gigaam import GigaAMAdapter, load_gigaam
 from stt.models.granite import GraniteAdapter, load_granite
@@ -34,7 +35,7 @@ def load_silero_tts(device: str | None = None) -> Any:
 
 
 class ModelManager:
-    """Lazy model loader. Assumes: single-threaded init, thread-safe after."""
+    """Lazily load models once, serializing initialization across concurrent callers."""
 
     def __init__(
         self,
@@ -99,21 +100,50 @@ class ModelManager:
     def _get_or_load(self, model_id: str, attribute: str, loader: Callable[[], Any]) -> Any:
         # Keep the existing serialized model initialization policy. State reads use
         # a separate lock so the API can report a load while this lock is held.
+        debug_metrics_enabled = log.isEnabledFor(logging.DEBUG)
+        lock_started = time.monotonic() if debug_metrics_enabled else None
         with self._lock:
+            lock_wait_seconds = (
+                time.monotonic() - lock_started if lock_started is not None else 0.0
+            )
             with self._state_lock:
                 model = getattr(self, attribute)
-                if model is not None:
-                    return model
-                self._loading.add(model_id)
+                if model is None:
+                    self._loading.add(model_id)
+            if lock_wait_seconds >= 0.01:
+                log.debug(
+                    "Model manager wait: model_id=%s lock_wait=%.2fs cache_hit=%s",
+                    model_id, lock_wait_seconds, model is not None,
+                )
+            if model is not None:
+                return model
+            started = time.monotonic()
+            resources_before = process_snapshot() if log.isEnabledFor(logging.DEBUG) else None
             try:
                 model = loader()
             except BaseException:
                 with self._state_lock:
                     self._loading.discard(model_id)
+                if resources_before is not None:
+                    resources_after = process_snapshot()
+                    if resources_after is not None:
+                        log.debug(
+                            "Model load process resources: scope=process observed_during_model_id=%s result=failed elapsed=%.1fs %s",
+                            model_id, time.monotonic() - started,
+                            format_process_resources(resources_before, resources_after),
+                        )
                 raise
             with self._state_lock:
                 setattr(self, attribute, model)
                 self._loading.discard(model_id)
+            if resources_before is not None:
+                resources_after = process_snapshot()
+                if resources_after is not None:
+                    log.debug(
+                        "Model load process resources: scope=process observed_during_model_id=%s result=ready elapsed=%.1fs %s",
+                        model_id, time.monotonic() - started,
+                        format_process_resources(resources_before, resources_after),
+                    )
             return model
 
     def stt_gigaam(self) -> GigaAMAdapter:

@@ -9,7 +9,10 @@ from playwright.sync_api import expect
 
 @pytest.fixture
 def frontend_api(page, base_url):
-    state = {"jobs": [], "held": [], "hold_upload": False, "hold_status": None, "stopped": []}
+    state = {
+        "jobs": [], "held": [], "hold_upload": False, "hold_status": None,
+        "stopped": [], "dictation_diagnostics": [],
+    }
     page.add_init_script("""
         localStorage.setItem('resonance_locale', 'en');
         window.streams = [];
@@ -21,6 +24,9 @@ def frontend_api(page, base_url):
 
     def route_api(route):
         parsed = urlparse(route.request.url)
+        if parsed.netloc != urlparse(base_url).netloc:
+            route.continue_()
+            return
         path = parsed.path
         query = parse_qs(parsed.query)
         if path == "/api/config":
@@ -30,6 +36,11 @@ def frontend_api(page, base_url):
             route.fulfill(json={"stt": {"models": [{"id": "whisper", "name": "Whisper", "languages": ["en", "ru"]}]}})
         elif path == "/api/jobs":
             route.fulfill(json={"jobs": state["jobs"], "has_more": False, "next_offset": len(state["jobs"])})
+        elif path == "/api/diagnostics/capture":
+            payload = route.request.post_data_json
+            if payload.get("event") in {"encoded", "submission-finished"}:
+                state["dictation_diagnostics"].append(payload)
+            route.fulfill(status=204)
         elif path in {"/api/jobs/stt", "/api/jobs/tts"}:
             index = len(state["jobs"]) + 1
             job = {"job_id": f"job-{index}", "job_type": path.rsplit("/", 1)[1], "state": "running",
@@ -451,18 +462,37 @@ def test_dictation_preview_can_be_discarded_and_sent_as_batch_audio(page, fronte
     page.locator("#sttMicStart").click()
     page.wait_for_function("Boolean(window.processor && window.processor.onaudioprocess)")
     page.evaluate("recordSeconds(1)")
-    page.locator("#sttMicStop").click()
+    with page.expect_response("**/api/diagnostics/capture") as encoded_response:
+        page.locator("#sttMicStop").click()
+    assert encoded_response.value.status == 204
+    encoded_metrics = frontend_api["dictation_diagnostics"][-1]
+    assert encoded_metrics["event"] == "encoded"
+    assert encoded_metrics["audio_duration_s"] == 1
+    assert encoded_metrics["sample_rate_hz"] == 8000
+    assert encoded_metrics["pcm_buffer_bytes"] == 32000
+    assert encoded_metrics["pcm_chunk_count"] == 1
+    assert encoded_metrics["wav_bytes"] == 16044
+    assert "audio" not in encoded_metrics and "transcript" not in encoded_metrics
     expect(page.locator("#sttMicPreview")).to_be_visible()
     page.locator("#sttMicDiscard").click()
     expect(page.locator("#sttMicPreview")).not_to_be_visible()
     page.locator("#sttMicStart").click()
     page.wait_for_function("Boolean(window.processor && window.processor.onaudioprocess)")
     page.evaluate("recordSeconds(1)")
-    page.locator("#sttMicStop").click()
-    page.locator("#sttMicSend").click()
+    with page.expect_response("**/api/diagnostics/capture") as encoded_response:
+        page.locator("#sttMicStop").click()
+    assert encoded_response.value.status == 204
+    with page.expect_response("**/api/diagnostics/capture") as submitted_response:
+        page.locator("#sttMicSend").click()
+    assert submitted_response.value.status == 204
     page.wait_for_function("window.streams.length === 1")
     expect(page.locator("#sttMicPreview")).not_to_be_visible()
     assert len(frontend_api["jobs"]) == 1
+    submitted_metrics = frontend_api["dictation_diagnostics"][-1]
+    assert submitted_metrics["event"] == "submission-finished"
+    assert submitted_metrics["job_id"] == "job-1"
+    assert submitted_metrics["job_id_returned"] is True
+    assert submitted_metrics["send_to_job_response_ms"] >= 0
 
 
 def test_system_capture_configuration_is_frozen_until_stop_acknowledged(page, frontend_api):

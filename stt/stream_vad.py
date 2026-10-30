@@ -231,7 +231,7 @@ def iter_file_pcm(
                         raise ValueError("Cannot decode local media; check that the file is still accessible and contains valid audio")
                     break
                 pcm = np.frombuffer(raw, dtype="<f4")
-                stats.decoded_samples += len(pcm)
+                stats.add(pcm)
                 if max_samples is not None and stats.decoded_samples > max_samples:
                     raise DecodedSampleLimitExceeded()
                 yield pcm

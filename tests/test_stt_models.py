@@ -1,5 +1,8 @@
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from unittest.mock import MagicMock
+from threading import Event, Lock
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
@@ -55,3 +58,53 @@ def test_model_manager_unknown_model_raises():
     mgr = ModelManager()
     with pytest.raises(ValueError):
         mgr.get_stt_model("non_existent")
+
+
+def test_model_manager_reports_wait_for_another_load():
+    load_started = Event()
+    finish_load = Event()
+    second_waiting = Event()
+    model = object()
+
+    def loader():
+        load_started.set()
+        assert finish_load.wait(timeout=2)
+        return model
+
+    manager = ModelManager(gigaam_loader=loader)
+
+    class TrackingLock:
+        def __init__(self):
+            self._lock = Lock()
+            self._attempts = 0
+
+        def __enter__(self):
+            self._attempts += 1
+            if self._attempts == 1:
+                assert self._lock.acquire(blocking=False)
+            elif not self._lock.acquire(blocking=False):
+                second_waiting.set()
+                self._lock.acquire()
+            return self
+
+        def __exit__(self, *_exc):
+            self._lock.release()
+
+    manager._lock = TrackingLock()
+    with patch("stt.models.manager.log.isEnabledFor", return_value=True), patch(
+        "stt.models.manager.log.debug",
+    ) as debug_log:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first = executor.submit(manager.stt_gigaam)
+            assert load_started.wait(timeout=1)
+            second = executor.submit(manager.stt_gigaam)
+            assert second_waiting.wait(timeout=1)
+            time.sleep(0.02)
+            finish_load.set()
+            assert first.result(timeout=2) is model
+            assert second.result(timeout=2) is model
+
+    debug_log.assert_any_call(
+        "Model manager wait: model_id=%s lock_wait=%.2fs cache_hit=%s",
+        "gigaam", ANY, True,
+    )
