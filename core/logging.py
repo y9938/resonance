@@ -28,6 +28,29 @@ THIRD_PARTY_NOISY_LOGGERS: tuple[str, ...] = (
 )
 
 
+class RoutineAccessLogFilter(logging.Filter):
+    """Hide successful model-status polls and static asset requests from access logs."""
+
+    QUIET_GET_PATHS = frozenset({
+        "/api/models",
+        "/favicon.ico",
+        "/apple-touch-icon.png",
+    })
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if record.name != "uvicorn.access" or not isinstance(args, (tuple, list)) or len(args) < 5:
+            return True
+        _, method, path, _, status = args[:5]
+        try:
+            successful = 200 <= int(status) < 400
+        except (TypeError, ValueError):
+            return True
+        route = str(path).split("?", 1)[0]
+        quiet_path = route in self.QUIET_GET_PATHS or route.startswith("/assets/")
+        return not (method == "GET" and successful and quiet_path)
+
+
 def session_header() -> str:
     root = Path(__file__).resolve().parent.parent
     try:
@@ -220,6 +243,12 @@ def setup_logging(
     # Domain Invariant: Third-party transport loggers emit excessive payload tracing unless clamped to WARNING.
     external_level = logging.DEBUG if level == logging.DEBUG else logging.WARNING
     for noisy in THIRD_PARTY_NOISY_LOGGERS:
-        logging.getLogger(noisy).setLevel(external_level)
+        noisy_logger = logging.getLogger(noisy)
+        noisy_logger.setLevel(external_level)
+        if noisy == "uvicorn.access" and not any(
+            isinstance(log_filter, RoutineAccessLogFilter)
+            for log_filter in noisy_logger.filters
+        ):
+            noisy_logger.addFilter(RoutineAccessLogFilter())
 
     return logger

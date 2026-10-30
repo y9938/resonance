@@ -81,6 +81,8 @@ export interface Language {
 }
 export interface Config {
   local_files_enabled?: boolean;
+  capture_diagnostics_enabled?: boolean;
+  dictation_metrics_enabled?: boolean;
   system_audio_enabled?: boolean;
   upload_limit_mb?: number;
   tts_max_input_chars?: number;

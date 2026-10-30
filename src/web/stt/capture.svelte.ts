@@ -144,7 +144,7 @@ function reportMicrophone(
   stage: "unsupported" | "model" | "permission" | "audio",
   error?: unknown,
 ) {
-  if (!settings.config.local_files_enabled) return;
+  if (!settings.config.capture_diagnostics_enabled) return;
   const names = ["NotAllowedError", "NotFoundError", "NotReadableError", "AbortError",
     "SecurityError", "InvalidStateError", "TypeError", "UnknownError"];
   const name = error instanceof Error ? error.name : "UnknownError";
@@ -161,7 +161,7 @@ function reportDictationMetrics(
   metrics: DictationClientMetrics,
   submission?: { jobId: string | null; jobIdReturned: boolean; wallMs: number },
 ) {
-  if (!settings.config.local_files_enabled) return;
+  if (!settings.config.dictation_metrics_enabled) return;
   const payload = {
     event,
     capture_id: metrics.captureId,

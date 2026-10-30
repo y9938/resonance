@@ -11,7 +11,15 @@ from playwright.sync_api import expect
 def frontend_api(page, base_url):
     state = {
         "jobs": [], "held": [], "hold_upload": False, "hold_status": None,
-        "stopped": [], "dictation_diagnostics": [],
+        "stopped": [], "dictation_diagnostics": [], "diagnostic_events": [],
+        "config": {
+            "local_files_enabled": True,
+            "capture_diagnostics_enabled": True,
+            "dictation_metrics_enabled": True,
+            "system_audio_enabled": True,
+            "tts_max_chars": 1000,
+            "tts": {"default_language": "en", "languages": [{"id": "en", "default_voice_id": "af_heart", "voices": [{"id": "af_heart", "backend_id": "kokoro_en"}]}]},
+        },
     }
     page.add_init_script("""
         localStorage.setItem('resonance_locale', 'en');
@@ -30,14 +38,14 @@ def frontend_api(page, base_url):
         path = parsed.path
         query = parse_qs(parsed.query)
         if path == "/api/config":
-            route.fulfill(json={"local_files_enabled": True, "system_audio_enabled": True, "tts_max_chars": 1000,
-                                "tts": {"default_language": "en", "languages": [{"id": "en", "default_voice_id": "af_heart", "voices": [{"id": "af_heart", "backend_id": "kokoro_en"}]}]}})
+            route.fulfill(json=state["config"])
         elif path == "/api/models":
             route.fulfill(json={"stt": {"models": [{"id": "whisper", "name": "Whisper", "languages": ["en", "ru"]}]}})
         elif path == "/api/jobs":
             route.fulfill(json={"jobs": state["jobs"], "has_more": False, "next_offset": len(state["jobs"])})
         elif path == "/api/diagnostics/capture":
             payload = route.request.post_data_json
+            state["diagnostic_events"].append(payload)
             if payload.get("event") in {"encoded", "submission-finished"}:
                 state["dictation_diagnostics"].append(payload)
             route.fulfill(status=204)
@@ -493,6 +501,35 @@ def test_dictation_preview_can_be_discarded_and_sent_as_batch_audio(page, fronte
     assert submitted_metrics["job_id"] == "job-1"
     assert submitted_metrics["job_id_returned"] is True
     assert submitted_metrics["send_to_job_response_ms"] >= 0
+
+
+def test_dictation_metrics_follow_debug_config_not_local_file_capability(page, frontend_api):
+    mock_microphone(page)
+    frontend_api["config"]["local_files_enabled"] = False
+    frontend_api["config"]["capture_diagnostics_enabled"] = True
+    frontend_api["config"]["dictation_metrics_enabled"] = False
+    frontend_api["open"]()
+    page.wait_for_selector("#sttLanguage:not([disabled])")
+    page.locator("#sttMicStart").click()
+    page.wait_for_function("Boolean(window.processor && window.processor.onaudioprocess)")
+    for _ in range(100):
+        if len(frontend_api["diagnostic_events"]) == 2:
+            break
+        page.wait_for_timeout(20)
+    assert [event["event"] for event in frontend_api["diagnostic_events"]] == [
+        "mic-requested", "mic-started",
+    ]
+
+    page.evaluate("recordSeconds(1)")
+    page.locator("#sttMicStop").click()
+    expect(page.locator("#sttMicPreview")).to_be_visible()
+    assert frontend_api["dictation_diagnostics"] == []
+    page.locator("#sttMicSend").click()
+    page.wait_for_function("window.streams.length === 1")
+    assert len(frontend_api["jobs"]) == 1
+    assert [event["event"] for event in frontend_api["diagnostic_events"]] == [
+        "mic-requested", "mic-started",
+    ]
 
 
 def test_system_capture_configuration_is_frozen_until_stop_acknowledged(page, frontend_api):

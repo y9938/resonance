@@ -1241,12 +1241,15 @@ async def get_context_tail(
 async def get_config(request: Request, response: Response) -> dict[str, Any]:
     # Establish one session before the browser submits a batch concurrently.
     get_or_set_session_id(request, response)
+    local_capture_diagnostics = local_host_allowed(request)
     return {
-        "local_files_enabled": local_host_allowed(request),
+        "local_files_enabled": local_capture_diagnostics,
+        "capture_diagnostics_enabled": local_capture_diagnostics,
+        "dictation_metrics_enabled": local_capture_diagnostics and log.isEnabledFor(logging.DEBUG),
         "upload_limit_mb": Config.UPLOAD_LIMIT_MB,
         "tts_max_chars": Config.TTS_MAX_CHARS,
         "tts_max_input_chars": Config.TTS_MAX_INPUT_CHARS,
-        "system_audio_enabled": Config.ENABLE_SYSTEM_AUDIO and local_host_allowed(request),
+        "system_audio_enabled": Config.ENABLE_SYSTEM_AUDIO and local_capture_diagnostics,
         "tts": tts_service.serialize_catalog(),
     }
 

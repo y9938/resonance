@@ -33,6 +33,28 @@ def test_capture_diagnostics_reject_remote_origin_and_unbounded_fields(local_hos
     assert remote.post("/api/diagnostics/capture", json=PAYLOAD).status_code == 403
 
 
+def test_config_exposes_diagnostics_separately_from_local_files_and_log_level(
+    local_host_app, monkeypatch,
+):
+    client = TestClient(local_host_app, base_url="http://localhost", client=("127.0.0.1", 12345))
+    monkeypatch.setattr(server.log, "isEnabledFor", lambda level: level == logging.DEBUG)
+    debug = client.get("/api/config").json()
+    assert debug["local_files_enabled"] is True
+    assert debug["capture_diagnostics_enabled"] is True
+    assert debug["dictation_metrics_enabled"] is True
+
+    monkeypatch.setattr(server.log, "isEnabledFor", lambda _level: False)
+    info = client.get("/api/config").json()
+    assert info["capture_diagnostics_enabled"] is True
+    assert info["dictation_metrics_enabled"] is False
+
+    monkeypatch.setattr(server.app.state, "local_host", False)
+    public = client.get("/api/config").json()
+    assert public["local_files_enabled"] is False
+    assert public["capture_diagnostics_enabled"] is False
+    assert public["dictation_metrics_enabled"] is False
+
+
 def test_local_dictation_metrics_are_bounded_and_correlated_to_the_stt_job(
     local_host_app, monkeypatch, caplog,
 ):

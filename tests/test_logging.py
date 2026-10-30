@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from core.logging import (
+    RoutineAccessLogFilter,
     log_files,
     prepare_log_file,
     resolve_log_file,
@@ -74,10 +75,33 @@ def test_third_party_transports_suppression():
     setup_logging(level_name="INFO", root_name="resonance_test")
     for noisy in ("multipart", "httpcore", "httpx", "uvicorn.access"):
         assert logging.getLogger(noisy).level == logging.WARNING
+    assert sum(
+        isinstance(log_filter, RoutineAccessLogFilter)
+        for log_filter in logging.getLogger("uvicorn.access").filters
+    ) == 1
 
     setup_logging(level_name="DEBUG", root_name="resonance_test")
     for noisy in ("multipart", "httpcore", "httpx", "uvicorn.access"):
         assert logging.getLogger(noisy).level == logging.DEBUG
+
+
+@pytest.mark.parametrize(("method", "path", "status", "expected"), [
+    ("GET", "/api/models", 200, False),
+    ("GET", "/api/models?unused=1", 200, False),
+    ("GET", "/api/models", 503, True),
+    ("POST", "/api/models", 204, True),
+    ("GET", "/favicon.ico", 200, False),
+    ("GET", "/assets/app-123.css", 200, False),
+    ("GET", "/assets/app-123.css", 404, True),
+    ("GET", "/api/jobs/job-1", 200, True),
+])
+def test_routine_success_access_log_filter(method, path, status, expected):
+    record = logging.LogRecord(
+        "uvicorn.access", logging.INFO, __file__, 1,
+        '%s - "%s %s HTTP/%s" %d',
+        ("127.0.0.1:1234", method, path, "1.1", status), None,
+    )
+    assert RoutineAccessLogFilter().filter(record) is expected
 
 
 def test_resolve_log_file_defaults(monkeypatch):
