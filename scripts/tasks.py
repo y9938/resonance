@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.11"
+# requires-python = ">=3.15"
 # dependencies = ["python-dotenv>=1.0.0"]
 # ///
 
@@ -238,8 +238,10 @@ def serve_local(env: dict[str, str]) -> None:
 
 
 def diagnostics(env: dict[str, str], args: list[str]) -> None:
-    """Save local logs and available macOS diagnostics in one ZIP."""
-    execute([*project_python_command(), "-m", "scripts.diagnostics", *args], backend_environment(env))
+    """Save local logs and macOS diagnostics in one ZIP; forward arguments to diagnostics."""
+    if not help_requested(args):
+        env = backend_environment(env)
+    execute([*project_python_command(), "-m", "scripts.diagnostics", *args], env)
 
 
 def npm_command(env: dict[str, str]) -> str:
@@ -258,8 +260,21 @@ def build_web(env: dict[str, str]) -> None:
     frontend(["run", "build"], env)
 
 
+def help_requested(args: list[str]) -> bool:
+    """Return whether arguments request help before the option terminator."""
+    for arg in args:
+        if arg == "--":
+            return False
+        if arg in ("-h", "--help"):
+            return True
+    return False
+
+
 def run_tests(env: dict[str, str], args: list[str]) -> None:
-    """Build the frontend and run pytest; browser tests need a running server."""
+    """Build the frontend and run pytest; forward arguments to pytest."""
+    if help_requested(args):
+        execute([*project_python_command(), "-m", "pytest", *args], env)
+        return
     build_web(env)
     env = backend_environment(env)
     port = env.get("RESONANCE_PORT", "8000")
@@ -272,7 +287,10 @@ def run_tests(env: dict[str, str], args: list[str]) -> None:
 
 
 def check(env: dict[str, str], args: list[str]) -> None:
-    """Check Svelte, TypeScript and Python code."""
+    """Check Svelte, TypeScript and Python; forward arguments to Ruff."""
+    if help_requested(args):
+        execute([*project_python_command(), "-m", "ruff", "check", *args], env)
+        return
     frontend(["run", "check"], env)
     cmd = [
         *project_python_command(), "-m", "ruff", "check",
@@ -283,7 +301,10 @@ def check(env: dict[str, str], args: list[str]) -> None:
 
 
 def build_image(env: dict[str, str], args: list[str]) -> None:
-    """Build the Docker image."""
+    """Build the Docker image; forward arguments to docker build."""
+    if help_requested(args):
+        execute(["docker", "build", *args], env)
+        return
     cmd = [
         "docker", "build",
         "--build-arg", f"PYTORCH_BACKEND={build_backend(env)}",
@@ -294,7 +315,10 @@ def build_image(env: dict[str, str], args: list[str]) -> None:
 
 
 def run_container(env: dict[str, str], args: list[str]) -> None:
-    """Run the Docker container."""
+    """Run the Docker container; forward arguments to docker run."""
+    if help_requested(args):
+        execute(["docker", "run", *args], env)
+        return
     if sys.platform == "linux" and os.geteuid() == 0:
         raise PermissionError("Run Docker as a non-root user")
     # Host directories must exist before Docker starts.
@@ -624,9 +648,10 @@ def bind_mount(source: Path, target: str) -> str:
     return output.getvalue()
 
 
-def task_environment() -> dict[str, str]:
-    """Load repository configuration and prepare the environment for child uv."""
-    load_dotenv(ROOT / ".env", override=False)
+def task_environment(*, load_project_config: bool = True) -> dict[str, str]:
+    """Prepare the child environment, optionally loading repository config."""
+    if load_project_config:
+        load_dotenv(ROOT / ".env", override=False)
     env = os.environ.copy()
     env["PYTHONUTF8"] = "1"
     # Neither the PEP 723 runner nor an activated external environment owns
@@ -660,33 +685,43 @@ def main() -> int:
         "build-macos": (build_macos, False),
     }
     parser = argparse.ArgumentParser(
-        prog="r", usage="%(prog)s [-h] [task] [args ...]", description=__doc__,
+        prog="r", usage="%(prog)s [-h] [task]", description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="tasks:\n" + "\n".join(
-            f"  {name:<13} {handler.__doc__ or ''}"
-            for name, (handler, _) in tasks.items()
-        ),
+        color=True,
+        epilog="For tasks that accept arguments, put `--` before arguments for the wrapped command.",
     )
-    parser.add_argument(
-        "task", choices=tasks, metavar="task", nargs="?",
-        help="Task to run (see below)",
-    )
-    parser.add_argument(
-        "args", nargs=argparse.REMAINDER, help="Arguments passed to the selected task"
-    )
-    args = parser.parse_args()
+    subparsers = parser.add_subparsers(dest="task", metavar="task")
+    for name, (handler, accepts_args) in tasks.items():
+        task_parser = subparsers.add_parser(
+            name,
+            help=handler.__doc__,
+            description=handler.__doc__,
+            usage=f"%(prog)s{' [args ...]' if accepts_args else ''}",
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            add_help=False,
+            color=True,
+            epilog="Put `--` before arguments for the wrapped command." if accepts_args else None,
+        )
+        task_parser.add_argument("-h", "--help", action="help", help=argparse.SUPPRESS)
+
+    args, task_args = parser.parse_known_args()
     if args.task is None:
+        if task_args:
+            parser.error(f"unrecognized arguments: {shlex.join(task_args)}")
         parser.print_help()
         return 0
 
     handler, accepts_args = tasks[args.task]
-    if args.args and not accepts_args:
-        parser.error(f"{args.task} does not accept arguments")
+    if "--" in task_args:
+        task_args.remove("--")
+    if task_args and not accepts_args:
+        parser.error(f"{args.task} accepts no arguments (got: {shlex.join(task_args)})")
 
     try:
-        env = task_environment()
+        wants_wrapped_help = help_requested(task_args)
+        env = task_environment(load_project_config=not wants_wrapped_help)
         if accepts_args:
-            handler(env, args.args)
+            handler(env, task_args)
         else:
             handler(env)
     except KeyboardInterrupt:
